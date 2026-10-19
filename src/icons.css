@@ -1,0 +1,38 @@
+/* The Material Icons the viewer's controls draw with (play, fullscreen and so
+ * on: the element's text is the icon's name, and the font's ligatures turn it
+ * into the glyph).
+ *
+ * Slippi Lab loaded these from fonts.googleapis.com at runtime. This viewer
+ * makes no third-party requests at run time, so the fonts are bundled from npm
+ * (@fontsource/material-icons and -outlined; their licenses go into
+ * THIRD_PARTY_LICENSES.txt with every other bundled package). Fontsource ships
+ * only the @font-face, so the two classes Google's stylesheet also defined are
+ * here, as Google defines them.
+ */
+@import "@fontsource/material-icons";
+@import "@fontsource/material-icons-outlined";
+
+.material-icons,
+.material-icons-outlined {
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: "liga";
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+}
+
+.material-icons {
+  font-family: "Material Icons";
+}
+
+.material-icons-outlined {
+  font-family: "Material Icons Outlined";
+}

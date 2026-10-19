@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Replay viewer dev page</title>
+    <link rel="stylesheet" href="/src/dev.css" />
+  </head>
+  <body>
+    <!-- Loads a local .slp and, optionally, its viewer track (the JSON the
+         simulator's viewer-track export writes) into the embed page. Game
+         files come from ./game (the dev server serves it) unless a folder is
+         picked here. Nothing leaves the browser. -->
+    <header>
+      <label>Replay (.slp) <input id="slp" type="file" accept=".slp" /></label>
+      <label>Viewer track (.json) <input id="track" type="file" accept=".json,.vtb" /></label>
+      <label>Game files folder <input id="game" type="file" webkitdirectory multiple /></label>
+      <label>View
+        <select id="view">
+          <option value="3d">3D</option>
+          <option value="console">Console</option>
+          <option value="simple">Simple (line art)</option>
+        </select>
+      </label>
+      <button id="play">Play / Pause</button>
+      <span id="status"></span>
+    </header>
+    <iframe id="player" src="embed.html"></iframe>
+    <script type="module" src="/src/dev.ts"></script>
+  </body>
+</html>

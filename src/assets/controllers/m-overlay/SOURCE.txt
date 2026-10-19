@@ -1,0 +1,29 @@
+M'Overlay's default GameCube controller skin: its PNGs as it ships,
+traced to vector outlines (paths.ts). The PNGs themselves are not in this
+repository; paths.ts is all the viewer uses.
+
+  Project:  M'Overlay, by Bkacjios - https://github.com/bkacjios/m-overlay
+  Commit:   366a93bc77693b46b3d9112f304b2a752d0d5fe7 (master, 2025-03-04)
+  Files:    source/textures/buttons/<name>.png, the textures
+            source/overlay/skins/default.lua draws
+  Fetched:  2026-10-02
+  License:  MIT, "Copyright (c) 2020 Bkacjios" (LICENSE, the repository's
+            own, which covers these files: the textures folder and the
+            README carry no other license, credit or restriction; only the
+            S-Stick skin's folder, source/textures/buttons/SS/, credits
+            another artist, and nothing from it is used here)
+
+Modified (2026-10-02): paths.ts is each PNG traced to its own outline by
+a tracing script - the edge where the texture's opacity crosses
+half, interpolated between its pixels, kept to within 0.08 of a pixel of
+it. Nothing is redrawn or recolored: the shapes are the textures' own, filled
+in the colors default.lua tints them. The textures are 128 pixels; the
+players draw them at about a fifth of that in a normal player, an eighth in
+a small one, and past full size on a large screen, so drawn as pictures
+they resample and their thin lines step and blur. Their outlines draw sharp
+at every size.
+
+The replay player draws them the way default.lua does
+(src/components/viewer/Controllers.tsx): the outline of each
+button and its pressed picture while held, in the skin's own colors, the
+sticks moved over their gates, L and R filled by how far they are pressed.

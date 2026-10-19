@@ -1,0 +1,14 @@
+node_modules/
+dist/
+# your own game files (never committed): see README.md
+game/
+# Slippi Lab's line-art animations, fetched separately: see README.md
+public/zips/
+public/effect-table.json
+*.slp
+*.slpz
+*.iso
+*.dat
+*.usd
+*.dol
+.env

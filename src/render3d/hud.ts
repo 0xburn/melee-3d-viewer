@@ -1,0 +1,818 @@
+/* 3D replay viewer: the game's heads-up display, drawn with the
+ * game's own HUD art (IfAll.dat, read at runtime from your game files).
+ *
+ * Every piece is one of the file's models, posed as the game poses it
+ * (src/melee/if/ in the decompilation): the percent (DmgNum, its digits
+ * picked from the model's own texture strip, shaken on a hit, scattered in a
+ * KO, rising in when a fighter comes back), the series mark behind it in the
+ * port's color (DmgMrk), the stock icons and a lost one's fall (Stc), the
+ * match timer (ScInfTim), the player tag over a fighter (ScInfPnm) and the
+ * magnifier that shows a fighter off the screen (lupe), whose picture is the
+ * fighter drawn into a texture each frame, as the game draws it. What it
+ * shows at a frame is worked out in hudlogic.ts. The words - Slippi's plates
+ * with the display names under the percentages, a console game's nametags
+ * over the fighters - are pictures of the page's own text (hudtext.ts,
+ * Hud3D.tsx), so demo mode swaps them and the 480p look softens them.
+ *
+ * The HUD has cameras of its own: a perspective one the file gives
+ * (ScInfDmg_scene_data), a flat 640 x 480 one for the tags, and the
+ * magnifier's, which looks at one fighter.
+ */
+import { AObj, Archive, Image, JObj, MatAnim, loadAnimJoint, loadJoint, loadMatAnimJoint, parseArchive, ptr } from "./hsd";
+import { applyMatAnim, Skeleton } from "./skeleton";
+import { ident, lookAt, Mat, mul, perspective, srt } from "./math";
+import type { PlayerState, ReplayData } from "../common/types";
+import type { EffectBank } from "./fx/bank";
+import { type Particle, ParticleSystem } from "./fx/particles";
+import { buildParticles } from "./fx/draw";
+import {
+  FIRST_FRAME, GO_FRAME, HUNDREDS, markFrame, ONES, PlayerHud, portColor, portColorIndex, SIGN, TAG_IDLE, TAG_LAUNCH, TAG_LAUNCH_SPEED,
+  TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
+} from "./hudlogic";
+import { PLATE_FONT, quad, tagText, textPicture } from "./hudtext";
+import { hudSlot, outerSlots } from "../common/hudslots";
+
+// Slippi's name plate (its playback, 1285 x 1056 frames): 254 x 31 pixels, its
+// middle 16.5 pixels right of the percent's place and 1 unit below it, black at
+// a third (in the HUD camera's units)
+const PLATE = { dx: 0.76, dy: -1.02, w: 11.68, h: 1.425, fill: 0.34 };
+
+// what it asks of the renderer (renderer.ts), by shape: that is a browser
+// module, which the checks, run outside a browser, cannot type
+interface RenderTarget { tex: unknown }
+interface Renderer {
+  drawSkeleton(sk: Skeleton, pass: "opa" | "xlu"): void;
+  overlay(viewProj: Mat, view: Mat, target?: unknown, clear?: [number, number, number, number] | null, mirrored?: boolean): void;
+  endOverlay(): void;
+  target(w: number, h: number): RenderTarget;
+  bindImage(image: Image, tex: unknown): void;
+  warm(sk: Skeleton): void;
+  drawParticles(data: Float32Array, batches: ReturnType<typeof buildParticles>["batches"]): void;
+  readonly pictureHeight: number;
+}
+
+interface ModelDesc { joint: number; anims: number[]; mats: number[] }
+
+/** a *_scene_models list: {joint, anims[], matanims[], shapeanims[]} each */
+function modelsOf(a: Archive, name: string): ModelDesc[] {
+  const root = a.publics.get(name);
+  const out: ModelDesc[] = [];
+  const list = (p: number | null) => {
+    const r: number[] = [];
+    for (let k = 0; p !== null && k < 64; k++) { const q = ptr(a, p + k * 4); if (q === null) break; r.push(q); }
+    return r;
+  };
+  for (let i = 0; root !== undefined && i < 16; i++) {
+    const m = ptr(a, root + i * 4);
+    if (m === null) break;
+    const joint = ptr(a, m);
+    if (joint !== null) out.push({ joint, anims: list(ptr(a, m + 4)), mats: list(ptr(a, m + 8)) });
+  }
+  return out;
+}
+
+/** One of the HUD's models, posed piece by piece as the game's code does:
+ *  a joint animation at a frame, a texture strip at another, a color. */
+export class HudModel {
+  readonly sk: Skeleton;
+  private joints: JObj[];
+  private anims: (AObj | null)[][];
+  private mats: (MatAnim | null)[][][];
+  private place: Mat = new Float32Array(16);
+
+  constructor(a: Archive, desc: ModelDesc, tag: string) {
+    const { all, dobjs } = loadJoint(a, desc.joint);
+    this.joints = all;
+    this.sk = new Skeleton(a, all, dobjs, tag);
+    this.anims = desc.anims.map((o) => loadAnimJoint(a, o));
+    this.mats = desc.mats.map((o) => loadMatAnimJoint(a, o));
+  }
+
+  /** whether it is already posed for this (the same key as last time): most
+   *  of the HUD stands still from one frame to the next, and is then only drawn */
+  same(key: string): boolean {
+    if (key === this.key) return true;
+    this.key = key;
+    return false;
+  }
+  private key = "";
+
+  /** the rest pose and the materials' own colors and images */
+  begin() {
+    this.sk.resetPose();
+    this.sk.resetMaterials();
+  }
+
+  /** joint animation `set` at `frame` (held at its end), on one joint or all */
+  anim(set: number, frame: number, joint = -1) {
+    const list = this.anims[set];
+    if (!list) return;
+    if (joint < 0) { this.sk.applyAObjs(list, frame, false); return; }
+    if (!list[joint]) return;
+    // (one joint's alone: the others' left out, a list made once)
+    const key = set * 256 + joint;
+    let one = this.single.get(key);
+    if (!one) { one = list.map((x, j) => (j === joint ? x : null)); this.single.set(key, one); }
+    this.sk.applyAObjs(one, frame, false);
+  }
+  private single = new Map<number, (AObj | null)[]>();
+
+  /** material animation `set` of joint `from` (its dobj `fromDobj`) at `frame`, onto joint `joint`'s dobj `dobj`
+   *  (the game hands one strip to several pieces: HSD_TObjAddAnimAll) */
+  mat(joint: number, set: number, frame: number, from = joint, dobj = 0, fromDobj = dobj, loop = false) {
+    const ma = this.mats[set]?.[from]?.[fromDobj];
+    const d = this.joints[joint]?.dobjs[dobj];
+    if (ma && d) applyMatAnim(this.sk.states[d.index], ma, frame, loop);
+  }
+
+  /** every material animation of set `set` at `frame` (a model the game just lets play) */
+  matAll(set: number, frame: number) {
+    const list = this.mats[set];
+    if (list) this.sk.applyMatAnims(list, (j) => this.joints[j]?.dobjs ?? [], frame, false);
+  }
+
+  /** how long joint animation `set` runs */
+  animLength(set: number): number {
+    let n = 0;
+    for (const a of this.anims[set] ?? []) if (a) n = Math.max(n, a.end);
+    return n;
+  }
+
+  /** a material's color (the game writes its diffuse) */
+  color(joint: number, rgb: [number, number, number], dobj = 0) {
+    const d = this.joints[joint]?.dobjs[dobj];
+    if (d) { const st = this.sk.states[d.index]; st.diffuse.set(rgb); st.dirty = true; }
+  }
+
+  /** HSD_JObjSetFlagsAll(HIDDEN): the joint and everything under it */
+  hide(joint: number) {
+    const sk = this.sk;
+    for (let j = joint; j < sk.n; j++) {
+      if (j !== joint && !this.under(j, joint)) break;
+      sk.shown[j] = 0;
+    }
+  }
+  private under(j: number, top: number): boolean {
+    for (let p = this.sk.parent[j]; p >= 0; p = this.sk.parent[p]) if (p === top) return true;
+    return false;
+  }
+
+  /** the root placed (and scaled, turned), then the world matrices */
+  finish(x: number, y: number, z = 0, scale = 1, rotZ = 0) {
+    srt(this.place, scale, scale, scale, 0, 0, rotZ, x, y, z);
+    this.sk.update(this.place);
+  }
+
+  trans(joint: number): [number, number, number] {
+    const t = this.sk.trans;
+    return [t[joint * 3], t[joint * 3 + 1], t[joint * 3 + 2]];
+  }
+  /** a joint's own place in the model (before any animation) */
+  rest(joint: number): [number, number, number] {
+    const t = this.joints[joint]?.trans ?? [0, 0, 0];
+    return [t[0], t[1], t[2]];
+  }
+  setTrans(joint: number, x: number, y: number) {
+    this.sk.trans[joint * 3] = x;
+    this.sk.trans[joint * 3 + 1] = y;
+  }
+  setRotZ(joint: number, r: number) { this.sk.rot[joint * 3 + 2] = r; }
+
+  /** the first image of a joint's dobj (the magnifier's picture) */
+  image(joint: number, dobj: number) {
+    const d = this.joints[joint]?.dobjs[dobj];
+    return d ? this.sk.states[d.index].tex[0]?.image ?? null : null;
+  }
+}
+
+/** The HUD's art and layout, from IfAll.dat; one per page. */
+export class HudKit {
+  readonly a: Archive;
+  /** the HUD camera (ScInfDmg_scene_data): field of view (degrees), aspect, eye, near, far */
+  readonly cam = { fovy: 41.539, aspect: 1.217, eye: [0, 0, 64] as [number, number, number], near: 1, far: 3500 };
+  /** where each player's percent and stocks sit, by how many places the match has (ifAll_802F343C) */
+  private layout: [number, number][] = [];
+  readonly timerPos: [number, number] = [0, 17.65];
+  readonly num: ModelDesc | null;
+  readonly mark: ModelDesc | null;
+  readonly stock: ModelDesc | null;
+  readonly timer: ModelDesc | null;
+  readonly tag: ModelDesc | null;
+  readonly lupe: ModelDesc | null;
+  readonly arrow: ModelDesc | null;
+  readonly ready: ModelDesc | null;
+  readonly go: ModelDesc | null;
+  readonly countdown: ModelDesc | null;
+  /** ftCommonData's name-tag counts (PlCo.dat), when read */
+  tags = { idle: TAG_IDLE, launch: TAG_LAUNCH, launchSpeed: TAG_LAUNCH_SPEED };
+
+  constructor(buf: ArrayBuffer) {
+    const a = (this.a = parseArchive(buf));
+    const sd = a.publics.get("ScInfDmg_scene_data");
+    if (sd === undefined) throw new Error("IfAll.dat without its HUD scene");
+    const m0 = ptr(a, ptr(a, sd) ?? -1);
+    const lj = m0 === null ? null : ptr(a, m0);
+    if (lj !== null) {
+      const { all } = loadJoint(a, lj);
+      this.layout = all.map((j) => [j.trans[0], j.trans[1]]);
+      if (all[13]) this.timerPos = [all[13].trans[0], all[13].trans[1]];
+    }
+    // the camera: perspective, its fov and aspect, the eye and the near and far planes
+    const cams = ptr(a, sd + 4);
+    const desc = cams === null ? null : ptr(a, cams);
+    if (desc !== null) {
+      const d = a.data;
+      const eye = ptr(a, desc + 0x18);
+      this.cam = {
+        fovy: d.getFloat32(desc + 0x30), aspect: d.getFloat32(desc + 0x34),
+        eye: eye === null ? [0, 0, 64] : [d.getFloat32(eye + 4), d.getFloat32(eye + 8), d.getFloat32(eye + 12)],
+        near: d.getFloat32(desc + 0x28), far: d.getFloat32(desc + 0x2c),
+      };
+    }
+    const one = (n: string) => modelsOf(a, n)[0] ?? null;
+    this.num = one("DmgNum_scene_models");
+    this.mark = one("DmgMrk_scene_models");
+    this.stock = one("Stc_scemdls");
+    this.timer = one("ScInfTim_scene_models");
+    this.tag = one("ScInfPnm_scene_models");
+    this.lupe = one("lupe");
+    this.arrow = one("Stc_rarwmdls");
+    // the match's splashes (if_2F6E.c): 3 the versus intro's "Ready" and its
+    // count, 4 "GO!"
+    const cnt = modelsOf(a, "ScInfCnt_scene_models");
+    this.ready = cnt[3] ?? null;
+    this.go = cnt[4] ?? null;
+    // the last five seconds' count, one animation a second (iftime.c's tdsce)
+    this.countdown = modelsOf(a, "tdsce")[0] ?? null;
+  }
+
+  /** ftCommonData +0x5F0, +0x5EC, +0x5E8 from PlCo.dat: the tag's counts */
+  common(buf: ArrayBuffer) {
+    const a = parseArchive(buf);
+    const t = a.publics.get("ftLoadCommonData");
+    const cd = t === undefined ? null : ptr(a, t);
+    if (cd === null) return;
+    const d = a.data;
+    const idle = d.getUint32(cd + 0x5f0), launch = d.getUint32(cd + 0x5ec), speed = d.getFloat32(cd + 0x5e8);
+    if (idle > 0 && idle < 10000) this.tags.idle = idle;
+    if (launch > 0 && launch < 10000) this.tags.launch = launch;
+    if (speed > 0 && speed < 100) this.tags.launchSpeed = speed;
+  }
+
+  /** a player's place, by the match's number of places (ifAll_802F343C) */
+  placeOf(slot: number, places: number): [number, number] {
+    const at = (j: number, k = 1): [number, number] => {
+      const p = this.layout[j] ?? [0, -21];
+      return [p[0] * k, p[1]];
+    };
+    switch (places) {
+      case 1: return at(9);
+      case 2: return at(11 + slot);
+      case 3: return at(8 + slot);
+      case 5: case 6: return at([6, 2, 3, 4, 5, 7][slot] ?? 2, 0.65);
+      default: return at(2 + slot);
+    }
+  }
+
+  model(desc: ModelDesc | null, tag: string): HudModel | null {
+    return desc ? new HudModel(this.a, desc, tag) : null;
+  }
+}
+
+/** the lost stocks' bursts as the effect world ran them from the viewer
+ *  track: its particles of the HUD's list, and where the game made each
+ *  burst's generator (by its tag, "hud:<port>:<icon>") */
+export interface TrackedBursts { particles: Particle[]; places: Map<string, [number, number]> }
+
+/** a fighter as the HUD needs it this frame: where it is, how it is drawn */
+export interface HudActor {
+  player: number;
+  st: PlayerState;
+  /** drawn (not dead, asleep or vanished) */
+  drawn: boolean;
+  /** where it is drawn, when not where the replay says (a star KO) */
+  at?: [number, number, number];
+  nameTagHeight: number;
+  /** the point the match camera frames it by (its camera bone), world */
+  bone: [number, number, number] | null;
+  /** the magnifier's view size (camera box +0x14 x scale, over 8) */
+  zoom: number;
+  /** draws the fighter (its opaque and see-through parts) */
+  draw: () => void;
+}
+
+const PIC = 64; // the magnifier's picture, texels a side (the game's image)
+
+/** One replay's HUD: its players' displays, made once, posed each frame. */
+export class Hud {
+  private players: {
+    slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
+    tag: HudModel | null; lupe: HudModel | null; arrow: HudModel | null; pic: RenderTarget | null; place: [number, number];
+    colorIdx: number; external: number; costume: number; tagFrame: number; human: boolean; nametag: string;
+  }[] = [];
+  /** the words the page holds for the plates and nametags, demo mode's
+   *  stand-ins where it swaps them ("plate:<port>", "tag:<port>"; Hud3D.tsx) */
+  private words = new Map<string, string>();
+  setWords(w: Map<string, string>) { this.words = w; }
+  /** the nametags this replay has, for the page to hold (port -> the tag as the game shows it) */
+  nametags(): { player: number; tag: string }[] {
+    return this.players.filter((p) => p.nametag).map((p) => ({ player: p.slot, tag: p.nametag }));
+  }
+  private quads: number[] = [];
+  private textBatches: ReturnType<typeof buildParticles>["batches"] = [];
+  /** a word's picture as a quad, into this pass's batch */
+  private word(text: string | undefined, kind: "plate" | "tag", ppu: number, place: (w: number, h: number, ref: number) => [number, number]) {
+    const pic = text ? textPicture(text, kind, ppu) : null;
+    if (!pic) return;
+    const [x0, top] = place(pic.w, pic.h, pic.ref);
+    const first = this.quads.length / 68;
+    quad(this.quads, x0, top - pic.h, x0 + pic.w, top, 0, null);
+    this.textBatches.push({ sprite: pic.sprite, additive: false, near: false, zwrite: false, nozcomp: true, first, count: 1 });
+  }
+  private box(x0: number, y0: number, x1: number, y1: number, color: [number, number, number, number]) {
+    const first = this.quads.length / 68;
+    quad(this.quads, x0, y0, x1, y1, 0, color);
+    this.textBatches.push({ sprite: null, additive: false, near: false, zwrite: false, nozcomp: true, first, count: 1 });
+  }
+  /** the quads gathered since the last flush, drawn */
+  private flushWords(r: Renderer) {
+    if (this.textBatches.length) {
+      // (one buffer kept while the words' quads are the same size)
+      if (this.quadBuf.length !== this.quads.length) this.quadBuf = new Float32Array(this.quads.length);
+      this.quadBuf.set(this.quads);
+      r.drawParticles(this.quadBuf, this.textBatches);
+    }
+    this.quads.length = 0;
+    this.textBatches = [];
+  }
+  private quadBuf = new Float32Array(0);
+  /** the picture's width over the game's, as last drawn */
+  private k = 1;
+  /** half the HUD camera's view across, in its units, at the game's own shape */
+  private halfWidth(): number {
+    const c = this.kit.cam;
+    return Math.abs(c.eye[2]) * Math.tan((c.fovy * Math.PI) / 360) * c.aspect;
+  }
+  private timer: HudModel | null;
+  private proj = new Float32Array(16);
+  private view = new Float32Array(16);
+  private vp = new Float32Array(16);
+  private flatVP = new Float32Array(16);
+  private flatView = ident(new Float32Array(16));
+  private picVP = new Float32Array(16);
+  /** what the checks read: the last frame drawn */
+  last: { percents: { player: number; percent: number; hidden: boolean }[]; timer: string | null; tags: number[];
+          magnified: number[]; arrows: number[]; stocks: number[][] } = { percents: [], timer: null, tags: [], magnified: [], arrows: [], stocks: [] };
+
+  constructor(readonly kit: HudKit, private data: ReplayData, private stageColors: [number, number, number][] | null,
+              private camBounds: { left: number; right: number; top: number; bottom: number } | null) {
+    const s = data.settings;
+    const places = s.characterUiPlacesCount >= 1 && s.characterUiPlacesCount <= 6 ? s.characterUiPlacesCount : 4;
+    this.timer = kit.model(kit.timer, "hud:timer");
+    this.ready = kit.model(kit.ready, "hud:ready");
+    this.go = kit.model(kit.go, "hud:go");
+    this.countdown = kit.model(kit.countdown, "hud:countdown");
+    // GO comes when the "Ready" has played through (a frame ahead: see drawSplash)
+    this.goAt = this.ready ? this.ready.animLength(0) - 1 : GO_FRAME - FIRST_FRAME;
+    for (const ps of s.playerSettings) {
+      if (!ps) continue;
+      const slot = ps.playerIndex;
+      const colorIdx = portColorIndex(slot, ps.playerType === 0, s.isTeams, ps.teamId);
+      // a console game's nametag (a human's, as has_nametag asks): over the
+      // fighter all game, the tag's plain arrow under it
+      const nametag = ps.playerType === 0 ? tagText(ps.nametag) : "";
+      const tf = tagFrame(slot, ps.playerType === 0, s.isTeams, ps.teamId);
+      this.players.push({
+        slot, life: new PlayerHud(data, slot, { ...kit.tags }, this.goAt + FIRST_FRAME, nametag.length > 0), nametag,
+        num: kit.model(kit.num, "hud:num"), mark: kit.model(kit.mark, "hud:mark"),
+        stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
+        arrow: kit.model(kit.arrow, "hud:arrow"), human: ps.playerType === 0,
+        // (two players: the outer slots of four, whatever their ports - hudslots.ts)
+        pic: null, place: outerSlots(s) ? kit.placeOf(hudSlot(s, slot), 4) : kit.placeOf(slot, places), colorIdx,
+        external: ps.externalCharacterId, costume: ps.costumeIndex,
+        tagFrame: nametag ? nametagFrame(tf) : tf,
+      });
+    }
+  }
+  private ready: HudModel | null;
+  private go: HudModel | null;
+  private countdown: HudModel | null;
+  /** the frame (the viewer's) the intro's "Ready" ends and GO comes */
+  private goAt: number;
+
+  /** the intro's "Ready" and its count, then "GO!", each its model's animation from its start */
+  private drawSplash(r: Renderer, f: number) {
+    // (each a frame on: made with its animation run once, then run again by
+    // its proc that frame - the reference frames' "Ready" count and "GO!")
+    const [m, t] = f < this.goAt ? [this.ready, f + 1] : [this.go, f - this.goAt + 1];
+    if (!m || t < 0 || t >= Math.max(1, m.animLength(0))) return;
+    m.begin();
+    m.anim(0, t);
+    m.matAll(0, t);
+    m.finish(0, 0);
+    r.drawSkeleton(m.sk, "opa");
+    r.drawSkeleton(m.sk, "xlu");
+  }
+
+  /** every model's textures, ahead of the first frame */
+  warm(r: Renderer) {
+    for (const p of this.players) for (const m of [p.num, p.mark, p.stock, p.tag, p.lupe, p.arrow]) if (m) r.warm(m.sk);
+    for (const m of [this.ready, this.go, this.countdown]) if (m) r.warm(m.sk);
+    if (this.timer) r.warm(this.timer.sk);
+  }
+
+
+  /** The HUD at frame `f`, drawn over the picture. `viewProj` is the match
+   *  camera's (the tags and the magnifier find the fighters with it);
+   *  `actors` the fighters as drawn this frame; `aspect` the picture's shape
+   *  (width over height). The picture is the game's own shape (73:60) on
+   *  every page; should one ever be wider or narrower, the HUD keeps its
+   *  proportions (the HUD camera's height, the picture's width), its layout
+   *  in the middle as a widescreen Melee shows it, the bubbles and chevrons
+   *  on the picture's own edges. */
+  draw(r: Renderer, f: number, viewProj: Mat, actors: HudActor[], bank: EffectBank | null = null,
+       aspect = this.kit.cam.aspect, tracked: TrackedBursts | null = null) {
+    const gameFrame = f + FIRST_FRAME;
+    // the picture's width over the game's
+    const k = (this.k = aspect / this.kit.cam.aspect);
+    const out: Hud["last"] = { percents: [], timer: null, tags: [], magnified: [], arrows: [], stocks: [] };
+    // --- the magnifiers' pictures first: each a fighter off the screen, drawn into its own texture
+    const magnified: { p: Hud["players"][number]; sx: number; sy: number }[] = [];
+    // (the magnifier waits for the HUD to be on: the match clock's start, frame 0)
+    if (gameFrame >= 0) {
+      for (const p of this.players) {
+        const a = actors.find((x) => x.player === p.slot);
+        // (not for one KO'd, asleep or coming back on the angel platform: ftLib_80086ED0)
+        if (!a || !a.drawn || !a.bone || !p.lupe || a.st.actionStateId <= 13) continue;
+        const [sx, sy, w] = toScreen(viewProj, a.bone, k);
+        if (w > 0 && sx >= 320 - 320 * k && sx < 320 + 320 * k && sy >= 0 && sy < 480) continue;
+        if (w <= 0) continue;
+        if (!p.pic) {
+          p.pic = r.target(PIC, PIC);
+          const img = p.lupe.image(2, 1);
+          if (img) r.bindImage(img, p.pic.tex);
+        }
+        this.picture(r, p.pic, a);
+        magnified.push({ p, sx, sy });
+        out.magnified.push(p.slot);
+      }
+    }
+    // --- the tags over the fighters: a flat 640 x 480 camera, pixel units
+    ortho(this.flatVP, 320 - 320 * k, 320 + 320 * k, -480, 0, 0.1, 32768);
+    lookAt(this.flatView, [0, 0, 300], [0, 0, 0]);
+    mul(this.flatVP, this.flatVP, this.flatView);
+    let tagsBegun = false;
+    for (const p of this.players) {
+      if (!p.tag || !p.life.tag[f]) continue;
+      const a = actors.find((x) => x.player === p.slot);
+      if (!a || (!a.drawn && !a.at)) continue;
+      const pos = a.at ?? [a.st.xPosition, a.st.yPosition, 0];
+      const [sx, sy, w] = toScreen(viewProj, [pos[0], pos[1] + a.nameTagHeight - 2.5, pos[2]], k);
+      if (w <= 0) continue;
+      const m = p.tag;
+      m.begin();
+      for (let d = 0; d < 3; d++) m.mat(1, 0, p.tagFrame, 1, d);
+      m.finish(sx, -sy, 0, 10);
+      if (!tagsBegun) { r.overlay(this.flatVP, this.flatView); tagsBegun = true; }
+      r.drawSkeleton(m.sk, "opa");
+      r.drawSkeleton(m.sk, "xlu");
+      // the nametag over its arrow, in its dark box: centered, the capitals'
+      // top 40.2 over the tag's point (the reference frames)
+      if (p.nametag) {
+        this.word(this.words.get(`tag:${p.slot}`), "tag", r.pictureHeight / 480, (w, _h, ref) => [sx - w / 2, -sy + 40.2 + ref]);
+        this.flushWords(r);
+      }
+      out.tags.push(p.slot);
+    }
+    if (tagsBegun) r.endOverlay();
+
+    // --- the HUD camera's pieces
+    const c = this.kit.cam;
+    // (its own height of view, the picture's shape: never stretched)
+    perspective(this.proj, (c.fovy * Math.PI) / 180, c.aspect * k, c.near, c.far);
+    lookAt(this.view, c.eye, [0, 0, 0]);
+    mul(this.vp, this.proj, this.view);
+    r.overlay(this.vp, this.view);
+    // the picture's pixels a HUD unit (the camera's view of its z = 0 plane)
+    const hudPpu = r.pictureHeight / (2 * Math.abs(c.eye[2]) * Math.tan((c.fovy * Math.PI) / 360));
+    for (const { p, sx, sy } of magnified) this.drawLupe(r, p, sx, sy);
+    out.arrows = this.drawArrows(r, f, magnified);
+    const tm = this.timer ? timerAt(gameFrame, this.data.settings.timerType, this.data.settings.timerStart) : null;
+    // The last five seconds (ifTime_UpdateTimers): from the frame it reads
+    // 00:05 00 the timer gives way to the big count, a number a second, each
+    // its own animation from its start
+    const five = (this.data.settings.timerStart - 5) * 60;
+    if (tm && this.countdown && this.data.settings.timerType === "counting down" && gameFrame >= five) {
+      const k = Math.min(4, Math.floor((gameFrame - five) / 60)), t = (gameFrame - five) % 60;
+      const m = this.countdown;
+      if (!m.same(`${k}:${t}`)) {
+        m.begin();
+        m.anim(k, t);
+        m.finish(this.kit.timerPos[0], this.kit.timerPos[1]);
+      }
+      r.drawSkeleton(m.sk, "opa");
+      r.drawSkeleton(m.sk, "xlu");
+      out.timer = `${5 - k}`;
+    } else if (this.timer && tm) {
+      const t = this.timer;
+      out.timer = `${String(tm.minutes).padStart(2, "0")}:${String(tm.seconds).padStart(2, "0")} ${String(tm.centis).padStart(2, "0")}`;
+      if (!t.same(out.timer)) {
+        t.begin();
+        // the digits' order in the model (iftime.c): the hours' colon, the minutes' colon, hours, minutes, hundredths, seconds
+        const digits = [0, 0, 0, 0, Math.floor(tm.minutes / 10) % 10, tm.minutes % 10, Math.floor(tm.centis / 10),
+                        tm.centis % 10, Math.floor(tm.seconds / 10), tm.seconds % 10];
+        for (let k = 2; k < 10; k++) t.mat(k + 1, 0, digits[k]);
+        t.hide(1); t.hide(3); t.hide(4); // no hours
+        t.finish(this.kit.timerPos[0], this.kit.timerPos[1]);
+      }
+      r.drawSkeleton(t.sk, "opa");
+      r.drawSkeleton(t.sk, "xlu");
+    }
+    // the marks, then Slippi's plates over them (all in one draw), then the numbers and icons
+    for (const p of this.players) {
+      const [px, py] = p.place;
+      // the mark: the series, in the port's color, a little right of the place
+      if (p.mark) {
+        const m = p.mark;
+        if (!m.same("mark")) {
+          m.begin();
+          m.mat(1, 0, markFrame(p.external));
+          m.color(1, portColor(p.colorIdx));
+          m.finish(px + 0.25, py);
+        }
+        r.drawSkeleton(m.sk, "opa");
+        r.drawSkeleton(m.sk, "xlu");
+      }
+      // Slippi's plate with the player's display name, under the percent
+      const name = this.words.get(`plate:${p.slot}`);
+      if (name) {
+        const cx = px + PLATE.dx, cy = py + PLATE.dy;
+        this.box(cx - PLATE.w / 2, cy - PLATE.h / 2, cx + PLATE.w / 2, cy + PLATE.h / 2, [0, 0, 0, PLATE.fill]);
+        this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, cy - 0.36 * PLATE_FONT + ref]);
+      }
+    }
+    this.flushWords(r);
+    for (const p of this.players) {
+      const a = actors.find((x) => x.player === p.slot);
+      const internalNow = a?.st.internalCharacterId ?? -1;
+      const [px, py] = p.place;
+      // the percent
+      const v = p.life.percentAt(f);
+      const hidden = v.scatter !== null && v.scatter > 90;
+      out.percents.push({ player: p.slot, percent: v.percent, hidden: v.scatter !== null });
+      if (p.num && !hidden) {
+        const m = p.num;
+        // (its entry animations are done by frame 31)
+        if (!m.same(`${v.percent}|${v.color}|${v.layout.dx}|${v.layout.shown}|${v.anim}|${Math.min(v.animFrame, 31)}|${v.spaced}|${v.offset.join()}`)) {
+          m.begin();
+          m.anim(v.anim, v.animFrame);
+          for (const k of [HUNDREDS, TENS, ONES, SIGN]) {
+            const j = k + 1;
+            if (k === SIGN) m.mat(j, 0, 0);
+            else m.mat(j, 0, v.layout.frame[k], 1);
+            m.color(j, v.color);
+            const [x, y] = m.trans(j);
+            m.setTrans(j, x + (v.spaced ? v.layout.dx[k] : 0) + v.offset[k][0], y + v.offset[k][1]);
+            if (!v.layout.shown[k]) m.hide(j);
+          }
+          m.finish(px, py);
+        }
+        r.drawSkeleton(m.sk, "opa");
+        r.drawSkeleton(m.sk, "xlu");
+      }
+      // the stock icons
+      if (p.stock) {
+        const s = p.life.stocksAt(f, p.external, internalNow, p.costume);
+        const m = p.stock;
+        if (!m.same(`${s.icons.join()}|${s.count}|${s.iconFrame}`)) {
+          m.begin();
+          m.hide(8); // the coins' count
+          m.hide(6); m.hide(7); // a stolen stock's icons
+          if (s.count <= 5) {
+            m.hide(14);
+            for (let k = 0; k < 5; k++) {
+              const j = k + 1;
+              if (s.icons[k] < 0) { m.hide(j); continue; }
+              m.anim(0, s.icons[k], j);
+              m.mat(j, 0, s.iconFrame);
+            }
+          } else {
+            // one icon and the count (ifStock_802F8298)
+            for (let k = 0; k < 5; k++) { const j = k + 1; m.anim(0, k === 0 ? 0 : 10, j); m.mat(j, 0, s.iconFrame); }
+            for (let k = 1; k < 5; k++) m.hide(k + 1);
+            if (s.count >= 10) { m.mat(16, 0, Math.floor(s.count / 10) % 10); m.mat(15, 0, s.count % 10); }
+            else { m.mat(16, 0, s.count); m.hide(15); }
+          }
+          m.finish(px, py);
+        }
+        r.drawSkeleton(m.sk, "opa");
+        r.drawSkeleton(m.sk, "xlu");
+        out.stocks.push(s.icons);
+      }
+    }
+    if (tracked) this.drawTracked(r, tracked);
+    else if (bank) this.drawBursts(r, f, bank);
+    this.drawSplash(r, f);
+    r.endOverlay();
+    this.last = out;
+  }
+
+  /** A lost stock's burst where its icon was (ifStock_802F8298's efSync
+   *  0x474: the common effects' generator 0xF7), in the HUD's space. Its
+   *  particles are run from the loss to this frame - forward a frame at a
+   *  time while playing, again from the loss after a jump. */
+  private drawBursts(r: Renderer, f: number, bank: EffectBank) {
+    const LIFE = 90;
+    const events: { frame: number; x: number; y: number }[] = [];
+    for (const p of this.players) {
+      const icons = p.stock;
+      if (!icons) continue;
+      for (const l of p.life.lossesBetween(f - LIFE, f)) {
+        const [ix, iy] = icons.rest(l.icon + 1);
+        events.push({ frame: l.frame, x: p.place[0] + ix, y: p.place[1] + iy });
+      }
+    }
+    const ps = this.bursts;
+    if (!events.length) { ps.clear(); this.burstsAt = -1; return; }
+    const from = Math.min(...events.map((e) => e.frame));
+    const key = events.map((e) => `${e.frame}:${e.x}`).join();
+    if (this.burstsAt !== f - 1 || this.burstsKey !== key) {
+      ps.clear();
+      ps.rng.seed(from * 2654435761);
+      this.burstsAt = from - 1;
+    }
+    for (let g = this.burstsAt + 1; g <= f; g++) {
+      for (const e of events) {
+        // (up the frame after the loss: made after the frame's particles ran)
+        if (e.frame + 1 !== g) continue;
+        const gen = ps.generator(bank, 0xf7);
+        if (gen) { gen.px = e.x; gen.py = e.y; gen.pz = 0; }
+      }
+      ps.step();
+    }
+    this.burstsAt = f;
+    this.burstsKey = key;
+    if (!ps.particles.length) return;
+    const built = buildParticles(ps.particles, { right: [1, 0, 0], up: [0, 1, 0] });
+    r.drawParticles(built.data, built.batches);
+  }
+  /** The bursts as the game ran them: the effect world's particles of the
+   *  HUD's list (made from the viewer track, in the one list and the one
+   *  random stream with the match's own), each moved from where the game's HUD
+   *  had its icon to where this one has it. */
+  private drawTracked(r: Renderer, t: TrackedBursts) {
+    if (!t.particles.length) return;
+    const shifts = new Map<string, [number, number] | null>();
+    const shift = (p: Particle): [number, number] | null => {
+      const tag = p.gen?.tag;
+      if (!tag) return null;
+      let s = shifts.get(tag);
+      if (s === undefined) {
+        const [, port, icon] = tag.split(":").map(Number);
+        const pl = this.players.find((x) => x.slot === port), at = t.places.get(tag);
+        s = null;
+        if (pl?.stock && at) {
+          const [ix, iy] = pl.stock.rest(icon + 1);
+          s = [pl.place[0] + ix - at[0], pl.place[1] + iy - at[1]];
+        }
+        shifts.set(tag, s);
+      }
+      return s;
+    };
+    const built = buildParticles(t.particles, { right: [1, 0, 0], up: [0, 1, 0] }, shift);
+    r.drawParticles(built.data, built.batches);
+  }
+  private bursts = new ParticleSystem();
+  private burstsAt = -1;
+  private burstsKey = "";
+
+  /** the magnifier's picture: the fighter from in front, flat, framed on its
+   *  camera bone, over the stage's colors for where it is (ifmagnify.c) */
+  private picture(r: Renderer, pic: RenderTarget, a: HudActor) {
+    const [bx, by, bz] = a.bone!;
+    const half = 6.4 * a.zoom;
+    // (drawn upside down: the texture's first row is the picture's top)
+    ortho(this.picVP, -half, half, half, -half, 0.1, 32768);
+    const view = lookAt(new Float32Array(16), [bx, by, bz + 300], [bx, by, bz]);
+    mul(this.picVP, this.picVP, view);
+    const bg = this.background(a.st.xPosition, a.st.yPosition);
+    r.overlay(this.picVP, view, pic, [bg[0], bg[1], bg[2], 1], true);
+    a.draw();
+    r.endOverlay();
+  }
+
+  /** ifMagnify_802FBBDC: the stage's nine colors, blended by where in (or
+   *  beyond) its camera range the fighter is */
+  private background(x: number, y: number): [number, number, number] {
+    const cols = this.stageColors, b = this.camBounds;
+    if (!cols || cols.length < 9 || !b) return [0, 0, 0];
+    const cx = 0.5 * (b.left + b.right), cy = 0.5 * (b.top + b.bottom);
+    const xc = x < b.left ? 0 : x > b.right ? 3 : x < cx ? 1 : 2;
+    const yc = y > b.top ? 0 : y < b.bottom ? 3 : y > cy ? 1 : 2;
+    const outX = x < b.left || x > b.right, outY = y > b.top || y < b.bottom;
+    const xb = outX ? 0 : xc === 1 ? 1 - (x - b.left) / (cx - b.left) : 1 - (x - cx) / (b.right - cx);
+    const yb = outY ? 0 : yc === 1 ? 1 - (b.top - y) / (b.top - cy) : 1 - (cy - y) / (cy - b.bottom);
+    const ids = CORNERS[yc * 4 + xc];
+    const c = ids.map((k) => cols[k]);
+    const xi = 1 - xb, yi = 1 - yb;
+    const w = [xb * yb, xi * yb, xb * yi, xi * yi];
+    return [0, 1, 2].map((ch) => (c[0][ch] * w[0] + c[1][ch] * w[1] + c[2][ch] * w[2] + c[3][ch] * w[3]) / 255) as [number, number, number];
+  }
+
+  /** if_2FD9.c: a player whose bubble sits on the screen's left or right
+   *  edge also gets the running chevrons at that edge's middle, in the
+   *  port's color, stacked 2.6 apart when several share an edge (humans in
+   *  the first four ports only) */
+  private drawArrows(r: Renderer, f: number, magnified: { p: Hud["players"][number]; sx: number; sy: number }[]): number[] {
+    const side = new Map<number, number>();
+    const W = edgeWidth(this.k);
+    for (const { p, sx, sy } of magnified) {
+      if (!p.arrow || !p.human || p.slot >= 4) continue;
+      const [ex] = edgePoint(sx - 320, -(sy - 240), W);
+      if (Math.abs(ex) >= W - 1e-4) side.set(p.slot, ex < 0 ? 1 : 2);
+    }
+    // (at x 25 in the game's picture: as far in from a wider picture's own edges)
+    const x = 25 + this.halfWidth() * (this.k - 1);
+    const STACK = [0, -1.3, -2.6, -3.9];
+    for (const [slot, kind] of side) {
+      const p = this.players.find((q) => q.slot === slot)!;
+      const below = [...side].filter(([s, k]) => k === kind && s < slot).length;
+      const all = [...side].filter(([, k]) => k === kind).length;
+      const m = p.arrow!;
+      m.begin();
+      const col = portColor(p.colorIdx);
+      // (its blink: hudlogic.ts chevronFrame)
+      for (let d = 0; d < 3; d++) { m.mat(1, 0, chevronFrame(f), 1, d, d, true); m.color(1, col, d); }
+      m.finish(kind === 1 ? -x : x, 2.6 * below + STACK[Math.max(0, all - 1)], 0, 1, kind === 1 ? 0 : Math.PI);
+      r.drawSkeleton(m.sk, "opa");
+      r.drawSkeleton(m.sk, "xlu");
+    }
+    return [...side.keys()];
+  }
+
+  /** the bubble at the screen's edge toward the fighter, its pointer turned to it */
+  private drawLupe(r: Renderer, p: Hud["players"][number], sx: number, sy: number) {
+    const m = p.lupe!;
+    const dx = sx - 320, dy = -(sy - 240);
+    const [ex, ey] = edgePoint(dx, dy, edgeWidth(this.k));
+    m.begin();
+    m.setRotZ(1, Math.atan2(dy, dx));
+    const col = portColor(p.colorIdx);
+    m.color(1, col);
+    m.color(2, col, 0);
+    m.finish(0.09125 * ex, 0.1 * ey);
+    r.drawSkeleton(m.sk, "opa");
+    r.drawSkeleton(m.sk, "xlu");
+  }
+}
+
+// ifMagnify_802FBBDC's table: for each of the 4 x 4 regions (above, upper
+// half, lower half, below by left, left half, right half, right), the four
+// stage colors blended there
+const CORNERS: number[][] = [
+  [0, 0, 0, 0], [0, 1, 0, 1], [1, 2, 1, 2], [2, 2, 2, 2],
+  [0, 0, 3, 3], [0, 1, 3, 4], [1, 2, 4, 5], [2, 2, 5, 5],
+  [3, 3, 6, 6], [3, 4, 6, 7], [4, 5, 7, 8], [5, 5, 8, 8],
+  [6, 6, 6, 6], [6, 7, 6, 7], [7, 8, 7, 8], [8, 8, 8, 8],
+];
+
+/** a point of the world on the game's 640 x 480 screen (x right, y down), and its w */
+export function toScreen(vp: Mat, p: [number, number, number], k = 1): [number, number, number] {
+  const [x, y, z] = p;
+  const cw = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
+  const nx = (vp[0] * x + vp[4] * y + vp[8] * z + vp[12]) / cw;
+  const ny = (vp[1] * x + vp[5] * y + vp[9] * z + vp[13]) / cw;
+  // (a picture k times the game's width: its middle 640 is the game's screen)
+  return [320 + nx * 320 * k, (1 - ny) * 240, cw];
+}
+
+function ortho(out: Mat, left: number, right: number, bottom: number, top: number, near: number, far: number): Mat {
+  out.fill(0);
+  out[0] = 2 / (right - left);
+  out[5] = 2 / (top - bottom);
+  out[10] = -2 / (far - near);
+  out[12] = -(right + left) / (right - left);
+  out[13] = -(top + bottom) / (top - bottom);
+  out[14] = -(far + near) / (far - near);
+  out[15] = 1;
+  return out;
+}
+
+/** the stage's nine magnifier colors (grGroundParam +0xB8, four bytes each) */
+export function stageMagnifierColors(buf: ArrayBuffer): [number, number, number][] | null {
+  try {
+    const a = parseArchive(buf);
+    const g = a.publics.get("grGroundParam");
+    if (g === undefined) return null;
+    const out: [number, number, number][] = [];
+    for (let k = 0; k < 9; k++) {
+      const o = g + 0xb8 + k * 4;
+      out.push([a.data.getUint8(o), a.data.getUint8(o + 1), a.data.getUint8(o + 2)]);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+

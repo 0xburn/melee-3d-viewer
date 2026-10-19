@@ -1,0 +1,430 @@
+/* The embeddable replay player: the Slippi Lab viewer, driven by the page
+ * that embeds it (or by its URL), drawing with the game's own models when it
+ * can and with Slippi Lab's line art when asked to.
+ *
+ * Which viewer: the 3D one, read from your own game files (render3d/files.ts:
+ * a game/ folder beside the page, ?files=<url>, or files handed over with a
+ * {type: "gameFiles"} message). ?renderer=svg or ?renderer=3d in the URL
+ * chooses (3D by default). If the 3D viewer cannot run here at all (no game
+ * files, no WebGL 2) it says why where the picture would be; if it fails to
+ * load or draw something it tries again on its own.
+ *
+ * URL parameters: replayUrl, name, frame (game frame, -123 = first),
+ * trackUrl (the replay's viewer track), files, renderer, zoom, look=480,
+ * crt=<off|trinitron|pvm>, controllers=<both|left|right|you|opponent|off>,
+ * you=<port 1-4>, mini=1.
+ *
+ * Messages in (window.postMessage from the parent):
+ *   {type: "load", url, name?, frame?, trackUrl?}
+ *                                        load a replay; frame is the game
+ *                                        frame (-123 = first), paused there;
+ *                                        trackUrl its viewer track (the JSON
+ *                                        the simulator writes), if any
+ *   {type: "gameFiles", files}           read the game files from these File
+ *                                        objects (a folder picker's) from now on
+ *   {type: "seek", frame}                jump to a game frame
+ *   {type: "ghosts", ghosts: [{url, label, color}]}
+ *                                        draw these replays over this one,
+ *                                        frame for frame (simulated branches)
+ *   {type: "range", start, end}          play/seek only between these game
+ *                                        frames, looping; start null = all
+ *   {type: "play"} / {type: "pause"} / {type: "toggle"}
+ *   {type: "renderer", renderer}         draw in 3D ("3d") or the simple
+ *                                        line art ("svg") from now on, the
+ *                                        replay kept where it is
+ *   {type: "look", look480}              the 3D player's 480p look on (true)
+ *                                        or off, on the spot
+ *   {type: "view", view}                 one view choice, on the spot:
+ *                                        "simple", "3d" or "console" (3D
+ *                                        with the 480p look)
+ *   {type: "crt", crt, curve}            the TV the Console view is shown
+ *                                        on, on the spot: "off",
+ *                                        "trinitron" or "pvm" (crt.ts),
+ *                                        and how much its tube curves (0
+ *                                        flat to CURVE_MAX)
+ *   {type: "controllers", show, you?}    the Controller overlay, on the spot,
+ *                                        in every view: whose controllers
+ *                                        ("both", "left", "right", "you",
+ *                                        "opponent" or "off"; you: the port,
+ *                                        1-4, that is "you") (Controllers.tsx)
+ *
+ * The picture is always the game's own shape (73:60, GameFrame), centered in
+ * whatever box the page gives it.
+ *
+ * Messages out (to the parent):
+ *   {type: "frame", frame, running}      whenever the frame changes
+ *   {type: "loaded", frames}             after a replay is ready
+ *   {type: "renderer", renderer, reason} which viewer is drawing ("3d" or
+ *                                        "svg") and, when 3D cannot run, why
+ *   {type: "track", state}               the viewer track: "ready",
+ *                                        "pending" or "none"
+ *   {type: "warming"}                    the 3D player is warming up
+ *   {type: "viewKey"}                    V pressed on the player: the page
+ *                                        may move every player to the next view
+ */
+import "~/icons.css";
+import { render } from "solid-js/web";
+import { batch, createEffect, createSignal, For, on, onCleanup, Show } from "solid-js";
+import { Viewer } from "~/components/viewer/Viewer";
+import { fileStore, load } from "~/state/fileStore";
+import { localLibrary } from "~/state/selectionStore";
+import {
+  jump,
+  setZoom,
+  pause,
+  replayStore,
+  setGhosts,
+  setLineArt,
+  setRange,
+  togglePause,
+} from "~/state/replayStore";
+import { parseReplay } from "~/parser/parser";
+import { decode } from "@shelacek/ubjson";
+import { look480, setCrtCurve, setCrtPreset, setLook480, Viewer3D } from "~/render3d/Viewer3D";
+import { CURVE_MAX, isCrtPreset } from "~/render3d/crt";
+import { Controllers } from "~/components/viewer/Controllers";
+import { isOverlayShow, type OverlayShow } from "~/viewer/controllerInputs";
+import { diagLoaded, diagLoading, diagRunning, diagView } from "~/diag";
+import { fileListSource, setFileSource, setTrackUrl, status } from "~/render3d/files";
+import "~/state/fileStore";
+import "~/state/replayStore";
+import "~/state/selectionStore";
+
+const FIRST_FRAME = -123;
+// asks again whether 3D can run (after game files were handed over)
+let recheck: () => void = () => {};
+// the renderer the page has asked for since this one opened (null: the setting's)
+const [asked, setAsked] = createSignal<"3d" | "svg" | null>(null);
+// the 480p look: the page asked (a {type: "look"}) or the URL says (?look=)
+// since this one opened, so the setting read at the start does not undo it
+let lookAsked = new URLSearchParams(location.search).has("look");
+// the same for the Console view's TV (a {type: "crt"}, or ?crt=)
+let crtAsked = new URLSearchParams(location.search).has("crt");
+// (a curve as the page sent it: a number from flat to the most, else flat)
+const curveOf = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.min(CURVE_MAX, Math.max(0, v)) : 0);
+// and the Controller overlay: whose, and your code (a {type: "controllers"}, or ?controllers=)
+const shownIn = new URLSearchParams(location.search).get("controllers");
+let controllersAsked = shownIn !== null;
+const [overlay, setOverlay] = createSignal<OverlayShow>(isOverlayShow(shownIn) ? shownIn : "off");
+// (which port is you in the replay shown, 0-3: ?you=<1-4> or the controllers message)
+const portOf = (v: unknown) => { const n = Number(v); return Number.isInteger(n) && n >= 1 && n <= 4 ? n - 1 : null; };
+const [you, setYou] = createSignal<number | null>(portOf(new URLSearchParams(location.search).get("you")));
+const MINI = new URLSearchParams(location.search).get("mini") === "1";
+// where the replay shown was loaded from
+const [source, setSource] = createSignal<string | null>(null);
+const toIndex = (frame: number) => Math.max(0, frame - FIRST_FRAME);
+
+function post(message: object) {
+  if (window.parent !== window) window.parent.postMessage(message, "*");
+}
+
+// A seek that arrives while a replay is still loading is kept and applied
+// once it is in: otherwise the load, finishing later, puts the frame back to
+// where it started and the page is told a frame nobody asked for (a page that
+// opens a game and seeks straight away - the mixup explorer - lost its seek).
+let loading = false;
+let seekAfterLoad: number | null = null;
+
+async function loadUrl(url: string, name: string, frame?: number, trackUrl?: string | null) {
+  loading = true;
+  seekAfterLoad = null;
+  setTrackUrl(url, trackUrl ?? null);
+  try {
+    await loadReplay(url, name, frame);
+  } catch (e) {
+    loading = false;
+    throw e;
+  }
+}
+
+async function loadReplay(url: string, name: string, frame?: number) {
+  diagLoading();
+  const blob = await (await fetch(url)).blob();
+  const start = frame === undefined ? 0 : toIndex(frame);
+  // (the replay before's viewer track goes before this one's frames come in: a simulated run watched in its
+  // game's place was drawn for a moment with the game's own track, its fighters in the game's animations)
+  if (source() !== url) setSource(null);
+  // a start frame > 0 keeps it paused there (Slippi Lab's own behavior)
+  await load([new File([blob], name)], start === 0 ? 1 : start);
+  const stub = fileStore.stubs[0];
+  if (stub !== undefined) await localLibrary.select(stub);
+  // (once it is in: the 3D viewer finds its viewer track by it)
+  setSource(url);
+}
+
+let ghostRequest = 0;
+// parsed runs, kept by url: turning one off and on again mid-loop should not
+// fetch and parse it a second time
+const ghostCache = new Map<string, ReturnType<typeof parseReplay>>();
+async function loadGhosts(list: { url: string; label?: string; color?: string }[]) {
+  const mine = ++ghostRequest;
+  const ghosts = await Promise.all(
+    list.map(async (g) => {
+      let replayData = ghostCache.get(g.url);
+      if (replayData === undefined) {
+        const buf = await (await fetch(g.url)).arrayBuffer();
+        replayData = parseReplay(decode(buf, { useTypedArrays: true }));
+        ghostCache.set(g.url, replayData);
+      }
+      return {
+        replayData,
+        label: g.label ?? "",
+        color: g.color ?? "#7c3aed",
+      };
+    })
+  );
+  if (mine === ghostRequest) setGhosts(ghosts);
+}
+
+window.addEventListener("message", (event) => {
+  const m = event.data;
+  if (!m || typeof m !== "object") return;
+  switch (m.type) {
+    case "load":
+      void loadUrl(m.url, m.name ?? "replay.slp", m.frame, typeof m.trackUrl === "string" ? m.trackUrl : null);
+      break;
+    case "gameFiles":
+      if (Array.isArray(m.files)) { setFileSource(fileListSource(m.files.filter((f: unknown) => f instanceof File))); recheck(); }
+      break;
+    case "seek":
+      if (loading) seekAfterLoad = toIndex(m.frame);
+      else jump(toIndex(m.frame));
+      break;
+    case "ghosts":
+      void loadGhosts(m.ghosts ?? []);
+      break;
+    case "range":
+      setRange(m.start === null || m.start === undefined ? undefined
+               : [toIndex(m.start), toIndex(m.end)]);
+      break;
+    case "play":
+      if (!replayStore.running) togglePause();
+      break;
+    case "pause":
+      pause();
+      break;
+    case "toggle":
+      togglePause();
+      break;
+    case "renderer":
+      if (m.renderer === "3d" || m.renderer === "svg") setAsked(m.renderer);
+      break;
+    case "look":
+      lookAsked = true;
+      setLook480(m.look480 === true);
+      break;
+    case "view":
+      // one view choice: simple, 3d or console (3D with the 480p look)
+      if (m.view === "simple" || m.view === "3d" || m.view === "console") {
+        setAsked(m.view === "simple" ? "svg" : "3d");
+        lookAsked = true;
+        setLook480(m.view === "console");
+      }
+      break;
+    case "crt":
+      if (isCrtPreset(m.crt)) { crtAsked = true; setCrtPreset(m.crt); setCrtCurve(curveOf(m.curve)); }
+      break;
+    case "controllers":
+      controllersAsked = true;
+      setOverlay(isOverlayShow(m.show) ? m.show : "off");
+      if (m.you !== undefined) setYou(portOf(m.you));
+      break;
+  }
+});
+
+// V on a player with the keyboard's focus: the page is told, and may cycle
+// the view. Only the key alone, never while typing in a field.
+function viewKey(e: KeyboardEvent) {
+  if (e.ctrlKey || e.altKey || e.metaKey || (e.key !== "v" && e.key !== "V")) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) return;
+  post({ type: "viewKey" });
+}
+document.addEventListener("keydown", viewKey);
+
+/** the page's drawing: 3D (failed: it cannot run here at all, `reason`
+ *  says why), the line art, or not known yet */
+type Mode = { renderer: "pending" | "3d" | "svg"; reason: string | null; failed: boolean };
+
+/** whether this browser can draw WebGL 2 at all */
+function webgl2(): boolean {
+  try {
+    return !!document.createElement("canvas").getContext("webgl2");
+  } catch {
+    return false;
+  }
+}
+
+function Embed() {
+  createEffect(
+    on(
+      () => [replayStore.frame, replayStore.running] as const,
+      ([frame, running]) =>
+        post({ type: "frame", frame: frame + FIRST_FRAME, running })
+    )
+  );
+  // diagnostics (diag.ts): frame times are measured only while it plays
+  createEffect(on(() => replayStore.running, (running) => diagRunning(running)));
+  createEffect(
+    on(
+      () => replayStore.replayData,
+      (data) => {
+        if (!data) return;
+        loading = false;
+        diagLoaded(
+          data.settings.playerSettings.filter((p) => p).map((p) => p!.externalCharacterId),
+          data.settings.stageId ?? null
+        );
+        post({ type: "loaded", frames: data.frames.length });
+        if (seekAfterLoad !== null) {
+          jump(seekAfterLoad);
+          seekAfterLoad = null;
+        }
+      }
+    )
+  );
+
+  const params = new URLSearchParams(location.search);
+  const zoom = Number(params.get("zoom"));
+  if (zoom > 0) setZoom(zoom);
+  const url = params.get("replayUrl");
+  if (url !== null) {
+    const frame = params.get("frame");
+    void loadUrl(url, params.get("name") ?? "replay.slp",
+                 frame === null ? undefined : Number(frame), params.get("trackUrl"));
+  }
+
+  const [mode, setMode] = createSignal<Mode>({ renderer: "pending", reason: null, failed: false });
+  const forced = params.get("renderer");
+  const [st, setSt] = createSignal<Awaited<ReturnType<typeof status>>>();
+  // 3D chosen: drawn by the 3D player, whatever happens to it. Only
+  // when it cannot run here at all (no WebGL 2, no game files) does the
+  // player say so, plainly, where the picture would be (failed, its reason)
+  const pick3d = (s: Awaited<ReturnType<typeof status>>): Mode => {
+    const why = !s.available ? s.reason : webgl2() ? null : "this browser cannot draw WebGL 2";
+    return { renderer: "3d", reason: why, failed: why !== null };
+  };
+  const check = () => status().then((s) => {
+    const want = forced === "svg" ? false : forced === "3d" ? true : s.enabled;
+    setMode(want && asked() !== "svg" ? pick3d(s) : { renderer: "svg", reason: "line art asked for", failed: false });
+    if (!lookAsked) setLook480(s.look480 === true);
+    if (!crtAsked && isCrtPreset(s.crt)) { setCrtPreset(s.crt); setCrtCurve(curveOf(s.curve)); }
+    if (!controllersAsked) setOverlay(isOverlayShow(s.controller_overlay) ? s.controller_overlay : "off");
+    setSt(s);
+  });
+  recheck = () => { void check(); };
+  void check();
+  // the page's 3D / Simple choice, switched on the spot: the replay, the
+  // frame and the ghosts stay; only the drawing changes
+  createEffect(() => {
+    const a = asked(), s = st();
+    if (a === null || !s) return;
+    setMode(a === "3d" ? pick3d(s) : { renderer: "svg", reason: "line art asked for", failed: false });
+  });
+  // The 3D player never gives up and never switches to the line art itself.
+  // One that fails, stalls or loses its picture is tried again: before its
+  // first frame, in its place, its Loading cover up; after it, behind the
+  // last picture it drew, with a quiet "Reconnecting…" in the corner, the
+  // replay playing on - the new try takes over at the frame it has reached.
+  // Again 2.5 s after a failure, at once after a stall or a lost picture,
+  // and at once when the tab is shown again
+  const RETRY_MS = 2500;
+  let tries = 1;
+  const [shownTry, setShownTry] = createSignal(1);
+  const [nextTry, setNextTry] = createSignal<number | null>(null);
+  const [reconnecting, setReconnecting] = createSignal(false);
+  const drew = new Set<number>();
+  let retryTimer = 0, retryDue = false;
+  const tryAgain = (ms: number) => {
+    clearTimeout(retryTimer);
+    retryDue = true;
+    retryTimer = setTimeout(() => {
+      retryDue = false;
+      tries++;
+      if (drew.has(shownTry())) setNextTry(tries);
+      else setShownTry(tries);
+    }, ms) as unknown as number;
+  };
+  const failed3d = (id: number, reason: string, ms: number) => {
+    console.warn("3D replay viewer: trying again:", reason);
+    if (id === nextTry()) { tryAgain(RETRY_MS); return; }
+    if (id !== shownTry()) return;
+    if (drew.has(id)) setReconnecting(true);
+    tryAgain(ms);
+  };
+  const ready3d = (id: number) => {
+    drew.add(id);
+    if (id === nextTry()) batch(() => { setShownTry(id); setNextTry(null); setReconnecting(false); });
+  };
+  const shown = () => { if (retryDue && document.visibilityState === "visible") tryAgain(0); };
+  document.addEventListener("visibilitychange", shown);
+  onCleanup(() => { document.removeEventListener("visibilitychange", shown); clearTimeout(retryTimer); });
+  // which view is drawing, for diagnostics: each view's frame times apart
+  createEffect(() => {
+    const m = mode();
+    if (m.renderer !== "pending") diagView(m.renderer === "svg" ? "simple" : look480() ? "console" : "3d", MINI);
+  });
+  createEffect(on(mode, (m) => {
+    if (m.renderer !== "pending") post({ type: "renderer", renderer: m.renderer, reason: m.reason });
+    // the line art's own per-frame work only while it is the one drawing
+    setLineArt(m.renderer === "svg");
+  }));
+
+  return (
+    <>
+      <div class="flex h-screen flex-col overflow-hidden bg-white" data-renderer={mode().renderer}>
+        <Show
+          when={replayStore.replayData && mode().renderer !== "pending"}
+          fallback={
+            <div class="flex h-full items-center justify-center text-slate-500">
+              {fileStore.parseProgress > 0 ? "Reading replay…" : "No replay loaded"}
+            </div>
+          }
+        >
+          <div class="relative flex min-h-0 flex-1 flex-col">
+            <Show when={mode().renderer === "3d"}>
+              <Show when={!mode().failed} fallback={
+                <div class="flex min-h-0 flex-1 items-center justify-center bg-slate-900 px-6 text-center text-sm text-slate-300"
+                     data-3d-unavailable>
+                  3D can't run here: {mode().reason}
+                </div>
+              }>
+                {/* the try on screen, and one loading unseen behind it */}
+                <For each={nextTry() === null ? [shownTry()] : [shownTry(), nextTry()!]}>
+                  {(id) => (
+                    <div class={id === shownTry() ? "flex min-h-0 flex-1 flex-col"
+                                                  : "pointer-events-none absolute inset-0 flex flex-col opacity-0"}
+                         data-3d-try={id}>
+                      <Viewer3D onFail={(r) => failed3d(id, r, RETRY_MS)} onStall={(r) => failed3d(id, r, 0)}
+                                onLost={(r) => failed3d(id, r, 0)} onReady={() => ready3d(id)}
+                                quiet={id !== shownTry()} source={source()}
+                                corner={<>
+                                  <Show when={overlay() !== "off" && id === shownTry()}><Controllers show={overlay()} you={you()} /></Show>
+                                  {/* (in the picture's own corner, over its last frame) */}
+                                  <Show when={reconnecting() && id === shownTry()}>
+                                    <div class="pointer-events-none absolute right-1.5 top-1.5 z-20 flex items-center gap-1.5 rounded-md bg-slate-900/75 px-2 py-1 text-[11px] font-medium text-slate-200"
+                                         data-reconnecting>
+                                      <span class="h-2.5 w-2.5 animate-spin rounded-full border border-slate-500 border-t-slate-200" />
+                                      Reconnecting…
+                                    </div>
+                                  </Show>
+                                </>} />
+                    </div>
+                  )}
+                </For>
+              </Show>
+            </Show>
+            <Show when={mode().renderer === "svg"}>
+              <Viewer mini={MINI} corner={<Show when={overlay() !== "off"}><Controllers show={overlay()} you={you()} /></Show>} />
+            </Show>
+          </div>
+        </Show>
+      </div>
+      {/* no toasts over the game: the 3D player's own Loading says it, and
+          the line art's "Reading replay" */}
+    </>
+  );
+}
+
+const root = document.querySelector("#root");
+if (root !== null) render(Embed, root);
