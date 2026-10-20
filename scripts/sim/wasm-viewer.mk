@@ -42,6 +42,12 @@ $(WASM_OBJ_DIR)/gameplay/MSL/trigf.o $(WASM_OBJ_DIR)/src/runtime/math.o: WASM_OP
 WASM_CFLAGS = $(CFLAGS) $(HOSTED_LEGACY_CFLAGS) $(WASM_OPT_FLAGS)
 endif
 
+# MSL's frexp (src/MSL/math_1.c) reads a double's words in the PPC's order and
+# no game code calls it; linked in, it replaces libc's frexp, which the Wasm
+# libc's printf uses, and every "%g" the viewer track writes then reads out of
+# bounds. Its definition is renamed in this one object for the viewer's build.
+$(WASM_OBJ_DIR)/gameplay/MSL/math_1.o: WASM_CPPFLAGS += -Dfrexp=msl_math_1_frexp
+
 WASM_VIEWER_EXPORTS := ["_malloc","_free","_msl_viewer_create","_msl_viewer_destroy","_msl_viewer_step","_msl_viewer_track","_msl_viewer_output"]
 
 .PHONY: wasm-viewer wasm-objects
