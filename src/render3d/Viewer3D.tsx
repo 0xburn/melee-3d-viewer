@@ -1663,13 +1663,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // the fighters' shadows (shadow.ts): each drawn flat into its own picture
     // through its shadow camera, before the stage, which takes them
     const shadowMaps: { tex: WebGLTexture; mtx: Float32Array }[] = [];
-    const sl = st && !layersOff.fighters && ek ? st.playerLighting.shadowLight(fno) : null;
-    if (st && sl && ek) {
+    const sl = st && !layersOff.fighters ? st.playerLighting.shadowLight(fno) : null;
+    if (st && sl) {
       const scales = playerScales(data.settings.playerSettings);
       for (const { f: fi, a } of posed) {
         if (shared.has(fi)) poseActor(fi, a);
         const look = lookOf(fi, a, actorKey(a.player, a.nana));
-        const joint = partToModelJoint(a.st.internalCharacterId, ek.partToJoint(a.st.internalCharacterId, fi.cameraPart));
+        // (the camera bone, ftLib_800866DC: attributes +0x16C name it by its place in the fighter's bone list,
+        // fp->parts, not by a common part's name)
+        const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
         if (joint < 0 || joint >= fi.skeleton.n) continue;
         const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
         const bone = [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]);
@@ -2060,8 +2062,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
         if (!fi) continue;
         const drawn = posed.some((p) => p.a === a);
-        // (a part number: the model's joint past its part list's gaps, parts.ts)
-        const joint = ek ? partToModelJoint(a.st.internalCharacterId, ek.partToJoint(a.st.internalCharacterId, fi.cameraPart)) : -1;
+        // (the camera bone: its place in the fighter's bone list, ftLib_800866DC; the model's joint past its
+        // part list's gaps, parts.ts)
+        const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
         let bone: [number, number, number] | null = null;
         if (drawn && joint >= 0 && joint < fi.skeleton.n) {
           const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
