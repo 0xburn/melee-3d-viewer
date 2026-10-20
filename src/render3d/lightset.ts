@@ -10,6 +10,7 @@
  * first ambient light is the ambient, at most eight others. */
 import { Light, aobjFrame, sample, splineAt } from "./hsd";
 import { GxLight, LOBJ, distAttn, spotAttn } from "./gx";
+import { pickShadowLight } from "./shadow";
 
 /** what the renderer's shaders take */
 export interface Lighting {
@@ -106,6 +107,17 @@ export class LightSet {
     this.last = frame;
     this.lit = this.build(frame);
     return this.lit;
+  }
+
+  /** the light the fighters' shadows come from at a frame (shadow.ts
+   *  pickShadowLight): its place and interest, at the stage's scale as the
+   *  set's own places are */
+  shadowLight(frame: number): { pos: number[]; interest: number[] | null } | null {
+    const all = this.lights.map((l) => this.animate(l, frame));
+    const l = pickShadowLight(all);
+    if (!l || !l.position) return null;
+    const k = l.animatedPlace ? 1 : this.scale;
+    return { pos: l.position.map((v) => v * k), interest: l.interest ? l.interest.map((v) => v * k) : null };
   }
 
   private build(frame: number): Lighting {

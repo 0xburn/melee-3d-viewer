@@ -34,7 +34,8 @@ import type { Archive, Image, PObj, Tlut } from "./hsd";
 import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
-import { blockOf, evalMaterial, tevDescStep, textureMatrix } from "./gx";
+import { RENDER, blockOf, evalMaterial, tevDescStep, textureMatrix } from "./gx";
+import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
 import { Mat, invert, mul } from "./math";
@@ -188,12 +189,14 @@ interface Inner {
   mirrored: boolean;
   lighting: Lighting | null;
   overlayVP: Mat | null; viewProj: Mat;
+  shadowMaps: { mtx: Mat }[];
   staticsOf(s: Drawable["state"]): { p: MatProgram; I: Int32Array; F: Float32Array };
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
-                               "overlayVP", "viewProj", "staticsOf", "begin", "setFog", "setTint", "drawOne",
+                               "overlayVP", "viewProj", "shadowMaps", "staticsOf", "begin", "setFog", "setTint", "beginShadow",
+                               "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
@@ -207,6 +210,8 @@ export class DrawLog {
   private fog: Fog | null = null;
   /** the fighter's color animation the draws are made with (setTint) */
   private tint: Tint | null = null;
+  /** a shadow being made: the stage's shadow intensity it is drawn in (beginShadow), else null */
+  private cast: number | null = null;
   private inputs = probes();
   private prims = new WeakMap<PObj, [string, number, string][]>();
   private images = new WeakMap<Image, string | null>();
@@ -236,6 +241,8 @@ export class DrawLog {
     wrap("begin", () => this.newFrame());
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
     wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
+    wrap("beginShadow", (a) => { this.cast = a[3] as number; });  // (the stage's intensity, 0..255)
+    wrap("endShadow", () => { this.cast = null; });
     wrap("drawOne", (a, drew) => { if (drew) this.mesh(a[0] as Drawable, a[1] !== null, a[2] as Skeleton | null); });
     wrap("drawGeometry", (a, drew) => { if (drew) this.add({ kind: "depth", obj: (a[0] as Drawable).key }); });
     wrap("drawParticles", (a) => this.particles(a[0] as Float32Array, a[1] as Batch[]));
@@ -338,6 +345,38 @@ export class DrawLog {
                ambient: Array.from(d.state.ambient).map((v) => rnd(v)), spec: Array.from(d.state.specular).map((v) => rnd(v)) },
       probe: this.probe(d, p),
     };
+    // (a shadow being made: the mesh in one flat gray, no texture, no depth, color only: HSD_ShadowStartRender)
+    if (this.cast !== null) {
+      const g = this.cast, gray = g / 255;
+      Object.assign(rec, { kind: "mesh", tex: [], fog: null, lights: [], alpha_test: ["always", 0, "and", "always", 0],
+                           z: { test: false, func: "always", write: false }, cmask: { color: true, alpha: false },
+                           blend: { on: false, src: null, dst: null, sub: false, logic: null },
+                           shade: { channel: 0, vertexBase: false, lit: false, specular: false, bump: -1, stages: [],
+                                    diffuse: [gray, gray, gray, 1], alpha: 1, ambient: [0, 0, 0, 1], spec: [0, 0, 0, 1] },
+                           probe: this.inputs.map(() => [g, g, g, 255]), shadow: "cast" });
+      this.add(rec);
+      return;
+    }
+    // (a material that takes the fighters' shadows: each one a texture after its own, sampled where the point
+    // falls through the shadow's matrix, its color times the texel)
+    const nShadow = d.state.mobj.renderMode & RENDER.SHADOW ? s.shadowMaps.length : 0;
+    for (let k = 0; k < nShadow; k++) {
+      const m = s.shadowMaps[k].mtx;
+      (rec.tex as Record<string, unknown>[]).push({
+        map: p.textures.length + k, id: "efb:shadow", format: 0, w: SHADOW_SIZE, h: SHADOW_SIZE, wrap: ["clamp", "clamp"],
+        mag: "near", min: "linear", lod_bias: 0, texgen: "shadow",
+        mtx: [0, 1].map((r) => [m[r], m[4 + r], m[8 + r], m[12 + r]].map((v) => rnd(v))) });
+    }
+    if (nShadow && Array.isArray(rec.probe)) {
+      rec.probe = (rec.probe as number[][]).map((v, n) => {
+        const out = v.slice();
+        for (let k = 0; k < nShadow; k++) {
+          const tx = this.inputs[n].t[(p.textures.length + k) & 7];
+          for (let i = 0; i < 3; i++) out[i] = Math.round(Math.min(Math.max(out[i] / 255 * tx[i], 0), 1) * 255);
+        }
+        return out;
+      });
+    }
     // (a fighter's color animation: its color is in the probe, blended over last as the shader does)
     const t = this.tint;
     if (t && (t.color || t.light)) {

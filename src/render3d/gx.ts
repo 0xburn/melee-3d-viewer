@@ -135,6 +135,7 @@ export function specularChannel(lights: GxLight[], shininess: number, eye: V3, j
 
 export const RENDER = {
   CONSTANT: 1, VERTEX: 2, DIFFUSE: 4, SPECULAR: 8, XLU: 1 << 30, NO_ZUPDATE: 1 << 29, ZMODE_ALWAYS: 1 << 27,
+  SHADOW: 1 << 26,
 };
 export const TEX = {
   COORD_MASK: 0xf, LIGHTMAP_DIFFUSE: 1 << 4, LIGHTMAP_SPECULAR: 1 << 5, LIGHTMAP_AMBIENT: 1 << 6,

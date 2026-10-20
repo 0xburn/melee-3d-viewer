@@ -9,7 +9,7 @@
  */
 import { AObj, Archive, DObj, Image, JObj, MatAnim, loadAnimJoint, loadJoint, loadLights, loadMatAnimJoint, parseArchive, ptr } from "./hsd";
 import { DEFAULT_LIGHTS, LightSet, applyOverrides } from "./lightset";
-import type { Fog } from "./gx";
+import { type Fog, RENDER } from "./gx";
 import { Mat, ident } from "./math";
 import { Skeleton, type Drawable } from "./skeleton";
 import type { Lettering } from "./sistext";
@@ -278,6 +278,8 @@ export class Stage {
   parts: Part[] = [];
   info: StageInfo;
   scale: number;
+  /** the fighters' shadows' gray (grGroundParam +0x04) */
+  shadowIntensity: number;
   /** the lights the stage is lit by (the flagged part's list, as the stage
    *  file's overrides leave it) */
   lighting: LightSet;
@@ -356,8 +358,21 @@ export class Stage {
     // grGroundParam starts with the stage's scale (Battlefield 0.8, Yoshi's 0.7, ...)
     const gp = a.publics.get("grGroundParam");
     this.scale = gp === undefined ? 1 : a.data.getFloat32(gp);
+    // (and its fighters' shadows' gray, an s16 at +0x04: Ground_801C0508, 128 without one)
+    this.shadowIntensity = gp === undefined ? 128 : a.data.getInt16(gp + 4);
     const head = a.publics.get("map_head");
     if (head === undefined) throw new Error("not a stage file (no map_head)");
+    // the materials that take the fighters' shadows: map_head +0x28 lists them
+    // (+0x2C how many), and the game sets RENDER_SHADOW in each one's render
+    // mode as the file is read (grDatFiles_801C6228) - here too, before the
+    // parts are made from them
+    {
+      const list = ptr(a, head + 0x28), n = a.data.getUint32(head + 0x2c);
+      for (let i = 0; list !== null && i < n && i < 4096; i++) {
+        const m = ptr(a, list + i * 4);
+        if (m !== null) a.data.setUint32(m + 4, (a.data.getUint32(m + 4) | RENDER.SHADOW) >>> 0);
+      }
+    }
     this.floors = readFloors(a);
     this.floorTest = readFloorTest(a);
     this.collision = readCollision(a);
