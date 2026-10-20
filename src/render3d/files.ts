@@ -24,6 +24,7 @@ import { HudKit, stageMagnifierColors } from "./hud";
 import { pageCache, sharedPromise, trim } from "../state/pageCache";
 import { decodeTrack } from "./trackcodec";
 import { motionTableFromDol, textFontFromDol } from "./dol";
+import { plateFontFromDol } from "./plates";
 import type { ViewerTrack } from "./track";
 import type { GameFilesFrom } from "../sim/protocol";
 
@@ -353,6 +354,8 @@ export function hud(): Promise<HudKit> {
   hudKit ??= file("IfAll.usd").catch(() => file("IfAll.dat")).then(async (b) => {
     const kit = new HudKit(b);
     try { kit.common(await file("PlCo.dat")); } catch { /* the game's usual counts */ }
+    // the plates' letters: the game's own font, from its executable (the canvas letters without it)
+    try { kit.plates = plateFontFromDol(await executable()); } catch { /* the canvas letters */ }
     return kit;
   });
   hudKit.catch(() => { hudKit = undefined; });

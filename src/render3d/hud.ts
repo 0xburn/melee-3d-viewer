@@ -29,13 +29,17 @@ import {
   FIRST_FRAME, GO_FRAME, HUNDREDS, markFrame, ONES, PlayerHud, portColor, portColorIndex, SIGN, TAG_IDLE, TAG_LAUNCH, TAG_LAUNCH_SPEED,
   TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
 } from "./hudlogic";
-import { PLATE_FONT, quad, tagText, textPicture } from "./hudtext";
+import { PLATE_FONT, quad, tagText, texQuad, textPicture } from "./hudtext";
+import { glyphAtlas, PLATE_FULL, plateText, type PlateFont, type PlateText } from "./plates";
 import { hudSlot, hudSlotsMode, outerSlots, type HudSlots } from "../common/hudslots";
 
 // Slippi's name plate (its playback, 1285 x 1056 frames): 254 x 31 pixels, its
 // middle 16.5 pixels right of the percent's place and 1 unit below it, black at
 // a third (in the HUD camera's units)
 const PLATE = { dx: 0.76, dy: -1.02, w: 11.68, h: 1.425, fill: 0.34 };
+// where the name's glyphs sit on it: the top of their quads below the plate's middle (HUD units; measured
+// against the game's quads), the name centered on the plate's middle
+const PLATE_TEXT_TOP = 0;
 
 // what it asks of the renderer (renderer.ts), by shape: that is a browser
 // module, which the checks, run outside a browser, cannot type
@@ -205,6 +209,8 @@ export class HudKit {
   readonly countdown: ModelDesc | null;
   /** ftCommonData's name-tag counts (PlCo.dat), when read */
   tags = { idle: TAG_IDLE, launch: TAG_LAUNCH, launchSpeed: TAG_LAUNCH_SPEED };
+  /** the game's own text font, from its executable (plates.ts), for the plates' names; null: the canvas letters */
+  plates: PlateFont | null = null;
 
   constructor(buf: ArrayBuffer) {
     const a = (this.a = parseArchive(buf));
@@ -331,6 +337,30 @@ export class Hud {
     const first = this.quads.length / 68;
     quad(this.quads, x0, top - pic.h, x0 + pic.w, top, 0, null);
     this.textBatches.push({ sprite: pic.sprite, additive: false, near: false, zwrite: false, nozcomp: true, first, count: 1 });
+  }
+  /** the plates' names this frame (plates.ts), each with where its plate's middle is: x, y after x, y */
+  private lettered: PlateText[] = [];
+  private letteredAt: number[] = [];
+  /** the names' glyphs as quads over the plates, all in one batch of the font's picture */
+  private letters() {
+    const font = this.kit.plates;
+    if (!font || !this.lettered.length) return;
+    const first = this.quads.length / 68;
+    let count = 0;
+    for (let n = 0; n < this.lettered.length; n++) {
+      const t = this.lettered[n], cx = this.letteredAt[n * 2], cy = this.letteredAt[n * 2 + 1], q = t.quads;
+      for (let k = 0; k < t.count; k++) {
+        const o = k * 8;
+        texQuad(this.quads, cx + q[o], cy + PLATE_TEXT_TOP + q[o + 3], cx + q[o + 2], cy + PLATE_TEXT_TOP + q[o + 1], 0,
+                q[o + 4], q[o + 5], q[o + 6], q[o + 7]);
+      }
+      count += t.count;
+    }
+    this.lettered.length = 0;
+    this.letteredAt.length = 0;
+    if (count) {
+      this.textBatches.push({ sprite: glyphAtlas(font).sprite, additive: false, near: false, zwrite: false, nozcomp: false, first, count });
+    }
   }
   private box(x0: number, y0: number, x1: number, y1: number, color: [number, number, number, number]) {
     const first = this.quads.length / 68;
@@ -586,10 +616,20 @@ export class Hud {
       const name = this.words.get(`plate:${p.slot}`);
       if (name) {
         const cx = px + PLATE.dx, cy = py + PLATE.dy;
-        this.box(cx - PLATE.w / 2, cy - PLATE.h / 2, cx + PLATE.w / 2, cy + PLATE.h / 2, [0, 0, 0, PLATE.fill]);
-        this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, cy - 0.36 * PLATE_FONT + ref]);
+        const font = this.kit.plates;
+        const text = font ? plateText(font, name) : null;
+        // the plate is as wide as its name wants, up to the measured plate
+        const half = (text ? Math.min(PLATE.w, text.width * (PLATE.w / PLATE_FULL)) : PLATE.w) / 2;
+        this.box(cx - half, cy - PLATE.h / 2, cx + half, cy + PLATE.h / 2, [0, 0, 0, PLATE.fill]);
+        if (text) {
+          this.lettered.push(text);
+          this.letteredAt.push(cx, cy);
+        } else {
+          this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, cy - 0.36 * PLATE_FONT + ref]);
+        }
       }
     }
+    this.letters();
     this.flushWords(r);
     for (const p of this.players) {
       const a = actors.find((x) => x.player === p.slot);

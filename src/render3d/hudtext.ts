@@ -126,3 +126,15 @@ export function quad(out: number[], x0: number, y0: number, x1: number, y1: numb
   v(x0, y0, 0, 0); v(x0, y1, 0, 1); v(x1, y1, 1, 1); v(x1, y0, 1, 0);
 }
 export const QUAD_FLOATS = FLOATS * 4;
+
+/** A textured quad over the rectangle (x0, y0) bottom left to (x1, y1) top right at depth z: white at `alpha`,
+ *  the picture's rectangle (u0, vTop) to (u1, vBottom) - the picture's rows run top down, as a glyph atlas keeps
+ *  them - drawn with the same layout as `quad`. */
+export function texQuad(out: number[], x0: number, y0: number, x1: number, y1: number, z: number,
+                        u0: number, vTop: number, u1: number, vBottom: number) {
+  // (position 3, texture 2, primary color 4, env color 4, the alpha compare always passing 3, textured 1)
+  out.push(x0, y0, z, u0, vBottom, 1, 1, 1, 1, 1, 1, 1, 0, 63, 0, 0, 1);
+  out.push(x0, y1, z, u0, vTop, 1, 1, 1, 1, 1, 1, 1, 0, 63, 0, 0, 1);
+  out.push(x1, y1, z, u1, vTop, 1, 1, 1, 1, 1, 1, 1, 0, 63, 0, 0, 1);
+  out.push(x1, y0, z, u1, vBottom, 1, 1, 1, 1, 1, 1, 1, 0, 63, 0, 0, 1);
+}
