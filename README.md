@@ -26,7 +26,15 @@ works too: `npm install`, then `npm run dev` / `npm run build`).
 deno install --allow-scripts
 deno run -A node_modules/vite/bin/vite.js            # dev server, http://127.0.0.1:5173/dev.html
 deno run -A node_modules/vite/bin/vite.js build      # static build into dist/
-deno test --no-check tests/                          # tests
+deno test --no-check --sloppy-imports tests/         # tests
+```
+
+A few tests read your game files (see below). They run when `MELEE_ASSETS`
+names that folder and may be read, and are skipped otherwise:
+
+```
+MELEE_ASSETS=<folder> deno test --no-check --sloppy-imports --allow-env --allow-read tests/
+deno run --sloppy-imports --allow-read scripts/check-effect-assets.ts <folder>   # every effect's model or generator is in your files
 ```
 
 `dist/` has `embed.html` (the player), `dev.html` (the dev page),
@@ -205,7 +213,7 @@ destroys the host's player. The extra simulation still costs CPU and memory,
 and can make backward seeks slower. A backend must report its simulation
 failures rather than keep playing incorrect sound.
 
-`deno test --no-check tests/` checks `src/audio.ts` against a fake player:
+`deno test --no-check --sloppy-imports tests/` checks `src/audio.ts` against a fake player:
 transport, rapid seeks, music, teardown, and turning sound off while it
 starts. It does not cover browsers or devices, and supplies no engine. The
 integration was also exercised in a host page with a Wasm simulator in the
