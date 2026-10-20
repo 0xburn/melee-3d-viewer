@@ -1,6 +1,7 @@
 import createRAF, { targetFPS } from "@solid-primitives/raf";
-import { batch, createEffect, createResource, createSignal } from "solid-js";
+import { batch, createEffect, createResource, createSignal, untrack } from "solid-js";
 import { createStore } from "solid-js/store";
+import { sound } from "~/audio";
 import {
   ActionName,
   actionNameById,
@@ -134,10 +135,7 @@ export function selectCustomAction(actionName: ActionName) {
 export function selectHighlight(nameAndHighlight: [string, Highlight]) {
   batch(() => {
     setReplayState("selectedHighlight", nameAndHighlight);
-    setReplayState(
-      "frame",
-      wrapFrame(replayState, nameAndHighlight[1].startFrame - 30)
-    );
+    jump(nameAndHighlight[1].startFrame - 30);
   });
 }
 
@@ -156,7 +154,7 @@ export function nextHighlight() {
   const nextIndex = wrapHighlight(replayState, currentIndex + 1);
   batch(() => {
     setReplayState("selectedHighlight", highlights[nextIndex]);
-    setReplayState("frame", highlights[nextIndex][1].startFrame - 30);
+    jump(highlights[nextIndex][1].startFrame - 30);
   });
 }
 
@@ -175,7 +173,7 @@ export function previousHighlight() {
   const previousIndex = wrapHighlight(replayState, currentIndex - 1);
   batch(() => {
     setReplayState("selectedHighlight", highlights[previousIndex]);
-    setReplayState("frame", highlights[previousIndex][1].startFrame - 30);
+    jump(highlights[previousIndex][1].startFrame - 30);
   });
 }
 
@@ -217,7 +215,13 @@ export function toggleFullscreen(): void {
 export function togglePause(): void {
   if (running()) stop();
   else if (playWanted) playWanted = false;
-  else begin();
+  else {
+    // (from the last frame, play starts again at the first: with sound on,
+    // playing stops at the last frame rather than wrapping around)
+    const data = replayState.replayData;
+    if (data && replayState.frame >= data.frames.length - 1) jump(0);
+    begin();
+  }
 }
 
 export function pause(): void {
@@ -277,11 +281,13 @@ export function ensureHighlights(): void {
 
 export function setRange(range?: [number, number]): void {
   setReplayState("range", range);
-  if (range) setReplayState("frame", (f) => wrapFrame(replayState, f));
+  if (range) jump(replayState.frame);
 }
 
 export function jump(target: number): void {
-  setReplayState("frame", wrapFrame(replayState, target));
+  const frame = wrapFrame(replayState, target);
+  sound.seek(frame);
+  setReplayState("frame", frame);
 }
 
 // percent is [0,1]
@@ -289,32 +295,52 @@ export function jumpPercent(percent: number): void {
   // inside a moment's range, percent of the range
   if (replayState.range) {
     const [a, b] = replayState.range;
-    setReplayState("frame", Math.round(a + (b - a) * percent));
+    jump(Math.round(a + (b - a) * percent));
     return;
   }
-  setReplayState(
-    "frame",
-    Math.round((replayState.replayData?.frames.length ?? 0) * percent)
-  );
+  jump(Math.round((replayState.replayData?.frames.length ?? 0) * percent));
 }
 
 export function adjust(delta: number): void {
-  setReplayState("frame", (f) => wrapFrame(replayState, f + delta));
+  // (through jump, so the sound follows a step or a skip too)
+  jump(replayState.frame + delta);
 }
 
 const [running, start, stop] = createRAF(
   targetFPS(
-    () =>
-      setReplayState("frame", (f) =>
-        wrapFrame(replayState, f + replayState.framesPerTick)
-      ),
+    () => {
+      // with sound on (audio.ts) the picture shows the frame being heard,
+      // holds while the sound catches up with a seek, and stops at the end;
+      // with it off, the next frame of the viewer's own clock
+      const audioFrame = sound.frame();
+      if (audioFrame === null) return;
+      if (audioFrame === undefined) {
+        setReplayState("frame", (f) =>
+          wrapFrame(replayState, f + replayState.framesPerTick)
+        );
+        return;
+      }
+      const last = (replayState.replayData?.frames.length ?? 1) - 1;
+      setReplayState("frame", Math.min(last, audioFrame));
+      if (audioFrame >= last) pause();
+    },
     () => replayState.fps
   )
 );
 createEffect(() => setReplayState("running", running()));
+// playing or paused and the speed, told to the sound (1 = the game's speed).
+// The frame is read untracked: playing moves it every tick, and seeks reach
+// the sound through jump
+createEffect(() => {
+  const playing = running();
+  const rate = (replayState.fps * replayState.framesPerTick) / 60;
+  sound.transport(playing, untrack(() => replayState.frame), rate);
+});
 
 createEffect(async () => {
   const selected = currentSelectionStore().data.selectedFileAndStub;
+  // (sound is off for a new replay, and opens this one when turned on)
+  sound.load(selected?.[0]);
   if (selected === undefined) {
     setReplayState(defaultReplayStoreState);
     return;

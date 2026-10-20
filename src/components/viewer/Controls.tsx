@@ -1,4 +1,11 @@
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import {
+  musicEnabled,
+  sound,
+  soundAvailable,
+  soundConfigured,
+  soundState,
+} from "~/audio";
 import { MinusIcon, PlusIcon } from "~/components/common/icons";
 import {
   replayStore,
@@ -118,6 +125,31 @@ export function Controls() {
     }
   }
 
+  // sound from the host page's player (audio.ts), when it set one up: the
+  // button turns it on at the frame shown, and off again (also while it is
+  // still starting)
+  function toggleSound(): void {
+    if (soundState() === "on" || soundState() === "loading") {
+      sound.disable();
+    } else {
+      sound.seek(replayStore.frame);
+      void sound.enable();
+    }
+  }
+
+  function soundLabel(): string {
+    switch (soundState()) {
+      case "loading":
+        return "Cancel sound";
+      case "on":
+        return "Sound on";
+      case "error":
+        return "Retry sound";
+      default:
+        return "Enable sound";
+    }
+  }
+
   let seekbarInput!: HTMLInputElement;
   let bar!: HTMLDivElement;
   // while the bar is not shown (a host page may hide it: it has
@@ -194,6 +226,27 @@ export function Controls() {
           update
         </div>
       </div>
+      <Show when={soundConfigured}>
+        <button
+          type="button"
+          class="rounded px-2 py-1 hover:bg-slate-200 disabled:opacity-50"
+          disabled={!soundAvailable()}
+          aria-pressed={soundState() === "on"}
+          onClick={() => toggleSound()}
+        >
+          {soundLabel()}
+        </button>
+        <Show when={soundState() === "on"}>
+          <label class="flex items-center gap-1 text-sm">
+            <input
+              type="checkbox"
+              checked={musicEnabled()}
+              onChange={(e) => sound.music(e.currentTarget.checked)}
+            />
+            Music
+          </label>
+        </Show>
+      </Show>
       <input
         id="seekbar"
         class="flex-grow accent-slippi-500"

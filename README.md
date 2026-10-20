@@ -26,6 +26,7 @@ works too: `npm install`, then `npm run dev` / `npm run build`).
 deno install --allow-scripts
 deno run -A node_modules/vite/bin/vite.js            # dev server, http://127.0.0.1:5173/dev.html
 deno run -A node_modules/vite/bin/vite.js build      # static build into dist/
+deno test --no-check tests/                          # tests
 ```
 
 `dist/` has `embed.html` (the player), `dev.html` (the dev page),
@@ -115,6 +116,71 @@ It is driven by `postMessage`: `load` (`url`, `name`, `frame`, `trackUrl`),
 (`simple`, `3d`, `console`), `look`, `crt`, `controllers`. It posts `frame`,
 `loaded`, `renderer`, `track`, `warming` and `viewKey` back to the parent. The
 full list, with fields, is at the top of `src/embed.tsx`.
+
+## Optional browser audio
+
+The viewer makes no sound by itself. A page that embeds it can supply a
+sound-only replay player; the viewer then shows a sound button, and while
+sound is on the picture follows the sound's PCM playback clock. Without that
+configuration nothing changes: no button, no extra simulation work, the
+viewer's own clock. This repository has no audio engine, simulator, AudioWorklet
+or game sound assets for it; the host page supplies the player and its assets.
+This is a draft of the viewer's side (`src/audio.ts`).
+
+The host sets its configuration before the embed entry script loads:
+
+```html
+<script>
+  globalThis.__MELEE_AUDIO_CONFIG__ = {
+    module: "/audio/player.mjs",
+    assetsUrl: "/audio/assets/index.bin",
+  };
+</script>
+```
+
+The module exports `ReplayPlayer`:
+
+- `new ReplayPlayer({ audioOnly: true, assetsUrl, music })`: sound only. It
+  does no rendering and starts no renderer workers (hiding a second canvas is
+  not enough).
+- `enableAudio()` unlocks the audio context synchronously, inside the user's
+  click, and returns a promise for when it is ready. `open(blob)` loads the
+  same replay and resolves once `ready` is true. The two may run at the same
+  time.
+- `seek(gameFrame, { resume })` clears the old sound at once, increments
+  `_videoEpoch` and cancels older seeks. `position` events carry
+  `{ videoEpoch, seeking }` in `CustomEvent.detail`; a seek is done when one
+  reports the current epoch. `_videoEpoch` is provisional: it is the existing
+  player's private field, and a public seek acknowledgement should replace it
+  before this contract is final.
+- `audioFrame`: the fractional game frame at the audio device's current PCM
+  playback time, or `null` until known. It must not run ahead of the
+  simulation. Game frames start at -123; the viewer's frame indexes start at 0.
+- `speed`, `setSpeed(rate)`, `setMusic(on)`: playback speed and music.
+  `destroy()` stops its workers and closes its audio context.
+- `error` and `audiointerrupted` events turn sound off; the viewer keeps
+  playing without it.
+
+A shared-memory Wasm backend needs the top-level page and the embedded
+document served with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`. Asset hosts must allow the
+site's origin, and the module and worklet files must be reachable by the
+browser. No server-side audio generation is needed.
+
+While sound is on, a seek shows its frame at once and the picture holds until
+the sound has caught up; the acknowledgement of an older seek is ignored.
+Pause, play and speed changes start the sound again at the frame shown. Music
+is turned on and off separately. Turning sound off, or loading another replay,
+destroys the host's player. The extra simulation still costs CPU and memory,
+and can make backward seeks slower. A backend must report its simulation
+failures rather than keep playing incorrect sound.
+
+`deno test --no-check tests/` checks `src/audio.ts` against a fake player:
+transport, rapid seeks, music, teardown, and turning sound off while it
+starts. It does not cover browsers or devices, and supplies no engine. The
+integration was also exercised in a host page with a Wasm simulator in the
+browser and an AudioWorklet; that host's admin controls, telemetry and private
+asset routes are not included here.
 
 ## Credits
 
