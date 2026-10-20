@@ -1796,6 +1796,14 @@ void main() {
   private mirrorViewProj: Mat = new Float32Array(16);
 
   /** the material's program, compiled on its first draw */
+  /** a material whose render mode changed: its program and packed block made
+   *  again on its next draw (HSD_MObjCompileTev) */
+  forgetMaterial(s: MatState) {
+    this.programs.delete(s);
+    this.statics.delete(s);
+    s.gl = undefined;
+  }
+
   program(s: MatState): MatProgram {
     let p = this.programs.get(s);
     if (!p) {

@@ -190,12 +190,13 @@ interface Inner {
   lighting: Lighting | null;
   overlayVP: Mat | null; viewProj: Mat;
   shadowMaps: { mtx: Mat }[];
+  live: WeakMap<Image, unknown>;
   staticsOf(s: Drawable["state"]): { p: MatProgram; I: Int32Array; F: Float32Array };
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
-                               "overlayVP", "viewProj", "shadowMaps", "staticsOf", "begin", "setFog", "setTint", "beginShadow",
+                               "overlayVP", "viewProj", "shadowMaps", "live", "staticsOf", "begin", "setFog", "setTint", "beginShadow",
                                "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere"] as const;
 
@@ -418,7 +419,10 @@ export class DrawLog {
     if (!t) return { id: null };
     const o = t.tobj;
     let id = this.images.get(t.image);
-    if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
+    // (a picture made at run time - the mirror's, one the page draws into, Stadium's screen - is a frame
+    // copy to the game, not the file's bytes)
+    if (this.inner.live.has(t.image)) id = "efb:live";
+    else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
     const m = textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
                             [t.rotX, t.rotY, t.rotate], o.repeatS, o.repeatT, o.wrapT);
     const rec: Record<string, unknown> = {

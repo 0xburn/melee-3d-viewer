@@ -1438,6 +1438,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (scene.screen && st.screen) {
         scene.screen.draw(fno);
         r.liveImage(st.screen.image, scene.screen.canvas, scene.screen.version);
+        // (a copy of the match is shown in the screen's constant green, the rest in its vertex colors)
+        const m = scene.screen.mode;
+        for (const s of st.setScreenConstant(m === 7 || m === 8, scene.screen.tint)) r.forgetMaterial(s);
       }
     }
     // the game clears to its stage's fog color (black without fog); the
@@ -2049,7 +2052,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const cw = m[3] * X + m[7] * Y + m[15];
         return [((m[0] * X + m[4] * Y + m[12]) / cw + 1) / 2, (1 - (m[1] * X + m[5] * Y + m[13]) / cw) / 2];
       });
-      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, sc.tint);
+      // (as it is: the screen's material lays its green on it, setScreenConstant)
+      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, [255, 255, 255]);
     }
     prof.mark("ghosts");
     // the game's HUD over it all (hud.ts)

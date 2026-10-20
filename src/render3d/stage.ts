@@ -11,7 +11,7 @@ import { AObj, Archive, DObj, Image, JObj, MatAnim, loadAnimJoint, loadJoint, lo
 import { DEFAULT_LIGHTS, LightSet, applyOverrides } from "./lightset";
 import { type Fog, RENDER } from "./gx";
 import { Mat, ident } from "./math";
-import { Skeleton, type Drawable } from "./skeleton";
+import { Skeleton, type Drawable, type MatState } from "./skeleton";
 import type { Lettering } from "./sistext";
 import { Prop } from "./prop";
 import type { StageCamera } from "./camera";
@@ -298,7 +298,27 @@ export class Stage {
   /** what the game's match camera takes from the stage (camera.ts), or null */
   camera: StageCamera | null = null;
   /** Pokemon Stadium: the big screen's image (the game renders into it) and its part */
-  screen: { image: Image; part: Part } | null = null;
+  screen: { image: Image; part: Part; states: MatState[] } | null = null;
+
+  /** Pokemon Stadium's screen's color source as its code sets it with what
+   *  it shows (grStadium_801D21E4): a copy of the match (modes 7, 8) in a
+   *  constant color, the screen's green, instead of its vertex colors;
+   *  the rest in its vertex colors. The materials whose mode changed (their
+   *  TEV made again: HSD_MObjCompileTev) */
+  setScreenConstant(on: boolean, color: [number, number, number]): MatState[] {
+    const out: MatState[] = [];
+    for (const s of this.screen?.states ?? []) {
+      const m = s.mobj, was = m.renderMode;
+      m.renderMode = on ? ((was & ~RENDER.VERTEX) | RENDER.CONSTANT) >>> 0 : ((was | RENDER.VERTEX) & ~RENDER.CONSTANT) >>> 0;
+      if (on) {
+        const c = color.map((v) => v / 255);
+        m.diffuse = [c[0], c[1], c[2], m.diffuse[3]];
+        s.diffuse.set(m.diffuse);
+      }
+      if (m.renderMode !== was) out.push(s);
+    }
+    return out;
+  }
   /** its floors' slopes (its collision data: collision.ts), or null without them */
   floors: Floors | null = null;
   /** its floor lines for the fighters' swinging parts (dynamics.ts), or null */
@@ -986,12 +1006,18 @@ export class Stage {
 const NO_DOBJS: DObj[] = [];
 
 /** the image a render target's texture shows, and its part */
-function screenOf(a: Archive, parts: Part[], name: RegExp): { image: Image; part: Part } | null {
+function screenOf(a: Archive, parts: Part[], name: RegExp): { image: Image; part: Part; states: MatState[] } | null {
   let off = -1;
   for (const [n, o] of a.publics) if (name.test(n)) off = o;
   for (const p of parts)
     for (const d of p.skeleton.drawables)
-      for (const t of d.state.tex) if (t.tobj.image.offset === off) return { image: t.tobj.image, part: p };
+      for (const t of d.state.tex) {
+        if (t.tobj.image.offset !== off) continue;
+        // (every material that shows it: the code changes their color source with what it shows)
+        const states = [...new Set(p.skeleton.drawables.filter((e) => e.state.tex.some((u) => u.tobj.image.offset === off))
+          .map((e) => e.state))];
+        return { image: t.tobj.image, part: p, states };
+      }
   return null;
 }
 

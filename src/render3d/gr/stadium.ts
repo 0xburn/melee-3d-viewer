@@ -483,7 +483,8 @@ export class StadiumScreen implements StageLogic {
   /** the part of the frame just drawn the screen shows (modes 7 and 8: the
    *  match's own picture), as fractions of the picture from its top left
    *  (x, y, w, h); null in the other modes. The renderer copies it
-   *  (Renderer.captureLive), scaled to the screen and in its green. */
+   *  (Renderer.captureLive), scaled to the screen; the screen's material
+   *  lays its green on it (Stage.setScreenConstant). */
   captureRect(where: ((player: number) => [number, number] | null)): [number, number, number, number] | null {
     const m = this.mode;
     if (m !== 7 && m !== 8) return null;
