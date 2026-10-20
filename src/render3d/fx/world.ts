@@ -1,3 +1,4 @@
+import { NativeCallbackClock, nativeEffectEvents, outgoingNativeScriptEvents, cutterAnimationFrame, nativeEffectFamily } from "./native-callbacks";
 import { itemTransitionEffects, iceTransitionEffects } from "../item-effects";
 /* 3D replay viewer: the game's effects, run alongside the replay.
  *
@@ -47,6 +48,11 @@ export interface SpawnCtx {
   by?: string;
   /** Explicit lifetime tag for item-attached generators. Impact bursts omit it. */
   tag?: string;
+  /** Age of a callback effect reconstructed when a seek enters mid-move. */
+  age?: number;
+  offset?: [number, number, number];
+  partFollow?: (part: number) => Float32Array | null;
+  cutterRelease?: number;
 }
 
 /** one piece of an effect in the learned table (effect-table.json, optional):
@@ -145,6 +151,11 @@ export interface ModelFx {
    *  place or on a joint: efLib_Create_Attach_Pos and the attach calls set the root's translation; a few
    *  models' roots have a place of their own in the file, 114 units toward the camera in one) */
   rootSet?: boolean;
+  offsetY?: number;
+  jabZ?: boolean;
+  cutter?: { releasedAt?: number };
+  rootRotationY?: boolean;
+  constrained?: boolean;
 }
 
 /** The effects whose model the game's dispatch marks with state bit 0x80
@@ -302,6 +313,7 @@ export class FxWorld {
   /** the last frame stepped */
   frame = Number.NEGATIVE_INFINITY;
   private tracks = new Map<string, Track>();
+  private nativeClocks = new Map<string, NativeCallbackClock>();
   private worlds = new Map<string, Float32Array>();
   private prevWorlds = new Map<string, Float32Array>();
   private owned = new Map<string, { action: number; gens: Generator[]; models: ModelFx[] }>();
@@ -369,6 +381,7 @@ export class FxWorld {
   readonly unknownCallbacks = new Set<string>();
   /** where a fighter's current move started: its frame and counter there */
   entryCounterOf: ((key: string, frame: number) => { entry: number; counter: number } | undefined) | null = null;
+  stateAt: ((key: string, frame: number) => PlayerState | undefined) | null = null;
 
   /** the color animations' scripts (PlCo.dat), and each fighter's running ones */
   colTables: ColAnimTables | null = null;
@@ -399,6 +412,7 @@ export class FxWorld {
     this.stageKept = null;
     this.models.length = 0;
     this.tracks.clear();
+    this.nativeClocks.clear();
     this.owned.clear();
     this.sts.clear();
     this.scriptStarted.clear();
@@ -507,8 +521,32 @@ export class FxWorld {
     return all.filter((p) => (p.linkNo === 1) === hud);
   }
 
+  /** Rebuild Cutter across state changes and paused frames, not from the
+   * current phase's animation counter. No mutable history survives a seek. */
+  private cutterHistory(a: ActorFrame, frame: number): { age: number; releasedAt?: number } {
+    const read = (f: number) => this.stateAt?.(a.key, f);
+    const family = nativeEffectFamily(4, a.st.actionStateId);
+    let start = frame;
+    while (start > 0) {
+      const prev = read(start - 1);
+      if (!prev || prev.internalCharacterId !== 4 || nativeEffectFamily(4, prev.actionStateId) !== family) break;
+      start--;
+    }
+    let age = 0, releasedAt: number | undefined;
+    for (let f = start; f <= frame; f++) {
+      const st = read(f) ?? a.st;
+      if (f > start && !effectsPaused(read(f - 1), st)) age++;
+      if (releasedAt === undefined && a.fighter.scriptFor(st.actionStateId).some(e =>
+          e.kind === "cmdVar" && e.index === 2 && e.value !== 0 && e.frame <= st.actionStateFrameCounter)) releasedAt = age;
+    }
+    return { age, releasedAt };
+  }
+
   private fighterEvents(frame: number, a: ActorFrame) {
     const st = a.st;
+    let nativeClock = this.nativeClocks.get(a.key);
+    if (!nativeClock) this.nativeClocks.set(a.key, nativeClock = new NativeCallbackClock());
+    if (nativeClock.enter(st.internalCharacterId, st.actionStateId)) this.endOwned(`${a.key}:native`);
     if (st.isDead || st.actionStateId <= 11) {
       // a KO through a blast line: its blast, once, as the fighter goes
       const t = this.tracks.get(a.key);
@@ -523,6 +561,9 @@ export class FxWorld {
       const entry = same ? t!.entry : t ? frame : this.entryCounterOf?.(a.key, frame)?.entry ?? frame;
       if (t && !same) { t.action = st.actionStateId; t.entry = entry; }
       else if (!t) this.tracks.set(a.key, { action: st.actionStateId, entry, entryCounter: 0, counter: 0, seen: frame });
+      this.endOwned(a.key);
+      this.endOwned(`${a.key}:native`);
+      this.nativeClocks.delete(a.key);
       // gone: its colors with it
       this.cols.delete(a.key);
       this.swords.clear(a.key);
@@ -548,6 +589,10 @@ export class FxWorld {
       // there) left it some other way
       const ended = t !== undefined && !byAnimCallback(st.internalCharacterId, t.action, st.actionStateId) &&
         t.moved !== false && !t.looped && !LOOPING.has(t.action) && animEnded(a.fighter, t.action, t.counter, t.rate ?? 1);
+      if (t && !this.tracked) for (const e of outgoingNativeScriptEvents(st.internalCharacterId, t.action, st.actionStateId,
+          t.counter, t.rate ?? 1, a.fighter.scriptFor(t.action), ended)) {
+        this.scriptEvent(e, a, this.prevWorlds.get(a.key));
+      }
       // (an animation that ended into what is taken up from standing: its
       // callback's change to Wait came first, unseen, with its own step of
       // the colors, and the one the replay shows came after the frame's
@@ -668,6 +713,31 @@ export class FxWorld {
       // (one before its loop's label: once, not each time round)
       if (t.looped && !clocked && (e as Once).once) continue;
       else this.scriptEvent(e, a);
+    }
+    if (!this.tracked && !this.generic) {
+      for (const e of nativeClock.take(nativeEffectEvents(st.internalCharacterId, st.actionStateId, st.isGrounded, events), now)) {
+        // Native callbacks index fp->parts directly; the script common-bone
+        // lookup is a different namespace (and has no entry for Cutter part 44).
+        const joint = e.part;
+        const m = this.jointWorld(a.key, joint);
+        let age = picked ? Math.max(0, now - e.frame) : 0;
+        const cutter = e.gfx === 0x494 ? this.cutterHistory(a, frame) : null;
+        if (cutter) age = cutter.age;
+        this.spawn(e.gfx, {
+          pos: m ? [m[12], m[13], m[14]] : [st.xPosition, st.yPosition, 0],
+          follow: () => this.jointWorld(a.key, joint), facing: st.facingDirection || 1,
+          angle: 0, damage: 0, scale: a.fighter.modelScale, owner: `${a.key}:native`, by: a.key, age,
+          partFollow: part => this.jointWorld(a.key, part),
+          cutterRelease: cutter?.releasedAt,
+        });
+      }
+    }
+    if (st.internalCharacterId === 4 && st.actionStateId >= 385 && st.actionStateId <= 392 &&
+        events.some(e => e.kind === "cmdVar" && e.index === 2 && e.value !== 0 && e.frame <= now)) {
+      for (const m of this.owned.get(`${a.key}:native`)?.models ?? []) if (m.cutter && m.cutter.releasedAt === undefined) {
+        m.cutter.releasedAt = m.age;
+        m.life = m.age + 11;
+      }
     }
     // a smash attack charging: its animation stands still (not in hitlag);
     // its color animation from when it starts to when it lets go
@@ -1304,7 +1374,7 @@ export class FxWorld {
     this.ps.endTag(`f:${key}`, !ordered);
   }
 
-  private scriptEvent(e: ScriptEvent, a: ActorFrame) {
+  private scriptEvent(e: ScriptEvent, a: ActorFrame, previous?: Float32Array) {
     // (with the track's pieces, every effect start is theirs: the scripts' colors and states go on)
     // (the move scripts' own effects stay without a track: they are the game's
     // data; the learned table adds what the code starts besides)
@@ -1313,7 +1383,8 @@ export class FxWorld {
       const started = `${a.key}:${e.gfx}`;
       this.scriptStarted.set(started, this.stepping);
       const joint = e.common ? this.partToJoint(a.st.internalCharacterId, e.bone) : e.bone;
-      const m = this.jointWorld(a.key, joint) ?? this.jointWorld(a.key, 0);
+      const m = previous && joint >= 0 && (joint + 1) * 16 <= previous.length
+        ? previous.subarray(joint * 16, joint * 16 + 16) : this.jointWorld(a.key, joint) ?? this.jointWorld(a.key, 0);
       const R = this.ps.rng;
       const ox = e.offset[0] + 2 * e.range[0] * (R.next() - 0.5);
       const oy = e.offset[1] + 2 * e.range[1] * (R.next() - 0.5);
@@ -1341,7 +1412,7 @@ export class FxWorld {
         : e.gfx === 0x438 ? a.fighter.modelScale * (a.fighter.commonAttr(0x144) || 1) : a.fighter.modelScale;
       this.spawn(e.gfx, {
         pos, follow: () => this.jointWorld(key, joint), facing: a.st.facingDirection || 1, angle: 0, damage: 0,
-        scale, owner: e.destroyOnChange ? a.key : null, by: a.key,
+        scale, owner: e.destroyOnChange ? a.key : null, by: a.key, offset: [ox, oy, oz],
       });
     } else if (e.kind === "colanim") {
       // (one of the second kind goes with the move: enterColors; one on the
@@ -1418,6 +1489,10 @@ export class FxWorld {
 
   private place(s: Spawn, ctx: SpawnCtx) {
     if ("all" in s) { for (const x of s.all) this.place(x, ctx); return; }
+    if ("part" in s && s.part !== undefined && ctx.partFollow) {
+      const part = s.part, matrix = ctx.partFollow(part);
+      ctx = { ...ctx, follow: () => ctx.partFollow!(part), pos: matrix ? [matrix[12], matrix[13], matrix[14]] : ctx.pos };
+    }
     const R = this.ps.rng;
     if ("pieces" in s) {
       for (let k = 0; k < s.count; k++) {
@@ -1451,15 +1526,39 @@ export class FxWorld {
         bank, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2],
         rotY: s.face ? (ctx.facing < 0 ? -Math.PI / 2 : Math.PI / 2) : 0,
         rotZ: s.rotZ === "rand" ? Math.PI * 2 * R.next() : s.rotZ === "arg" ? ctx.angle : 0,
-        scale, age: 0, life, follow: s.attach ? ctx.follow : null, under: s.child ? ctx.follow : null, owner: ctx.owner, turn: null, by: ctx.by,
-        steady: NEVER_PAUSED.has(this.spawning),
+        scale, age: (ctx.age ?? 0) + (s.startFrame ?? 0), life, follow: s.attach ? ctx.follow : null, under: s.child ? ctx.follow : null, owner: ctx.owner, turn: null, by: ctx.by,
+        steady: NEVER_PAUSED.has(this.spawning), constrained: !!s.child,
       };
+      if (s.callback === "cutter") {
+        m.cutter = { releasedAt: ctx.cutterRelease };
+        m.rootRotationY = !!s.face;
+        m.rootSet = !s.child;
+        m.life = ctx.cutterRelease === undefined ? Infinity : ctx.cutterRelease + 11;
+        if (s.face) m.turn = p => { p.rotY = (ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing) < 0 ? -Math.PI / 2 : Math.PI / 2; };
+      }
+      if (s.callback === "face") m.rootRotationY = true;
+      if (s.callback === "face") m.turn = p => {
+        const facing = ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing;
+        p.rotY = facing < 0 ? -Math.PI / 2 : Math.PI / 2;
+      };
+      if (s.callback === "offsetY") { m.offsetY = (ctx.offset?.[1] ?? 0) * ctx.scale; m.rootSet = true; }
+      if (s.callback === "jabZ") { m.jabZ = true; m.rotZ *= ctx.facing < 0 ? -1 : 1; }
+      // efSync advances punch models once while creating them. Run the keys
+      // crossed by that initial animation step as well as the displayed pose.
+      if (!ctx.age && s.startFrame) {
+        m.age = 0;
+        while (m.age < s.startFrame) { this.modelParticles(m); m.age++; }
+      }
       this.models.push(m);
       if (ctx.owner) this.own(ctx.owner).models.push(m);
       return;
     }
     const g = this.ps.generator(bank, s.g);
     if (!g) return;
+    if (ctx.age && g.genLife > 0) {
+      if (ctx.age >= g.genLife) { this.ps.endOwned(g); return; }
+      g.genLife -= ctx.age;
+    }
     if (ctx.tag) g.tag = ctx.tag;
     else if (ctx.by) g.tag = `f:${ctx.by}`;
     if (s.life !== undefined && (g.genLife === 0 || g.genLife > s.life)) g.genLife = s.life;
@@ -1521,11 +1620,12 @@ export class FxWorld {
    *  made (so a key at time 1 is on that same frame), drawing from the
    *  frame's state. Any other model: the key whose time is its age. */
   private modelParticles(m: ModelFx, first = false) {
+    if (m.age >= m.life) return;
     const keys = m.bank.ptclKeys(m.index);
     if (!keys.length) return;
     const seeded = m.seed !== undefined;
     if (first !== (seeded && first)) return;
-    const step = !seeded ? m.age : first ? 0 : m.age + 1;
+    const step = m.cutter ? cutterAnimationFrame(m.age, m.cutter.releasedAt) : !seeded ? m.age : first ? 0 : m.age + 1;
     let state = first ? m.seed! : null;
     let posed = false;
     const prop = m.bank.prop(m.index, 0, true);
@@ -1634,10 +1734,17 @@ export class FxWorld {
   /** an effect model posed at a frame of its animation where it is now: a child of a fighter's joint turned
    *  as the joint is, else at its place with the turn and size the dispatch gave its root */
   poseModel(m: ModelFx, pr: Prop, age: number) {
+    if (m.cutter) age = cutterAnimationFrame(age, m.cutter.releasedAt);
     const parent = m.under?.() ?? null;
-    if (parent) { pr.poseChild(age, parent, m.scale, false); return; }
+    if (parent) {
+      if (m.constrained) pr.poseConstrained(age, parent, m.scale, false);
+      else pr.poseChild(age, parent, m.scale, false);
+      return;
+    }
     const [x, y, z] = this.modelPlace(m);
-    pr.pose(age, x, y, z, m.scale, m.rotY, false, m.rotZ, 0, m.rootSet);
+    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rotZ, 0, m.rootSet);
+    if (m.rootRotationY) pr.setRootRotationY(m.rotY);
+    if (m.jabZ) pr.setJointTranslationZ(1, m.z - 6 + 2 * age);
   }
 
   private own(key: string) {
@@ -1651,7 +1758,7 @@ export class FxWorld {
     const o = this.owned.get(key);
     if (!o) return;
     for (const g of o.gens) this.ps.kill(g);
-    for (const m of o.models) m.age = m.life;
+    for (const m of o.models) { this.ps.endModel(m); m.age = m.life; }
     this.owned.delete(key);
   }
 
@@ -1784,7 +1891,7 @@ export class FxWorld {
   modelPlace(m: ModelFx): [number, number, number] {
     if (m.follow) {
       const w = m.follow();
-      if (w) return [w[12], w[13], w[14]];
+      if (w) return [w[12], w[13] + (m.offsetY ?? 0), w[14]];
     }
     return [m.x, m.y, m.z];
   }

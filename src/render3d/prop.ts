@@ -76,6 +76,37 @@ export class Prop {
     sk.update(this.place);
   }
 
+  /** HSD_JObjSetRotationY replaces this component after animation; rotating a
+   * parent matrix instead would retain and compose the animated root rotation. */
+  setRootRotationY(value: number) {
+    this.skeleton.rot[1] = value;
+    this.skeleton.update(this.place);
+  }
+
+  /** Native callbacks mutate the posed joints after their animation step. */
+  setJointTranslationZ(joint: number, value: number) {
+    if (joint < 0 || joint >= this.skeleton.n) return;
+    this.skeleton.trans[joint * 3 + 2] = value;
+    this.skeleton.update(this.place);
+  }
+
+  /** Shadow Ball's animation callback replaces the first grandchild's
+   * scale, leaving the root/attachment scale alone (itmewtwoshadowball.c). */
+  setGrandchildScale(value: number, heldScale?: number) {
+    const sk = this.skeleton;
+    const child = sk.parent.findIndex(p => p === 0);
+    if (child < 0) return;
+    const grandchild = sk.parent.findIndex(p => p === child);
+    if (grandchild < 0) return;
+    sk.scale.fill(value, grandchild * 3, grandchild * 3 + 3);
+    // Held Shadow Ball cancels its authored offset in the opposite direction
+    // at the fighter's size. Use the authored pose, never the previous draw.
+    if (heldScale !== undefined) for (let c = 0; c < 3; c++) {
+      sk.trans[grandchild * 3 + c] = -this.joints[grandchild].trans[c] * heldScale;
+    }
+    sk.update(this.place);
+  }
+
   /** at rest, at (x, y, z), scaled each way by `scale` and turned `rotY`
    *  about the vertical (a stand whose height alone grows) */
   poseScaled(x: number, y: number, z: number, scale: [number, number, number], rotY: number) {
@@ -118,6 +149,25 @@ export class Prop {
     mul(this.place, this.tied, this.inv);
     sk.update(this.place);
   }
+  /** efLib_Create_AttachChild installs position and orientation constraints.
+   * HSD's resolveCnsOrientation copies the target's basis, retaining this
+   * root's animated column lengths; it does not compose root rotations. */
+  poseConstrained(frame: number, parent: Float32Array, scale: number, loop = true) {
+    this.pose(frame, 0, 0, 0, scale, 0, loop);
+    const sk = this.skeleton;
+    for (let c = 0; c < 3; c++) {
+      const j = c * 4;
+      const own = Math.hypot(sk.world[j], sk.world[j + 1], sk.world[j + 2]);
+      const len = Math.hypot(parent[j], parent[j + 1], parent[j + 2]) || 1;
+      for (let r = 0; r < 3; r++) this.place[j + r] = parent[j + r] * own / len;
+      this.place[j + 3] = 0;
+      sk.rot[c] = sk.trans[c] = 0;
+      sk.scale[c] = 1;
+    }
+    this.place[12] = parent[12]; this.place[13] = parent[13]; this.place[14] = parent[14]; this.place[15] = 1;
+    sk.update(this.place);
+  }
+
   /** at frame `frame`, a child of another model's joint (its world matrix
    *  `parent`, taken at size `scale`): its root's own animation under it (an
    *  effect the game makes a child of a fighter's joint) */

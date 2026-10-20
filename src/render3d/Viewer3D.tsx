@@ -1,3 +1,5 @@
+import { itemSource } from "./item-source";
+import { isShadowBall, shadowBallScale } from "./shadow-ball";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombRotation, samusBombClocks } from "./item-facing";
 /* 3D replay viewer: the replay drawn with the game's own models.
@@ -2157,6 +2159,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const p = data.frames[f]?.players[pl];
       return p ? (nn ? p.nanaState : p.state) : undefined;
     };
+    w.stateAt = stOf;
     w.entryCounterOf = (key, f) => {
       const s = stOf(key, f);
       if (!s) return undefined;
@@ -3277,6 +3280,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           }
         }
         for (const p of shapes ? [] : data.frames[g]?.players ?? []) {
+          if (!p) continue;
           for (const nana of [false, true]) {
             const sh = p ? shineAt(data, g, p.playerIndex, nana) : null;
             const id = !sh ? 0 : sh.start === 0 ? 0x489 : sh.loop === 0 ? 0x488 : sh.hit === 0 ? 0x48a : 0;
@@ -3781,6 +3785,11 @@ function ownerOf(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, fra
   return fs.get(`${p.state.internalCharacterId}:${costume}`) ?? null;
 }
 
+function articleFighter(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number): Fighter | null {
+  const source = itemSource(data, it);
+  return (source ? fs.get(`${source.character}:${source.costume}`) : null) ?? ownerOf(data, fs, it, frame);
+}
+
 // Kirby's copies' data files, as they load (their projectiles' articles)
 const kirbyCopies = new Map<number, KirbyCopy | null>();
 
@@ -3798,7 +3807,7 @@ function articleEntry(typeId: number): (typeof ARTICLES)[number] | undefined {
  *  state's script), or null when not known */
 function itemElement(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number): number | null {
   const a = KIRBY_ITEMS[it.typeId] ? undefined : ARTICLES[it.typeId];
-  return a ? ownerOf(data, fs, it, frame)?.articleElement(a.art, itemAnimationIndex(it.typeId, it.state)) ?? null : null;
+  return a ? articleFighter(data, fs, it, frame)?.articleElement(a.art, itemAnimationIndex(it.typeId, it.state)) ?? null : null;
 }
 
 function articleOf(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number) {
@@ -3809,10 +3818,10 @@ function articleOf(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, f
   if (k) return kirbyCopies.get(k.kind)?.article(k.slot, animation) ?? null;
   // (which of its owner's articles the game made it with, when the viewer track says)
   const said = trackArticles.get(data)?.get(it.typeId);
-  if (said !== undefined) return ownerOf(data, fs, it, frame)?.article(said, animation) ?? null;
+  if (said !== undefined) return articleFighter(data, fs, it, frame)?.article(said, animation) ?? null;
   const a = ARTICLES[it.typeId];
   if (!a) return null;
-  return ownerOf(data, fs, it, frame)?.article(a.art, animation) ?? null;
+  return articleFighter(data, fs, it, frame)?.article(a.art, animation) ?? null;
 }
 
 /** a list's median, 90th and 99th percentile and its largest (the harness's) */
@@ -3973,8 +3982,13 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   const size = a.ownerSize && owner ? owner.modelScale : art.scale;
   const ownerState = data.frames[frame]?.players[it.owner]?.state.actionStateId ?? -1;
   const still = a.still?.(ownerState) ?? null;
+  const shadowOwner = isShadowBall(it.typeId) ? articleFighter(data, fs, it, frame) : null;
+  const shadowScale = shadowOwner && art.special ? shadowBallScale(it.state,
+    it.chargeShotChargeLevel,
+    shadowOwner.specialAttr(it.typeId === 0x90 ? 0x384 : 0), art.special(0x18), art.special(0x1c)) : null;
   if (on) {
     art.prop.poseUnder(still ?? itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0), on, size, false, art.attach);
+    if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale, shadowOwner?.modelScale);
     const w = art.prop.skeleton.world;
     drawnArticles.push({ type: it.typeId, state: it.state, x: w[12], y: w[13], z: w[14], scale: Math.hypot(w[0], w[1], w[2]),
                          joints: art.prop.skeleton.n, shown: Array.from(art.prop.skeleton.shown), replay: [it.xPosition, it.yPosition],
@@ -4030,6 +4044,7 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
     art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
                   byZ ? 0 : tilt, false, clock?.joint);
   }
+  if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale);
   drawnArticles.push({ type: it.typeId, state: it.state, x: it.xPosition, y: it.yPosition, tilt, scale,
                        shown: Array.from(art.prop.skeleton.shown) });
   drawProp(r, art);
