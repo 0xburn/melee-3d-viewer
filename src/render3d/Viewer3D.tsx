@@ -43,7 +43,7 @@ import { GuardFrame, guardTilt } from "./guard";
 import { ENTRY, ENTRY_END, ENTRY_START, entryPose, standScale } from "./entry";
 import { copiesFromReplay, HAT_JOINT, KIRBY, KIRBY_ITEMS, KirbyCopy, KirbyHat, poseSkin, yoshiHatAnim } from "./kirby";
 import { onAngelPlatform, runNumber, shineAt, SHY_GUY } from "~/common/effects";
-import { ActorFrame, FxWorld, type LearnedFx, type LearnedPiece, NO_WORLD, STAGE_WARM, stepThrough } from "./fx/world";
+import { ActorFrame, FxWorld, type LearnedFx, type LearnedPiece, NO_WORLD, stepThrough } from "./fx/world";
 import { buildParticles } from "./fx/draw";
 import { srtApply } from "./fx/particles";
 import { Before, hitSparks, powershielded } from "./fx/contact";
@@ -2439,7 +2439,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       w.step(g, actors);
       dynStep(g, actors, data);
     };
-    return stepThrough(w, f, one, pose, st ? { frames: STAGE_WARM, start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
+    return stepThrough(w, f, one, pose, st ? { frames: (g) => w.stageFrames(g), start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
   };
 
   // the fighters' swinging chains (dynamics.ts): stepped with the effects, a
