@@ -59,6 +59,7 @@ import { type EggRoll, eggRollAt, YOSHI } from "./yoshiroll";
 import { kirbyStoneAt } from "./kirbystone";
 import { ROLLOUT_ATTRS, ROLLOUT_FIRST, rolloutAngle, rolloutAttrs } from "./rollout";
 import { Hud, HudActor, HudKit } from "./hud";
+import { drawLogCommand } from "./drawlog";
 import type { Tint as ColTint } from "./fx/colanim";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
@@ -3370,6 +3371,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     },
     /** the stage mirror's image and matrices (Fountain's pond) */
     mirror: () => renderer?.mirrorDebug() ?? null,
+    /** the draw log (drawlog.ts): debug only, attached by { start: true } and never otherwise */
+    drawLog: (cmd: Parameters<typeof drawLogCommand>[1]) => drawLogCommand(renderer, cmd),
     /** a pixel comparison: leave these groups out of the draws from now on (null:
      *  draw everything again), and draw now */
     setLayers: (off: Partial<Record<Layer, boolean>> | null) => { layersOff = { ...(off ?? {}) }; draw(); return true; },
