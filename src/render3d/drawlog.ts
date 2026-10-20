@@ -36,6 +36,7 @@ import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
 import { blockOf, evalMaterial, tevDescStep, textureMatrix } from "./gx";
 import type { Lighting } from "./lightset";
+import type { Tint } from "./fx/colanim";
 import { Mat, invert, mul } from "./math";
 
 // ---------------------------------------------------------------- shared with the decoder
@@ -192,8 +193,8 @@ interface Inner {
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
-                               "overlayVP", "viewProj", "staticsOf", "begin", "setFog", "drawOne", "drawGeometry",
-                               "drawParticles", "drawTrail", "drawSphere"] as const;
+                               "overlayVP", "viewProj", "staticsOf", "begin", "setFog", "setTint", "drawOne",
+                               "drawGeometry", "drawParticles", "drawTrail", "drawSphere"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
 
@@ -204,6 +205,8 @@ export class DrawLog {
   limit = 600;
   private cur: FrameLog | null = null;
   private fog: Fog | null = null;
+  /** the fighter's color animation the draws are made with (setTint) */
+  private tint: Tint | null = null;
   private inputs = probes();
   private prims = new WeakMap<PObj, [string, number, string][]>();
   private images = new WeakMap<Image, string | null>();
@@ -232,6 +235,7 @@ export class DrawLog {
     };
     wrap("begin", () => this.newFrame());
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
+    wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
     wrap("drawOne", (a, drew) => { if (drew) this.mesh(a[0] as Drawable, a[1] !== null, a[2] as Skeleton | null); });
     wrap("drawGeometry", (a, drew) => { if (drew) this.add({ kind: "depth", obj: (a[0] as Drawable).key }); });
     wrap("drawParticles", (a) => this.particles(a[0] as Float32Array, a[1] as Batch[]));
@@ -334,6 +338,12 @@ export class DrawLog {
                ambient: Array.from(d.state.ambient).map((v) => rnd(v)), spec: Array.from(d.state.specular).map((v) => rnd(v)) },
       probe: this.probe(d, p),
     };
+    // (a fighter's color animation: its color is in the probe, blended over last as the shader does)
+    const t = this.tint;
+    if (t && (t.color || t.light)) {
+      rec.tint = { color: t.color ? t.color.map((v) => rnd(v)) : null,
+                   light: t.light ? { rgb: t.light.rgb.map((v) => rnd(v)), a: rnd(t.light.a), adds: t.light.adds } : null };
+    }
     if (sk && (sk as unknown as { pointSize?: number }).pointSize) rec.point = (sk as unknown as { pointSize: number }).pointSize;
     this.add(rec);
   }
@@ -409,6 +419,8 @@ export class DrawLog {
         diffuse: [dif[0], dif[1], dif[2]], alpha: s.alpha, specular: [s.specular[0], s.specular[1], s.specular[2]],
         ras0, ras1, texels, blend: p.textures.map((ti) => s.tex[ti].blending),
       });
+      const tc = this.tint?.color;
+      if (tc && tc[3] > 0) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - tc[3]) + tc[i] * tc[3];
       return out.map((v) => Math.round(c01(v) * 255));
     });
   }

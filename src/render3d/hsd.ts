@@ -11,6 +11,7 @@
  * data is in this file, or anywhere in the repository: it reads your
  * own files, from your own disk, at runtime.
  */
+import { srt } from "./math";
 
 export interface Archive {
   data: DataView; // the data block (pointers are offsets into it)
@@ -1008,8 +1009,16 @@ export interface LightAnim {
   /** the HSD_LightAnim's offset (the stage says by it which ones loop) */
   offset: number;
   aobj: AObj | null;
-  position: { aobj: AObj; spline: Spline | null } | null;
-  interest: { aobj: AObj; spline: Spline | null } | null;
+  position: LightPlaceAnim | null;
+  interest: LightPlaceAnim | null;
+}
+
+/** a light's position or interest animation: its AObj, the spline a PATH
+ *  track walks, and the spline joint's matrix the point is taken through */
+export interface LightPlaceAnim {
+  aobj: AObj;
+  spline: Spline | null;
+  mtx: Float32Array | null;
 }
 
 export interface Light {
@@ -1043,16 +1052,22 @@ export function loadLights(a: Archive, list: number): Light[] {
     p === null ? null : [d.getFloat32(p + 4), d.getFloat32(p + 8), d.getFloat32(p + 12)];
   const floats = (p: number, n: number) => Array.from({ length: n }, (_, i) => d.getFloat32(p + i * 4));
   // a WObj's animation (HSD_WObjAnim: its AObj first), with the spline its
-  // path track follows (the AObj's object: a spline joint)
+  // path track follows (the AObj's object: a spline joint) and that joint's
+  // matrix: HSD_WObjGetPosition takes the point on the curve through it
+  // (HSD_JObjSetupMatrix, MTXMultVec), so the curve is in the joint's space
   const wanim = (p: number | null) => {
     const ao = p === null ? null : ptr(a, p);
     if (ao === null) return null;
     const aobj = loadAObj(a, ao);
-    let spline: Spline | null = null;
+    let spline: Spline | null = null, mtx: Float32Array | null = null;
     if (aobj.obj !== null) {
-      try { spline = loadJoint(a, aobj.obj).root.spline ?? null; } catch { spline = null; }
+      try {
+        const j = loadJoint(a, aobj.obj).root;
+        spline = j.spline ?? null;
+        mtx = srt(new Float32Array(16), ...j.scale, ...j.rot, ...j.trans);
+      } catch { spline = null; }
     }
-    return { aobj, spline };
+    return { aobj, spline, mtx };
   };
   for (let q = list; out.length < 16; q += 4) {
     const entry = ptr(a, q);
