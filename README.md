@@ -198,6 +198,10 @@ The module exports `ReplayPlayer`:
   comes first; the heights are forgotten when another replay is loaded. Without
   them the platforms keep their starting height (`src/simulation-stage.ts`).
 
+The Lucky Stats host implements this feed, and bounded audio-only Wasm seek
+checkpoints in its separate native audio backend. Neither that engine nor the
+backend is bundled here.
+
 A shared-memory Wasm backend needs the top-level page and the embedded
 document served with `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp`. Asset hosts must allow the
@@ -229,6 +233,9 @@ asset routes are not included here.
   Slippi team), [slippi-visualiser](https://github.com/schmooblidon/slippi-visualiser)
   by schmooblidon, [react-slp-viewer](https://github.com/vinceau/react-slp-viewer)
   by vinceau, and [HSDraw/HSDLib](https://github.com/Ploaj/HSDlib) by Ploaj.
+- Lucky Stats by petey (0xburn): the fighters' native effect callbacks, Fox
+  and Falco's up-B fire, item animations and effect lifetimes, and the
+  projectile joint fixes were ported from its viewer.
 - [melee-sim-light](https://github.com/kyhavlov/melee-sim-light) by kyhavlov:
   the simulator that writes viewer tracks.
 - The [Melee decompilation](https://github.com/doldecomp/melee)
