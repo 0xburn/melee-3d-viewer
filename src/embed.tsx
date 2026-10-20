@@ -107,12 +107,17 @@ import { Controllers } from "~/components/viewer/Controllers";
 import { isOverlayShow, type OverlayShow } from "~/viewer/controllerInputs";
 import { isHudSlots, setHudSlotsMode } from "~/common/hudslots";
 import { diagLoaded, diagLoading, diagRunning, diagView } from "~/diag";
-import { fileListSource, setFileSource, setTrackUrl, status } from "~/render3d/files";
+import { fileListSource, prefetchReplay, setFileSource, setTrackUrl, status } from "~/render3d/files";
 import { simAsked, simForReplay } from "~/sim/embed";
 import { mark } from "~/render3d/startup";
+import { precompilePrograms } from "~/render3d/renderer";
 import "~/state/fileStore";
 import "~/state/replayStore";
 import "~/state/selectionStore";
+
+// (the 3D player's programs compile while the replay is fetched and read)
+const LINE_ART = new URLSearchParams(location.search).get("renderer") === "svg";
+if (!LINE_ART) precompilePrograms();
 
 const FIRST_FRAME = -123;
 // asks again whether 3D can run (after game files were handed over)
@@ -169,6 +174,8 @@ async function loadReplay(url: string, name: string, frame?: number) {
   mark("replayRequested");
   diagLoading();
   const blob = await (await fetch(url)).blob();
+  // (the game's files are asked for now, while the replay is read)
+  void blob.slice(0, 2048).arrayBuffer().then((head) => { if (!LINE_ART) prefetchReplay(head); }).catch(() => {});
   const start = frame === undefined ? 0 : toIndex(frame);
   // (the replay before's viewer track goes before this one's frames come in: a simulated run watched in its
   // game's place was drawn for a moment with the game's own track, its fighters in the game's animations)

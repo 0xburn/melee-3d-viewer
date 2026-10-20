@@ -26,7 +26,7 @@ import { CRT_LOOKS, type CrtPreset, crtPixels } from "./crt";
 import { drawingSize } from "./drawsize";
 import { pageWeak } from "../state/pageCache";
 import { idle } from "./idle";
-import { timed } from "./startup";
+import { mark, timed } from "./startup";
 
 const tmpM = new Float32Array(16);
 const MIRROR_W = 80, MIRROR_H = 60;
@@ -518,9 +518,68 @@ interface MatStatics {
   colorOn: boolean; blend: number; srcF: number; dstF: number; zWrite: boolean; zFunc: number;
 }
 
+let precompiling: Promise<void> | null = null;
+let precompileAsked = false;
+
+/** Compile and link the model and particle programs on a scratch canvas at page
+ *  start, before any player exists. The driver and the browser keep a compiled
+ *  program by its source, so a player's own context finds them done when it
+ *  asks (its first compile is the longest wait of a first open: a second or
+ *  more on a slow graphics card). A player made while this is under way waits
+ *  for it before it makes its own programs: they would only be compiled twice
+ *  at once. Nothing is drawn; the scratch context is let go when the programs
+ *  are done. Does nothing where there is no OffscreenCanvas or WebGL 2, or on
+ *  a second call. */
+export function precompilePrograms() {
+  if (precompileAsked || typeof OffscreenCanvas === "undefined") return;
+  precompileAsked = true;
+  try {
+    const gl = new OffscreenCanvas(1, 1).getContext("webgl2", {
+      antialias: false, alpha: false, depth: true, stencil: true, preserveDrawingBuffer: false,
+      powerPreference: "high-performance",
+    }) as WebGL2RenderingContext | null;
+    if (!gl) return;
+    const made: WebGLProgram[] = [];
+    const build = (vs: string, fs: string, attrs: string[]) => {
+      const p = gl.createProgram()!;
+      for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]] as const) {
+        const s = gl.createShader(type)!;
+        gl.shaderSource(s, src);
+        gl.compileShader(s);
+        gl.attachShader(p, s);
+      }
+      attrs.forEach((n, i) => gl.bindAttribLocation(p, i, n));
+      gl.linkProgram(p);
+      made.push(p);
+    };
+    build(VS, FS, ATTRS);
+    build(PARTICLE_VS, PARTICLE_FS, PARTICLE_ATTRS);
+    mark("precompileStart");
+    const ext = gl.getExtension("KHR_parallel_shader_compile") as { COMPLETION_STATUS_KHR: number } | null;
+    const lose = gl.getExtension("WEBGL_lose_context");
+    precompiling = new Promise<void>((done) => {
+      const began = Date.now();
+      const poll = () => {
+        try {
+          // (without the extension, the link status itself waits for the link)
+          const finished = ext ? made.every((p) => gl.getProgramParameter(p, ext.COMPLETION_STATUS_KHR))
+            : made.every((p) => gl.getProgramParameter(p, gl.LINK_STATUS) !== undefined);
+          // (a context the browser took away, or a driver that never answers: let go)
+          if (!finished && !gl.isContextLost() && Date.now() - began < 10000) { setTimeout(poll, 20); return; }
+        } catch { /* let go */ }
+        mark("precompileDone");
+        try { lose?.loseContext(); } catch { /* already gone */ }
+        precompiling = null;
+        done();
+      };
+      poll();
+    });
+  } catch { /* the player compiles them itself, as before */ }
+}
+
 export class Renderer {
   gl: WebGL2RenderingContext;
-  prog: WebGLProgram;
+  prog!: WebGLProgram;
   private loc: Record<string, WebGLUniformLocation | null> = {};
   private attr: Record<string, number> = {};
   private lighting: Lighting | null = null;
@@ -535,7 +594,7 @@ export class Renderer {
   private nextArchive = 1;
   private sphere: GpuMesh | null = null;
   private spriteTex = new Map<string, WebGLTexture>();
-  private particleProg: WebGLProgram;
+  private particleProg!: WebGLProgram;
   private ploc: Record<string, WebGLUniformLocation | null> = {};
   private pvao: WebGLVertexArrayObject;
   private pvbo: WebGLBuffer;
@@ -576,7 +635,6 @@ export class Renderer {
     // the model program, and its variant for the shield's card (the only one
     // that writes its own depth, so every other draw keeps its early depth
     // test); both with the same attribute slots, so the meshes serve both
-    const vs = sh(gl.VERTEX_SHADER, VS);
     const program = (vsh: WebGLShader, fs: string, attrs: string[]) => {
       const p = gl.createProgram()!;
       const f = sh(gl.FRAGMENT_SHADER, fs);
@@ -587,13 +645,16 @@ export class Renderer {
       this.linking.push({ p, shaders: [vsh, f] });
       return p;
     };
-    const p = program(vs, FS, ATTRS);
-    this.prog = p;
-    this.current = p;
+    // (made at once, or when the page's scratch compile of the same programs is
+    // done, which is what makes them quick here: precompilePrograms)
+    const build = () => {
+      const p = program(sh(gl.VERTEX_SHADER, VS), FS, ATTRS);
+      this.prog = p;
+      this.current = p;
+      this.particleProg = program(sh(gl.VERTEX_SHADER, PARTICLE_VS), PARTICLE_FS, PARTICLE_ATTRS);
+    };
     ATTRS.forEach((n, i) => { this.attr[n] = i; });
     // the game's particles: one dynamic buffer of quads, drawn in batches
-    const pp = program(sh(gl.VERTEX_SHADER, PARTICLE_VS), PARTICLE_FS, PARTICLE_ATTRS);
-    this.particleProg = pp;
     this.pvao = gl.createVertexArray()!;
     gl.bindVertexArray(this.pvao);
     this.pvbo = gl.createBuffer()!;
@@ -609,7 +670,9 @@ export class Renderer {
     this.scratchUbo = gl.createBuffer()!;
     gl.bindBuffer(gl.UNIFORM_BUFFER, this.scratchUbo);
     gl.bufferData(gl.UNIFORM_BUFFER, MAT_BYTES, gl.DYNAMIC_DRAW);
-    this.ready = this.whenLinked();
+    this.ready = precompiling
+      ? precompiling.then(() => { build(); return this.whenLinked(); })
+      : (build(), this.whenLinked());
   }
 
   /** the programs being linked, and their shaders */
@@ -1283,7 +1346,7 @@ void main() {
     this.uploadLighting(this.current, this.loc);
   }
   /** the model program in use (the main one, or the shield's for a moment) */
-  private current: WebGLProgram;
+  private current!: WebGLProgram;
 
   private uploadLighting(p: WebGLProgram, loc: Record<string, WebGLUniformLocation | null>) {
     const l = this.lighting;

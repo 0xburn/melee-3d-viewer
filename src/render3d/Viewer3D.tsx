@@ -1086,6 +1086,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     for (const c of chars) {
       out(files.fighterEffects(k, c)).then((got) => {
         if (!got.length) return;
+        // (the reflector's models come in with Fox's or Falco's file: their textures sent ahead too)
+        if (renderer) for (const pr of [k.reflector?.loop, k.reflector?.start, k.reflector?.hit]) if (pr) renderer.warm(pr.skeleton);
         fxw = null;
         schedule();
       });
