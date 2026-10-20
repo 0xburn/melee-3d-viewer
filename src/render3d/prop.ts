@@ -61,17 +61,58 @@ export class Prop {
    *  picture's plane (as the game sets an effect's root joint), and `rotX`
    *  about its own x axis (a thrown needle's tilt). `rootSet`: the place is the
    *  root joint's own, over the file's (an effect model the game's dispatch
-   *  made at a place or on a joint: HSD_JObjSetTranslate on its root) */
-  pose(frame: number, x: number, y: number, z: number, scale: number, rotY = 0, loop = true, rotZ = 0, rotX = 0, rootSet = false) {
+   *  made at a place or on a joint: HSD_JObjSetTranslate on its root).
+   *  `jointFrame`: the joints' animation at a frame of its own, the materials'
+   *  staying at `frame` (Samus's bomb, whose joints speed up near the end of
+   *  its fuse while its colors do not: item-facing.ts) */
+  pose(frame: number, x: number, y: number, z: number, scale: number, rotY = 0, loop = true, rotZ = 0, rotX = 0,
+       rootSet = false, jointFrame = frame) {
     const sk = this.skeleton;
     sk.resetPose();
-    if (this.anim) sk.applyAObjs(this.anim, frame, loop);
+    if (this.anim) sk.applyAObjs(this.anim, jointFrame, loop);
     if (this.rootAtOrigin || rootSet) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
     if (this.matAnim) {
       sk.resetMaterials();
       sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, loop);
     }
     srt(this.place, scale, scale, scale, rotX, rotY, rotZ, x, y, z);
+    sk.update(this.place);
+  }
+
+  /** after the pose, the root's turn about y set to `value` (an effect's callback: HSD_JObjSetRotationY,
+   *  which replaces the animated turn; turning the parent matrix instead would add the two) */
+  setRootRotationY(value: number) {
+    this.skeleton.rot[1] = value;
+    this.skeleton.update(this.place);
+  }
+
+  /** after the pose, the root's turn about z set to `value`, the same way (HSD_JObjSetRotationZ) */
+  setRootRotationZ(value: number) {
+    this.skeleton.rot[2] = value;
+    this.skeleton.update(this.place);
+  }
+
+  /** after the pose, a joint's z place set to `value` (an effect's callback moving one of its joints) */
+  setJointTranslationZ(joint: number, value: number) {
+    if (joint < 0 || joint >= this.skeleton.n) return;
+    this.skeleton.trans[joint * 3 + 2] = value;
+    this.skeleton.update(this.place);
+  }
+
+  /** after the pose, the scale of the root's first grandchild set to `value` each way, the root's own left
+   *  alone (Shadow Ball's animation callback: itmewtwoshadowball.c). `heldScale`: the ball is held, and the
+   *  grandchild's place is its file's place the other way at the fighter's size (from the file, never
+   *  from the draw before) */
+  setGrandchildScale(value: number, heldScale?: number) {
+    const sk = this.skeleton;
+    const child = sk.parent.findIndex((p) => p === 0);
+    if (child < 0) return;
+    const grandchild = sk.parent.findIndex((p) => p === child);
+    if (grandchild < 0) return;
+    sk.scale.fill(value, grandchild * 3, grandchild * 3 + 3);
+    if (heldScale !== undefined) {
+      for (let c = 0; c < 3; c++) sk.trans[grandchild * 3 + c] = -this.joints[grandchild].trans[c] * heldScale;
+    }
     sk.update(this.place);
   }
 
@@ -117,6 +158,29 @@ export class Prop {
     mul(this.place, this.tied, this.inv);
     sk.update(this.place);
   }
+
+  /** at frame `frame`, held to another model's joint (its world matrix `parent`) by place and turn
+   *  constraints (efLib_Create_AttachChild): the root takes the joint's place and axes, each axis as long as
+   *  the root's own animation makes it (HSD's resolveCnsOrientation copies the target's axes, so the root's
+   *  animated turn is not added on top) */
+  poseConstrained(frame: number, parent: Float32Array, scale: number, loop = true) {
+    this.pose(frame, 0, 0, 0, scale, 0, loop);
+    const sk = this.skeleton;
+    for (let c = 0; c < 3; c++) {
+      const j = c * 4;
+      const own = Math.hypot(sk.world[j], sk.world[j + 1], sk.world[j + 2]);
+      const len = Math.hypot(parent[j], parent[j + 1], parent[j + 2]) || 1;
+      for (let r = 0; r < 3; r++) this.place[j + r] = parent[j + r] * own / len;
+      this.place[j + 3] = 0;
+      sk.rot[c] = 0;
+      sk.trans[c] = 0;
+      sk.scale[c] = 1;
+    }
+    for (let r = 12; r < 15; r++) this.place[r] = parent[r];
+    this.place[15] = 1;
+    sk.update(this.place);
+  }
+
   /** at frame `frame`, a child of another model's joint (its world matrix
    *  `parent`, taken at size `scale`): its root's own animation under it (an
    *  effect the game makes a child of a fighter's joint) */

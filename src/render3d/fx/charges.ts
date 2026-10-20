@@ -21,9 +21,10 @@
  *     starts the color itself (ftSk_SpecialNLoop_Anim), else it waits for
  *     the next change of state.
  * All of them are lost with a stock. What the replay cannot give: a charge
- * stored before the replay's first frame (none at a game's start), and one
- * Kirby copied; Game & Watch's bucket fills from what it catches, which the
- * replay does not record, so it is not shown. A viewer track (track.ts)
+ * stored before the replay's first frame (none at a game's start); Game &
+ * Watch's bucket fills from what it catches, which the replay does not
+ * record, so it is not shown. Kirby's copy of one of these moves charges the
+ * same way, in his own states (copiedRule). A viewer track (track.ts)
  * has what each of them holds, the simulator's own count: with one, that is
  * used instead, bucket and Kirby included (storedFromTrack).
  */
@@ -115,6 +116,33 @@ function rule(char: number, a: ChargeAttrs): Rule | null {
   return null;
 }
 
+/** Kirby's copy of each of these moves, by the character he copied: his states for it (`first` to `last`,
+ *  the copied fighter's own from `original` on), where its attributes start in his special attributes
+ *  (`attrs`), and the color animation of its full charge */
+const COPIED_RULES: Record<number, { first: number; last: number; original: number; attrs: number; anim: number }> = {
+  [DK]: { first: 455, last: 464, original: 369, attrs: 0x164, anim: 58 },
+  [SAMUS]: { first: 407, last: 412, original: 343, attrs: 0x150, anim: 54 },
+  [MEWTWO]: { first: 500, last: 509, original: 341, attrs: 0x384, anim: 93 },
+  [SHEIK]: { first: 467, last: 474, original: 341, attrs: 0, anim: 87 },
+};
+
+/** the rule for Kirby with the copy `kind`: the copied fighter's own, run on his states and attributes.
+ *  Which copy he has comes from the same history as his hat's (`copyAt`), so canceling the move keeps a
+ *  stored charge, and losing the copy loses it */
+function copiedRule(kind: number, a: ChargeAttrs): Rule | null {
+  const c = COPIED_RULES[kind];
+  if (!c) return null;
+  const base = rule(kind, { int: (o) => a.int(o + c.attrs), float: (o) => a.float(o + c.attrs) });
+  if (!base) return null;
+  const asCopied = (state: number) => state >= c.first && state <= c.last ? state - c.first + c.original : state;
+  return {
+    anim: c.anim,
+    step(n, s, entered, from) {
+      base.step(n, { ...s, actionStateId: asCopied(s.actionStateId) }, entered, asCopied(from));
+    },
+  };
+}
+
 /** A frame's value in the stored charges' arrays: the color animation of a
  *  full stored charge (0: none), and whether the move's own code starts it
  *  on that frame (Sheik's loop starting over with six held), besides the
@@ -128,21 +156,25 @@ export const storedStarts = (v: number) => (v & STARTS) !== 0;
 
 /** for each fighter (by its key, "port:nana"), the color animation of a
  *  full stored charge on each frame (storedAnim; 0: none) and the frames the
- *  move starts it itself (storedStarts) */
-export function storedCharges(data: ReplayData, attrs: (char: number) => ChargeAttrs | null): Map<string, Uint8Array> {
+ *  move starts it itself (storedStarts). `copyAt`: which character's move
+ *  Kirby on a port has copied on a frame (-1: none), for his copies' charges */
+export function storedCharges(data: ReplayData, attrs: (char: number) => ChargeAttrs | null,
+                              copyAt?: (port: number, frame: number) => number): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
   const run = (port: number, nana: boolean) => {
-    let r: Rule | null = null, char = -1, last = -1;
+    let r: Rule | null = null, char = -1, copy = -1, last = -1;
     const n: Counter = { n: 0, t: 0, full: false };
     let arr: Uint8Array | null = null;
     for (let f = 0; f < data.frames.length; f++) {
       const p = data.frames[f]?.players[port];
       const s = nana ? p?.nanaState : p?.state;
       if (!s) continue;
-      if (s.internalCharacterId !== char) {
+      const nextCopy = s.internalCharacterId === KIRBY ? copyAt?.(port, f) ?? -1 : -1;
+      if (s.internalCharacterId !== char || nextCopy !== copy) {
         char = s.internalCharacterId;
         const a = attrs(char);
-        r = a ? rule(char, a) : null;
+        copy = nextCopy;
+        r = a ? (char === KIRBY ? copiedRule(copy, a) : rule(char, a)) : null;
         n.n = n.t = 0; n.full = false; last = -1;
       }
       if (!r) continue;

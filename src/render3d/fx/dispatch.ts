@@ -6,11 +6,34 @@
  * landings, hits and special moves use; the tables below are ours, and the
  * models and generators themselves are read from your effect files. */
 
-/** a common effect model: `m` its index in EfCoData's model table (two:
+/** an effect model: `m` its index in its effect file's model table (two:
  *  one of them at random, the first 1 in 8) */
-export interface ModelSpawn { m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
-/** a particle generator: `g` its index in EfCoData's particle bank */
-export interface GenSpawn { g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
+export interface ModelSpawn {
+  m: number | [number, number];
+  /** the effect file whose model table it is in (EFFECT_FILES; none: EfCoData's) */
+  bank?: number;
+  /** follows the joint it is made on */
+  attach?: boolean;
+  /** a child of that joint, held to it by place and turn constraints (efLib_Create_AttachChild: Prop.poseConstrained) */
+  child?: boolean;
+  /** made on this fighter part (an index into fp->parts), not the call's joint */
+  part?: number;
+  /** turned to the side the fighter faces */
+  face?: boolean;
+  rotZ?: "arg" | "rand";
+  scale?: "damage" | "arg";
+  /** the frames its animation has already run as it is made (efSync steps a few models once as it makes them) */
+  startFrame?: number;
+  /** with no lifetime in its description, it lasts until its owner's move ends, not for its animation's length */
+  persistent?: boolean;
+  /** what its update callback does each frame (fx/world.ts place): "face", kept turned to the side the fighter
+   *  faces; "offsetY", the call's height above the joint it follows kept, at the fighter's size; "jabZ", its
+   *  joint 1 carried along z, 2 a frame; "cutter", Final Cutter's frames and lifetime through the move
+   *  (cutterAnimationFrame); "fireLaunch", turned the way Fire Fox or Fire Bird flies */
+  callback?: "face" | "offsetY" | "jabZ" | "cutter" | "fireLaunch";
+}
+/** a particle generator: `g` its full id in its effect file's particle bank (`bank`, as a model's; none: EfCoData's) */
+export interface GenSpawn { bank?: number; g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
                            /** frames it makes particles for, when its effect is given a lifetime (EF_Effect.lifetime) */
                            life?: number;
                            /** made at the call's place under the joint it goes with, not the
@@ -26,6 +49,119 @@ const M = (m: number, o: Omit<ModelSpawn, "m"> = {}): Spawn => ({ m, ...o });
 const G = (g: number, o: Omit<GenSpawn, "g"> = {}): Spawn => ({ g, ...o });
 
 export const SPAWNS: Record<number, Spawn> = {
+  // the fighters' own effects, each in its character's effect file (efalt.c, efsync.c): what is made and how it
+  // is placed. Those only a fighter's own code starts are started by fx/native-callbacks.ts
+  0x479: G(1010, { bank: 1 }),
+  0x47a: { all: [M(0, { bank: 1, attach: true, face: true }), G(1001, { bank: 1, attach: true })] },
+  0x47b: G(1003, { bank: 1 }),
+  0x47d: G(1008, { bank: 1, attach: true }),
+  0x47e: G(1009, { bank: 1, attach: true }),
+  0x47f: G(2004, { bank: 2, attach: true }),
+  0x480: G(2002, { bank: 2, attach: true }),
+  0x481: G(2003, { bank: 2, attach: true }),
+  0x483: G(2007, { bank: 2 }),
+  0x484: G(2011, { bank: 2, attach: true }),
+  0x485: G(2014, { bank: 2, attach: true }),
+  0x486: M(1, { bank: 2, face: true }),
+  0x487: M(2, { bank: 2, child: true, scale: "arg" }),
+  0x48b: M(3, { bank: 3, attach: true, persistent: true }),
+  0x48c: M(4, { bank: 3, attach: true, persistent: true, callback: "fireLaunch" }),
+  0x48d: G(3008, { bank: 3, face: 1 }),
+  0x491: M(4, { bank: 4, attach: true }),
+  0x492: M(3, { bank: 4, attach: true, scale: "arg", face: true }),
+  0x493: M(5, { bank: 4, attach: true, scale: "arg", face: true }),
+  0x498: M(6, { bank: 5, child: true }),
+  0x499: M(7, { bank: 5, child: true }),
+  0x49a: G(5003, { bank: 5, face: 1 }),
+  0x49b: G(5007, { bank: 5, attach: true }),
+  0x49c: G(5013, { bank: 5, attach: true }),
+  0x49f: { all: [M(0, { bank: 32, attach: true, face: true }), G(32000, { bank: 32, attach: true })] },
+  0x4a0: G(32002, { bank: 32 }),
+  0x4a1: G(34004, { bank: 34, attach: true }),
+  0x4a2: G(34002, { bank: 34, attach: true }),
+  0x4a3: G(34003, { bank: 34, attach: true }),
+  0x4a4: M(0, { bank: 34, face: true }),
+  0x4a5: G(41000, { bank: 41, attach: true, scale: "arg" }),
+  0x4a6: G(41001, { bank: 41, attach: true, scale: "arg" }),
+  0x4a7: G(41002, { bank: 41, attach: true, scale: "arg" }),
+  0x4a8: G(41003, { bank: 41, attach: true, scale: "arg" }),
+  0x4ed: M(0, { bank: 14, child: true }),
+  0x4d2: M(0, { bank: 15 }),
+  0x4d4: G(0x11e, { attach: true }),
+  0x4f1: G(16000, { bank: 16, face: 1 }),
+  0x4f2: M(0, { bank: 16, attach: true, scale: "arg", face: true }),
+  0x4f3: M(1, { bank: 16, attach: true, scale: "arg", face: true }),
+  0x4f4: M(0, { bank: 17, child: true, scale: "arg" }),
+  0x4f5: M(1, { bank: 17, child: true, scale: "arg" }),
+  0x4f6: M(2, { bank: 17, attach: true, scale: "arg" }),
+  0x4f7: M(3, { bank: 17, attach: true, scale: "arg" }),
+  0x4f8: G(0x6e, { attach: true, scale: "arg" }),
+  0x4f9: G(0x1c8, { attach: true, scale: "arg" }),
+  0x4fa: G(0x166, { attach: true, scale: "arg" }),
+  0x4fb: G(0x71, { attach: true }),
+  0x4fc: G(17005, { bank: 17, attach: true }),
+  0x4fd: G(17009, { bank: 17, attach: true }),
+  0x4fe: M(4, { bank: 17, attach: true }),
+  0x503: G(0x6a),
+  0x504: G(0x6d, { scale: "arg" }),
+  0x505: G(0x79, { scale: "arg" }),
+  0x494: { all: [
+    M(0, { bank: 5, part: 44, child: true, scale: "arg", callback: "cutter" }),
+    M(1, { bank: 5, part: 44, attach: true, face: true, callback: "cutter" }),
+    M(2, { bank: 5, part: 1, attach: true, face: true, callback: "cutter" }),
+  ] },
+  0x495: M(3, { bank: 5, attach: true, scale: "arg", face: true }),
+  0x496: M(4, { bank: 5, attach: true }),
+  0x497: M(5, { bank: 5, attach: true, callback: "face" }),
+  0x49d: M(8, { bank: 5, face: true, rotZ: "arg", scale: "arg", callback: "jabZ" }),
+  0x4c1: M(1, { bank: 7, attach: true, scale: "arg", face: true, rotZ: "arg" }),
+  0x4c2: M(2, { bank: 7, attach: true, scale: "arg", face: true, rotZ: "arg" }),
+  0x4c4: M(3, { bank: 7, attach: true, scale: "arg", face: true, rotZ: "arg" }),
+  0x4c5: M(4, { bank: 7, attach: true, scale: "arg", face: true, rotZ: "arg" }),
+  0x4d5: G(11000, { bank: 11, attach: true }),
+  0x4d6: M(0, { bank: 11, attach: true, scale: "arg" }),
+  0x4d7: G(11001, { bank: 11, attach: true }),
+  0x4d9: M(0, { bank: 12, scale: "arg", face: true }),
+  0x4db: G(12005, { bank: 12, attach: true, scale: "arg" }),
+  0x4dc: G(12006, { bank: 12, attach: true, scale: "arg" }),
+  0x4dd: G(12007, { bank: 12, attach: true, scale: "arg" }),
+  0x4de: G(12008, { bank: 12, attach: true, scale: "arg" }),
+  0x4df: G(0x143, { attach: true, scale: "arg" }),
+  0x4ee: M(0, { bank: 10, attach: true }),
+  0x4ef: M(1, { bank: 10, attach: true }),
+  0x4f0: M(2, { bank: 10, attach: true, scale: "arg" }),
+  0x506: G(18008, { bank: 18 }),
+  0x507: { all: [M(0, { bank: 18, attach: true, face: true }), G(18000, { bank: 18, attach: true })] },
+  0x508: G(18002, { bank: 18 }),
+  0x50a: G(0x5f, { attach: true }),
+  0x50d: M(3, { bank: 19, attach: true }),
+  0x50e: M(4, { bank: 19, attach: true, scale: "arg", face: true }),
+  0x50f: M(5, { bank: 19, attach: true, scale: "arg", face: true }),
+  0x510: G(49000, { bank: 49, face: 1 }),
+  0x511: M(0, { bank: 49, attach: true, scale: "arg", face: true }),
+  0x512: M(1, { bank: 49, attach: true, scale: "arg", face: true }),
+  0x4c6: M(0, { bank: 8, attach: true, scale: "arg", face: true }),
+  0x4c7: M(1, { bank: 8, attach: true, scale: "arg", face: true }),
+  0x4c8: M(2, { bank: 8, attach: true, scale: "arg", face: true, startFrame: 1 }),
+  0x4c9: M(3, { bank: 8, attach: true, scale: "arg", face: true, startFrame: 1 }),
+  0x4cc: M(6, { bank: 8, scale: "arg", callback: "face" }),
+  0x4a9: M(0, { bank: 39, attach: true, scale: "arg", face: true, startFrame: 1 }),
+  0x4aa: M(1, { bank: 39, attach: true, scale: "arg", face: true, startFrame: 1 }),
+  0x4ca: M(4, { bank: 8, attach: true, scale: "arg" }),
+  0x4cb: M(5, { bank: 8, attach: true, scale: "arg" }),
+  0x4ce: G(9000, { bank: 9 }),
+  0x4e0: M(0, { bank: 13, attach: true }),
+  0x4e1: M(1, { bank: 13, attach: true, callback: "offsetY" }),
+  0x4e2: M(2, { bank: 13 }),
+  0x4e7: G(0x196),
+  0x4e8: M(3, { bank: 13 }),
+  0x4e9: G(14000, { bank: 14, attach: true }),
+  0x4ea: G(14001, { bank: 14, attach: true }),
+  0x4eb: G(14006, { bank: 14, face: 1 }),
+  0x4ec: G(14007, { bank: 14, attach: true }),
+  0x4ae: G(46000, { bank: 46, attach: true }),
+  0x4af: G(46001, { bank: 46, attach: true }),
+  0x4b0: G(46006, { bank: 46, face: 1 }),
   // hits: the spark (1 in 8 the other one), sized by the damage
   0x3e8: { m: [9, 10], scale: "damage" },
   0x3e9: G(0x0c),                       // electric

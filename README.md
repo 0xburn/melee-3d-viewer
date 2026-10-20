@@ -26,7 +26,15 @@ works too: `npm install`, then `npm run dev` / `npm run build`).
 deno install --allow-scripts
 deno run -A node_modules/vite/bin/vite.js            # dev server, http://127.0.0.1:5173/dev.html
 deno run -A node_modules/vite/bin/vite.js build      # static build into dist/
-deno test --no-check tests/                          # tests
+deno test --no-check --sloppy-imports tests/         # tests
+```
+
+A few tests read your game files (see below). They run when `MELEE_ASSETS`
+names that folder and may be read, and are skipped otherwise:
+
+```
+MELEE_ASSETS=<folder> deno test --no-check --sloppy-imports --allow-env --allow-read tests/
+deno run --sloppy-imports --allow-read scripts/check-effect-assets.ts <folder>   # every effect's model or generator is in your files
 ```
 
 `dist/` has `embed.html` (the player), `dev.html` (the dev page),
@@ -103,6 +111,26 @@ frame that differs and the viewer uses the track only before it.
 Load the replay and its track on the dev page, or pass `trackUrl` to the
 embed page (below).
 
+## The item animation table
+
+An item's state number is not the index of the animation it plays: each item
+kind has a table of its states in the game's code, and each entry names the
+state's animation (or none: the item keeps the pose it had).
+`src/render3d/item-animations.generated.ts` has that number for every state of
+every item kind. It is made from the [Melee decompilation](https://github.com/doldecomp/melee)'s
+item state tables (`src/melee/it/kinds/*.c`), not from the game's files, by
+`scripts/generate-item-animations.py`:
+
+```
+git clone https://github.com/doldecomp/melee vendor/melee-native
+python scripts/generate-item-animations.py            # writes the table
+python scripts/generate-item-animations.py --check    # compares it with the repository's
+```
+
+`--native-root <folder>` reads a checkout somewhere else (`vendor/` is in
+`.gitignore`). The table in the repository was made from doldecomp/melee
+1f0499b.
+
 ## Embedding
 
 `embed.html` is meant to sit in an iframe. URL parameters: `replayUrl`,
@@ -161,10 +189,23 @@ The module exports `ReplayPlayer`:
 - `audioFrame`: the fractional game frame at the audio device's current PCM
   playback time, or `null` until known. It must not run ahead of the
   simulation. Game frames start at -123; the viewer's frame indexes start at 0.
+- `play()` (a promise) and `pause()`: go on or stop where the sound is,
+  without a seek. A pause, a play or a change of speed is sent this way: a
+  seek would make a backend that simulates the game rewind it.
 - `speed`, `setSpeed(rate)`, `setMusic(on)`: playback speed and music.
   `destroy()` stops its workers and closes its audio context.
 - `error` and `audiointerrupted` events turn sound off; the viewer keeps
   playing without it.
+- `stage-frames` events (optional) carry Fountain of Dreams' platform heights
+  for replays from before Slippi 3.18, which do not record them:
+  `CustomEvent.detail.frames` is a list of `[gameFrame, left, right]`, the
+  platforms' joint translations before the stage's scale. What a replay records
+  comes first; the heights are forgotten when another replay is loaded. Without
+  them the platforms keep their starting height (`src/simulation-stage.ts`).
+
+The Lucky Stats host implements this feed, and bounded audio-only Wasm seek
+checkpoints in its separate native audio backend. Neither that engine nor the
+backend is bundled here.
 
 A shared-memory Wasm backend needs the top-level page and the embedded
 document served with `Cross-Origin-Opener-Policy: same-origin` and
@@ -174,13 +215,14 @@ browser. No server-side audio generation is needed.
 
 While sound is on, a seek shows its frame at once and the picture holds until
 the sound has caught up; the acknowledgement of an older seek is ignored.
-Pause, play and speed changes start the sound again at the frame shown. Music
+A pause, a play or a change of speed goes to the host player as it is; a seek
+under way is sent again with the new playing state. Music
 is turned on and off separately. Turning sound off, or loading another replay,
 destroys the host's player. The extra simulation still costs CPU and memory,
 and can make backward seeks slower. A backend must report its simulation
 failures rather than keep playing incorrect sound.
 
-`deno test --no-check tests/` checks `src/audio.ts` against a fake player:
+`deno test --no-check --sloppy-imports tests/` checks `src/audio.ts` against a fake player:
 transport, rapid seeks, music, teardown, and turning sound off while it
 starts. It does not cover browsers or devices, and supplies no engine. The
 integration was also exercised in a host page with a Wasm simulator in the
@@ -196,6 +238,9 @@ asset routes are not included here.
   Slippi team), [slippi-visualiser](https://github.com/schmooblidon/slippi-visualiser)
   by schmooblidon, [react-slp-viewer](https://github.com/vinceau/react-slp-viewer)
   by vinceau, and [HSDraw/HSDLib](https://github.com/Ploaj/HSDlib) by Ploaj.
+- Lucky Stats by petey (0xburn): the fighters' native effect callbacks, Fox
+  and Falco's up-B fire, item animations and effect lifetimes, and the
+  projectile joint fixes were ported from its viewer.
 - [melee-sim-light](https://github.com/kyhavlov/melee-sim-light) by kyhavlov:
   the simulator that writes viewer tracks.
 - The [Melee decompilation](https://github.com/doldecomp/melee)
