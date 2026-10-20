@@ -217,3 +217,21 @@ MIT, see `LICENSE`. Third-party notices: `src/render3d/LICENSE-noclip.txt`,
 `src/assets/controllers/m-overlay/LICENSE`, and `THIRD_PARTY_LICENSES.txt` in
 a build. Melee and its assets belong to Nintendo and HAL Laboratory; none are
 included.
+
+### Audio transport and optional stage state
+
+The host audio adapter must expose `play(): Promise<unknown>` and `pause(): void`
+in addition to `seek`. Pause/resume and speed changes no longer unconditionally
+seek: a simulation backend may otherwise reopen the entire game to rewind its
+small audio reserve. An outstanding seek still receives the latest resume intent.
+
+A host may emit `stage-frames` CustomEvents with `detail.frames` rows
+`[gameFrame, leftPlatformHeight, rightPlatformHeight]`. Frames start at -123;
+heights are native Fountain platform joint translations before stage scaling.
+The viewer uses these for pre-3.18 recordings, including water-column animation.
+Recorded stage events take precedence. Entries clear on game change. Without
+this optional feed, old recordings retain the starting-height fallback.
+
+The Lucky Stats host implements this feed and bounded audio-only Wasm seek
+checkpoints in its separate native audio backend. Neither the engine nor that
+backend's snapshot implementation is bundled into this standalone renderer PR.

@@ -1522,7 +1522,7 @@ export class FxWorld {
       if (s.scale === "damage") scale = Math.max(0.3, Math.min(1.5, 0.04 * ctx.damage + 0.3));
       else if (s.scale === "arg") scale = ctx.scale;
       const prop = bank.prop(index, 0, true);
-      const life = desc.life >= 1 ? Math.trunc(desc.life) + 1 : Math.max(8, Math.min(240, prop?.length ?? 60));
+      const life = s.persistent && desc.life === 0 ? Infinity : desc.life >= 1 ? Math.trunc(desc.life) + 1 : Math.max(8, Math.min(240, prop?.length ?? 60));
       const m: ModelFx = {
         bank, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2],
         rotY: s.face ? (ctx.facing < 0 ? -Math.PI / 2 : Math.PI / 2) : 0,

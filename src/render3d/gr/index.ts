@@ -21,7 +21,7 @@ import { Fountain } from "./fountain";
 import { StadiumForms, StadiumScreen } from "./stadium";
 import { Birds, Whispy } from "./dreamland";
 import { Randall } from "./story";
-import { isInVersion } from "~/parser/parser";
+import { stageFrame } from "../../simulation-stage";
 
 /** The generators the stage's code made itself, as the viewer track has
  *  them ("sgen": the stage object, bank, generator, where, and its random
@@ -71,14 +71,12 @@ export class StageScene implements StageLogic {
     }
     if (st.info.file === "GrIz") {
       // (the platforms' heights are in replays from Slippi 3.18 on)
-      const heights = isInVersion(data.settings.replayFormatVersion, "3.18.0.0");
       // (and in a viewer track that has them, "fod": the game's own, whatever the replay's version)
       const tracked = track?.has("fod") ? track : null;
       const fod = new Fountain(st, (frame, side) => {
         const t = tracked?.valid(frame - 123) ? tracked.at("fod", "", frame - 123) : null;
         if (t) return Number(t[side]);
-        if (!heights) return undefined;
-        const s = data.frames[frame]?.stage;
+        const s = stageFrame(data, frame);
         return side === 0 ? s?.fodLeftPlatformHeight : s?.fodRightPlatformHeight;
       });
       this.parts.push(fod);

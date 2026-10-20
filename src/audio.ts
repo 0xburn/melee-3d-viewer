@@ -14,6 +14,7 @@
 // play and speed changes go to the host player, which starts its sound again
 // at the frame shown.
 
+import { clearSimulationStage, receiveSimulationStage } from "./simulation-stage";
 import { createSignal } from "solid-js";
 
 /** what the host page sets before the viewer loads */
@@ -44,6 +45,8 @@ interface AudioPlayer extends EventTarget {
   enableAudio(): Promise<unknown>;
   open(replay: Blob): Promise<unknown>;
   seek(gameFrame: number, options: { resume: boolean }): void;
+  play(): Promise<unknown>;
+  pause(): void;
   setSpeed(rate: number): void;
   setMusic(on: boolean): void;
   destroy(): unknown;
@@ -121,6 +124,7 @@ export const sound = {
   /** a new replay (or none): sound off, and the next start opens this one */
   load(data?: Blob): void {
     this.disable();
+    clearSimulationStage();
     blob = data;
   },
 
@@ -148,6 +152,9 @@ export const sound = {
     });
     player = p;
     setSoundState("loading");
+    p.addEventListener("stage-frames", event => {
+      if (p === player) receiveSimulationStage((event as CustomEvent<{frames: number[][]}>).detail.frames);
+    });
     p.addEventListener("error", () => fail(p));
     p.addEventListener("audiointerrupted", () => fail(p));
     p.addEventListener("position", (event) => {
@@ -181,7 +188,9 @@ export const sound = {
     speed = rate;
     if (changed && player?.ready) {
       if (player.speed !== rate) player.setSpeed(rate);
-      align();
+      if (seeking) align();
+      else if (desired) { const p = player; void p.play().catch(() => fail(p)); }
+      else player.pause();
     }
   },
 

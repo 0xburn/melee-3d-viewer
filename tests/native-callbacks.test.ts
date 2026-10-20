@@ -188,11 +188,25 @@ test('actual Fox/Falco fire models include launch particles and replace root rot
   const w=new FxWorld(common,(_,p)=>p,new Map([[0,common],[3,bank]]));
   (w as any).sts.set('0:0',{actionStateId:356,isGrounded:true,facingDirection:-1,selfInducedAirXSpeed:-2,selfInducedAirYSpeed:3,selfInducedGroundXSpeed:0});
   w.spawn(0x48c,{pos:[0,0,0],follow:null,facing:-1,angle:0,damage:0,scale:1,owner:null,by:'0:0'});
-  const m=w.models.at(-1)!;assert.equal(m.index,4);assert.equal(m.bank,bank);
+  const m=w.models.at(-1)!;assert.equal(m.index,4);assert.equal(m.bank,bank);assert.equal(m.life,Infinity);
   assert.ok(Math.abs(m.rotZ - (Math.PI/2-Math.atan2(3,2)))<1e-8);
   assert.ok(bank.ptclKeys(4).length>0);
   const p=bank.prop(4,0,true)!;assert.ok(p);
   m.rotZ=0.7;w.poseModel(m,p,5);
   assert.equal(p.skeleton.rot[1],Math.fround(-Math.PI/2));
   assert.equal(p.skeleton.rot[2],Math.fround(0.7));
+});
+
+// Both zero-lifetime fire descriptors loop until the fighter ends the move.
+test('charging fire outlives its first animation cycle', {skip:!assetDir},()=>{
+  const read=(name:string)=>{const b=fs.readFileSync(path.join(assetDir!,name));return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);};
+  const bank=new EffectBank(read('EfFxData.dat'),'effFoxDataTable',3);
+  const common=new EffectBank(read('EfCoData.dat'),'effCommonDataTable',0);
+  const w=new FxWorld(common,(_,p)=>p,new Map([[0,common],[3,bank]]));
+  w.spawn(0x48b,{pos:[0,0,0],follow:null,facing:1,angle:0,damage:0,scale:1,owner:'0:0',by:'0:0'});
+  const m=w.models.at(-1)!;
+  assert.equal(m.life,Infinity);
+  assert.ok(bank.ptclKeys(3).some(k=>k.every===19));
+  m.age=38; (w as any).modelParticles(m);
+  assert.ok(w.ps.gens.length>0,'a later cycle still emits fire during the charge');
 });

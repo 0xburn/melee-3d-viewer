@@ -1,3 +1,4 @@
+import { stageFrame, stageRevision } from "../simulation-stage";
 import { itemSource } from "./item-source";
 import { isShadowBall, shadowBallScale } from "./shadow-ball";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
@@ -23,7 +24,6 @@ import { getPlayerColor, holdPlay, replayStore } from "~/state/replayStore";
 import { PagePlayer } from "./pagePlayers";
 import { actionMapByInternalId } from "~/viewer/characters";
 import type { PlayerInputs, PlayerState, ReplayData } from "~/common/types";
-import { isInVersion } from "~/parser/parser";
 import { type FallLean, Fighter, type GameAnim, isScreenKO, isStarKO, koPlace, missingAnimations, type Place, type PoseInput } from "./fighter";
 import * as files from "./files";
 import { Hud3D } from "./Hud3D";
@@ -634,7 +634,6 @@ export interface Stats {
   player: { seen: boolean; warm: boolean; every: boolean; mayLoad: boolean; running: boolean; waiting: string };
 }
 
-const fodHeights = (data: ReplayData) => isInVersion(data.settings.replayFormatVersion, "3.18.0.0");
 
 /** every (character, costume) a replay needs, Zelda/Sheik and Nana included */
 function wanted(data: ReplayData, into: Set<string>) {
@@ -1318,7 +1317,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   };
   createEffect(() => {
     void replayStore.frame; void replayStore.ghosts; void replayStore.zoom; void replayStore.replayData;
-    void stage(); void ready(); void kit(); void hudOf();
+    void stage(); void ready(); void kit(); void hudOf(); void stageRevision();
     schedule();
   });
 
@@ -1410,7 +1409,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // Fountain's platform heights are in replays from Slippi 3.18 on; before
       // that the parser's stand-ins are not the file's, so the stage keeps its own
       prof.mark("stageParticles");
-      st.update(fno, fodHeights(data) ? frame.stage : undefined);
+      st.update(fno, stageFrame(data, fno));
       // Stadium's big screen: what it shows now
       if (scene.screen && st.screen) {
         scene.screen.draw(fno);
@@ -2404,7 +2403,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const st = stageInWorld(viewerTrack()) ? stage() : null;
     const pose = (g: number) => {
       if (!st || (g === f && !posedOther)) return;
-      st.update(g, fodHeights(data) ? data.frames[g]?.stage : undefined);
+      st.update(g, stageFrame(data, g));
       posedOther = g !== f;
     };
     let posedOther = false;
@@ -3193,7 +3192,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       for (let g = from; g <= last; g++) {
         const now = actorsAt(data, fs, g);
         if (stw) {
-          stw.update(g, fodHeights(data) ? data.frames[g]?.stage : undefined);
+          stw.update(g, stageFrame(data, g));
         }
         if (draws) run.w.ps.rng.trace = [];
         run.w.step(g, now);
@@ -3586,8 +3585,8 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x31: { art: 1, colorPick: true }, // Dr. Mario's pill (his article 1: ftdrmario.c)
   0x36: { art: 0 },                // Fox's laser
   0x37: { art: 0 },                // Falco's laser
-  0x4a: { art: 1 },                // Fox's blaster, in his hand
-  0x4b: { art: 1 },                // Falco's blaster
+  0x4a: { art: 1, held: heldAll(RTHUMB) },                // Fox's blaster, in his hand
+  0x4b: { art: 1, held: heldAll(RTHUMB) },                // Falco's blaster
   0x4f: { art: 0, tilt: true },    // Sheik's needles, thrown
   0x59: { art: 1 },                // Pikachu's Thunder Jolt (his articles 1 and 2: ftpikachu.c)
   0x5a: { art: 2 },

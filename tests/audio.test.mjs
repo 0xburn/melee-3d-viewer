@@ -36,6 +36,8 @@ const fakePlayer = `export class ReplayPlayer extends EventTarget {
     this._videoEpoch++;
     this.seeks.push({ frame, ...options });
   }
+  async play() { this.plays=(this.plays||0)+1; }
+  pause() { this.pauses=(this.pauses||0)+1; }
   setSpeed(speed) {
     this.speed = speed;
   }
@@ -101,11 +103,12 @@ test("optional audio follows acknowledged seeks, pauses, speed, music and teardo
     assert.equal(sound.frame(), 500);
 
     // pause, then play at double speed
+    const seeksBeforePause=p.seeks.length;
     sound.transport(false, 500, 1);
-    assert.equal(p.seeks.at(-1).resume, false);
+    assert.equal(p.pauses,1);assert.equal(p.seeks.length,seeksBeforePause);
     sound.transport(true, 500, 2);
     assert.equal(p.speed, 2);
-    assert.equal(p.seeks.at(-1).resume, true);
+    assert.equal(p.plays,1);assert.equal(p.seeks.length,seeksBeforePause);
 
     sound.music(false);
     assert.equal(p.music, false);
