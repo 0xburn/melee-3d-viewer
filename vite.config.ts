@@ -92,6 +92,8 @@ export default defineConfig({
   // relative, so a build works from any folder
   base: "./",
   server: { host: "127.0.0.1", port: 5173 },
+  // (the simulator's worker imports the simulator's module: src/sim/sim.worker.ts)
+  worker: { format: "es" },
   build: {
     target: "esnext",
     rollupOptions: { input: { embed: "embed.html", dev: "dev.html" } },

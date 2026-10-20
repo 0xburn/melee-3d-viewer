@@ -30,6 +30,8 @@ $("game").onchange = (e) => {
 $("view").onchange = (e) => send({ type: "view", view: (e.target as HTMLSelectElement).value });
 $("hudslots").onchange = (e) => send({ type: "hudslots", slots: (e.target as HTMLSelectElement).value });
 $("play").onclick = () => send({ type: "toggle" });
+// the simulator makes the track in the browser (README.md, "Viewer tracks in the browser")
+$("sim").onchange = (e) => send({ type: "sim", on: (e.target as HTMLInputElement).checked });
 
 // Full Window (the player over the page) and Full Screen (the display): the
 // buttons, or the player's own keys (its {type: "fullKey"}: F, W, Esc). The
@@ -61,6 +63,11 @@ window.addEventListener("message", (e: MessageEvent) => {
   if (m.type === "renderer") $("status").textContent = m.reason ? `${m.renderer}: ${m.reason}` : m.renderer;
   else if (m.type === "loaded") $("status").textContent = `${m.frames} frames`;
   else if (m.type === "track") $("status").textContent = `viewer track: ${m.state}`;
+  else if (m.type === "sim" && m.state !== "off") {
+    const at = m.until !== undefined && m.last !== undefined ? ` ${m.until}/${m.last}` : "";
+    const fps = m.rate ? `, ${Math.round(m.rate)} frames/s` : "";
+    $("status").textContent = `simulator: ${m.state}${at}${fps}${m.reason ? ` (${m.reason})` : ""}`;
+  }
   else if (m.type === "fullKey") {
     if (m.how === "leave") { if (full) setFull(null); }
     else if (m.how === "window" || m.how === "screen") toggleFull(m.how);

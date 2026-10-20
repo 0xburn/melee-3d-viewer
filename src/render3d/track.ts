@@ -41,7 +41,7 @@
  * works those frames out from the replay, as it does with no track at all.
  */
 import type { Tint } from "./fx/colanim";
-import { hasTrack, trackAnswer } from "./files";
+import { hasTrack, liveTrack, trackAnswer } from "./files";
 import { pageCache, trim } from "../state/pageCache";
 
 export type TrackEvent = [number, string, ...(number | string)[]];
@@ -308,6 +308,9 @@ export type TrackAnswer = { state: "ready"; track: TrackData } | { state: "pendi
  *  until it is ready (then `got`) or cannot be had; `stop` ends the asking */
 export function fetchTrack(path: string, got: (t: ViewerTrack) => void, why?: (reason: string) => void): () => void {
   let stopped = false, timer: ReturnType<typeof setTimeout> | undefined;
+  // (one made on the page as the replay plays: each longer one as it comes, src/sim/feed.ts)
+  const live = liveTrack(path);
+  if (live) return live.subscribe((t) => { if (!stopped) got(t); }, (r) => { if (!stopped) why?.(r); });
   // (one read of a replay's track for every player on the page)
   const shared = pageCache<ViewerTrack>("tracks");
   const have = shared.get(path);

@@ -24,6 +24,8 @@ import { HudKit, stageMagnifierColors } from "./hud";
 import { pageCache, sharedPromise, trim } from "../state/pageCache";
 import { decodeTrack } from "./trackcodec";
 import { motionTableFromDol, textFontFromDol } from "./dol";
+import type { ViewerTrack } from "./track";
+import type { GameFilesFrom } from "../sim/protocol";
 
 export interface Status {
   available: boolean; // the files and the action table are there
@@ -36,28 +38,33 @@ export interface Status {
   controller_overlay?: string; // the Controller overlay: "both", "left", "right", "you" or "off" (Controllers.tsx)
 }
 
-/** a game file's bytes by its name on the disc ("PlFxNr.dat") */
-export type FileSource = (name: string) => Promise<ArrayBuffer>;
+/** a game file's bytes by its name on the disc ("PlFxNr.dat"); `from` says
+ *  where they are, for the simulator's worker (src/sim), which reads them itself */
+export type FileSource = ((name: string) => Promise<ArrayBuffer>) & { from?: GameFilesFrom };
 
 /** files fetched from a folder at this URL (relative to the page) */
 export function folderUrlSource(base: string): FileSource {
   const dir = new URL(base.endsWith("/") ? base : base + "/", location.href);
-  return async (name) => {
+  const s: FileSource = async (name) => {
     const r = await fetch(new URL(encodeURIComponent(name), dir), { cache: "no-store" });
     if (!r.ok) throw new Error(`${name}: ${r.status === 404 ? "not in the game files folder" : "HTTP " + r.status}`);
     return r.arrayBuffer();
   };
+  s.from = { kind: "url", base: dir.href };
+  return s;
 }
 
 /** files handed over as File objects (a folder picker's), found by their own name */
 export function fileListSource(list: File[]): FileSource {
   const byName = new Map<string, File>();
   for (const f of list) byName.set(f.name, f);
-  return async (name) => {
+  const s: FileSource = async (name) => {
     const f = byName.get(name);
     if (!f) throw new Error(`${name}: not in the game files folder`);
     return f.arrayBuffer();
   };
+  s.from = { kind: "files", list };
+  return s;
 }
 
 // (made when first used: the module can be imported where there is no page, as the tests do)
@@ -127,9 +134,28 @@ export function setTrackUrl(replayUrl: string, trackUrl: string | null) {
   else trackUrls.delete(replayUrl);
 }
 
-/** whether a viewer track was given for this replay */
+/** where the game files are read from, for the simulator's worker; null: a source it cannot read */
+export function gameFilesFrom(): GameFilesFrom | null {
+  return currentSource().from ?? null;
+}
+
+/** a viewer track made on the page while the replay plays (src/sim/feed.ts):
+ *  `got` with each longer track, `why` while there is none */
+export interface LiveTrack {
+  subscribe(got: (t: ViewerTrack) => void, why: (reason: string) => void): () => void;
+}
+const liveTracks = new Map<string, LiveTrack>();
+export function setLiveTrack(replayUrl: string, live: LiveTrack | null) {
+  if (live) liveTracks.set(replayUrl, live);
+  else liveTracks.delete(replayUrl);
+}
+export function liveTrack(replayUrl: string): LiveTrack | undefined {
+  return liveTracks.get(replayUrl);
+}
+
+/** whether a viewer track was given for this replay (or is made on the page) */
 export function hasTrack(replayUrl: string): boolean {
-  return trackUrls.has(replayUrl);
+  return trackUrls.has(replayUrl) || liveTracks.has(replayUrl);
 }
 
 /** the viewer track's answer for a replay (track.ts reads it): ready with the

@@ -12,7 +12,8 @@
  * URL parameters: replayUrl, name, frame (game frame, -123 = first),
  * trackUrl (the replay's viewer track), files, renderer, zoom, look=480,
  * crt=<off|trinitron|pvm>, controllers=<both|left|right|you|opponent|off>,
- * you=<port 1-4>, hudslots=<outer|game>, mini=1.
+ * you=<port 1-4>, hudslots=<outer|game>, mini=1, sim=1 (the simulator makes
+ * the viewer track in the browser when none is given: src/sim/feed.ts).
  *
  * Messages in (window.postMessage from the parent):
  *   {type: "load", url, name?, frame?, trackUrl?}
@@ -53,6 +54,10 @@
  *                                        "game" (each in their port's slot)
  *                                        (hudslots.ts; ?hudslots= starts
  *                                        with it)
+ *   {type: "sim", on}                    the simulator makes the viewer track
+ *                                        in the browser (on), for the replay
+ *                                        shown and the ones after, when the
+ *                                        page gave none (src/sim/feed.ts)
  *
  * The picture is always the game's own shape (73:60, GameFrame), centered in
  * whatever box the page gives it.
@@ -64,6 +69,9 @@
  *                                        "svg") and, when 3D cannot run, why
  *   {type: "track", state}               the viewer track: "ready",
  *                                        "pending" or "none"
+ *   {type: "sim", state, until, last, rate, firstFrameMs, firstTrackMs, reason}
+ *                                        how the simulator stands, while on
+ *                                        (src/sim/feed.ts SimStatus)
  *   {type: "warming"}                    the 3D player is warming up
  *   {type: "viewKey"}                    V pressed on the player: the page
  *                                        may move every player to the next view
@@ -100,6 +108,7 @@ import { isOverlayShow, type OverlayShow } from "~/viewer/controllerInputs";
 import { isHudSlots, setHudSlotsMode } from "~/common/hudslots";
 import { diagLoaded, diagLoading, diagRunning, diagView } from "~/diag";
 import { fileListSource, setFileSource, setTrackUrl, status } from "~/render3d/files";
+import { simAsked, simForReplay } from "~/sim/embed";
 import "~/state/fileStore";
 import "~/state/replayStore";
 import "~/state/selectionStore";
@@ -138,11 +147,15 @@ function post(message: object) {
 // opens a game and seeks straight away - the mixup explorer - lost its seek).
 let loading = false;
 let seekAfterLoad: number | null = null;
+// the viewer track the page gave for the replay shown (the simulator makes none then)
+let givenTrack: string | null = null;
 
 async function loadUrl(url: string, name: string, frame?: number, trackUrl?: string | null) {
   loading = true;
   seekAfterLoad = null;
   setTrackUrl(url, trackUrl ?? null);
+  givenTrack = trackUrl ?? null;
+  simForReplay(url, givenTrack);
   try {
     await loadReplay(url, name, frame);
   } catch (e) {
@@ -245,6 +258,14 @@ window.addEventListener("message", (event) => {
       break;
     case "hudslots":
       setHudSlotsMode(isHudSlots(m.slots) ? m.slots : "outer");
+      break;
+    case "sim":
+      // (the player asks for its track again: the replay's source handed over anew)
+      simAsked(m.on === true, source(), givenTrack, () => {
+        const u = source();
+        setSource(null);
+        setTimeout(() => setSource(u), 0);
+      });
       break;
   }
 });

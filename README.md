@@ -111,6 +111,67 @@ frame that differs and the viewer uses the track only before it.
 Load the replay and its track on the dev page, or pass `trackUrl` to the
 embed page (below).
 
+## Viewer tracks in the browser
+
+The viewer can also make the track itself: melee-sim-light built as
+WebAssembly plays the replay in a Web Worker while the viewer plays it
+(`src/sim/`). This is optional and off unless the page asks for it, and a
+track the page gives (`trackUrl`) always comes first.
+
+- The replay plays at once without a track. When the simulator is 5 seconds
+  ahead of the frame shown, the viewer takes its track; later it takes a
+  longer one when the frame shown gets near the end of the one it has.
+- Going back is free. A jump past where the simulator has got shows those
+  frames without a track until it catches up.
+- Each frame the simulator plays is checked against the replay. Where its
+  game parts from the replay, the track stops there, as with a `diverged_at`
+  track. It then plays the replay again with the next likely settings (UCF
+  version, arithmetic), at most three times, and keeps the track that goes
+  furthest.
+- It reads the same game files as the renderer (the folder, or the files
+  picked), in the worker. Nothing leaves the browser.
+- Replays it does not play (other stages, items, PAL, Pokemon Stadium with its
+  transformations on, Slippi before 3.0) play as before, without a track.
+
+Turning it on: `?sim=1` on the embed page, a `{type: "sim", on: true}`
+message, or "Simulate Track" on the dev page. The page is told how it stands
+with `{type: "sim", state, until, last, rate, firstFrameMs, firstTrackMs, reason}`.
+
+The simulator's build is not in this repository. Put it in a `sim/` folder
+beside the page (in `.gitignore`), or say where it is before the embed entry
+script loads:
+
+```html
+<script>
+  globalThis.__MELEE_SIM_CONFIG__ = {
+    module: "/sim/melee-sim.mjs",   // default: sim/melee-sim.mjs beside the page
+    wasm: "/sim/melee-sim.wasm",    // default: beside the module
+    files: "/sim/sim-files.json",   // the game files it reads; default: beside the module
+    auto: false,                    // true: for every replay loaded without a track
+  };
+</script>
+```
+
+To build it, with [Emscripten](https://emscripten.org) 6.0.9 active
+(`emcc` on `PATH`), from a checkout of the fork's viewer-track branches:
+
+```
+make -f Makefile -f <this repository>/scripts/sim/wasm-viewer.mk wasm-viewer \
+  MSL_VISUAL_TRACK_BUILD=1 MSL_REPLAY_ARITHMETIC=1 -j8
+cp build/melee_core/wasm/viewer/melee-sim.mjs build/melee_core/wasm/viewer/melee-sim.wasm <this repository>/sim/
+```
+
+`scripts/sim/wasm-viewer.mk` compiles the same objects as the simulator's own
+`make wasm` and links them for the viewer: it exports the viewer API
+(`msl_viewer_create`, `_step`, `_track`, `_output`, `_destroy`), packages no
+game data, and has a file system the worker writes your files into.
+`sim-files.json` (the game files it reads, a JSON list of names) goes beside
+them; without it, a picked folder is read the simulator's extraction way and
+a folder URL cannot be used.
+
+`deno test --no-check --sloppy-imports tests/` checks the replay reading,
+the drives and the hand-overs against a fake module (`tests/sim.test.ts`).
+
 ## The item animation table
 
 An item's state number is not the index of the animation it plays: each item
@@ -262,7 +323,11 @@ asset routes are not included here.
   and Falco's up-B fire, item animations and effect lifetimes, and the
   projectile joint fixes were ported from its viewer.
 - [melee-sim-light](https://github.com/kyhavlov/melee-sim-light) by kyhavlov:
-  the simulator that writes viewer tracks.
+  the simulator that writes viewer tracks, and that the viewer can run in the
+  browser as WebAssembly (`src/sim/`). `src/sim/tape.ts` follows its replay
+  validator's input reading.
+- [Emscripten](https://emscripten.org) (MIT / University of Illinois NCSA):
+  builds the simulator for the browser; its runtime is part of that build.
 - The [Melee decompilation](https://github.com/doldecomp/melee)
   (doldecomp/melee contributors): the game's code, which the renderer's
   behavior is written from (function names in the comments are its names).
