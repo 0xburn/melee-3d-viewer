@@ -111,14 +111,14 @@ export interface Article { prop: Prop; scale: number; special: ((o: number) => n
  *  states, its model) at `art` of an archive, in one of the item's states
  *  with that state's animations; null without a model */
 export function loadArticle(a: Archive, art: number, state: number, tag: string): Article | null {
-  if (state < 0 || state >= 16) return null;
+  if (!Number.isInteger(state) || state < -1 || state >= 256) return null;
   const d = a.data;
   const attr = ptr(a, art), special = ptr(a, art + 0x04), states = ptr(a, art + 0x0c), model = ptr(a, art + 0x10);
   const joint = model === null ? null : ptr(a, model);
   if (joint === null) return null;
   // the states' list: as long as the gap to the next thing in the file
   const nStates = states === null ? 0 : Math.floor(structSize(a, states) / 0x10);
-  const sd = states === null || state >= nStates ? null : states + state * 0x10;
+  const sd = states === null || state < 0 || state >= nStates ? null : states + state * 0x10;
   // the state's animations (a state the list does not have: none)
   let prop: Prop | null = null;
   try {

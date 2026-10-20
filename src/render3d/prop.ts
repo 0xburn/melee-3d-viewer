@@ -61,11 +61,12 @@ export class Prop {
    *  picture's plane (as the game sets an effect's root joint), and `rotX`
    *  about its own x axis (a thrown needle's tilt). `rootSet`: the place is the
    *  root joint's own, over the file's (an effect model the game's dispatch
-   *  made at a place or on a joint: HSD_JObjSetTranslate on its root) */
-  pose(frame: number, x: number, y: number, z: number, scale: number, rotY = 0, loop = true, rotZ = 0, rotX = 0, rootSet = false) {
+   *  made at a place or on a joint: HSD_JObjSetTranslate on its root).
+   *  jointFrame lets a joint animation run faster without speeding materials. */
+  pose(frame: number, x: number, y: number, z: number, scale: number, rotY = 0, loop = true, rotZ = 0, rotX = 0, rootSet = false, jointFrame = frame) {
     const sk = this.skeleton;
     sk.resetPose();
-    if (this.anim) sk.applyAObjs(this.anim, frame, loop);
+    if (this.anim) sk.applyAObjs(this.anim, jointFrame, loop);
     if (this.rootAtOrigin || rootSet) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
     if (this.matAnim) {
       sk.resetMaterials();

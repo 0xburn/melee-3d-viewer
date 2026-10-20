@@ -21,8 +21,7 @@
  *     starts the color itself (ftSk_SpecialNLoop_Anim), else it waits for
  *     the next change of state.
  * All of them are lost with a stock. What the replay cannot give: a charge
- * stored before the replay's first frame (none at a game's start), and one
- * Kirby copied; Game & Watch's bucket fills from what it catches, which the
+ * stored before the replay's first frame (none at a game's start); Game & Watch's bucket fills from what it catches, which the
  * replay does not record, so it is not shown. A viewer track (track.ts)
  * has what each of them holds, the simulator's own count: with one, that is
  * used instead, bucket and Kirby included (storedFromTrack).
@@ -115,6 +114,28 @@ function rule(char: number, a: ChargeAttrs): Rule | null {
   return null;
 }
 
+// Lucky Stats: Kirby uses the same charging algorithms with his own state
+// ranges, attributes and color scripts. Copy identity comes from the same
+// history used for his hat, so canceling does not lose the stored charge.
+function copiedRule(kind: number, a: ChargeAttrs): Rule | null {
+  const spec: Record<number, [number, number, number, number, number]> = {
+    // first copied state, last, original first, attribute offset, color script
+    [DK]: [455, 464, 369, 0x164, 58],
+    [SAMUS]: [407, 412, 343, 0x150, 54],
+    [MEWTWO]: [500, 509, 341, 0x384, 93],
+    [SHEIK]: [467, 474, 341, 0, 87],
+  };
+  const v = spec[kind];
+  if (!v) return null;
+  const [first, end, original, offset, anim] = v;
+  const base = rule(kind, { int: o => a.int(o + offset), float: o => a.float(o + offset) });
+  if (!base) return null;
+  const state = (n: number) => n >= first && n <= end ? n - first + original : n;
+  return { anim, step(n, s, entered, from) {
+    base.step(n, { ...s, actionStateId: state(s.actionStateId) }, entered, state(from));
+  } };
+}
+
 /** A frame's value in the stored charges' arrays: the color animation of a
  *  full stored charge (0: none), and whether the move's own code starts it
  *  on that frame (Sheik's loop starting over with six held), besides the
@@ -129,20 +150,23 @@ export const storedStarts = (v: number) => (v & STARTS) !== 0;
 /** for each fighter (by its key, "port:nana"), the color animation of a
  *  full stored charge on each frame (storedAnim; 0: none) and the frames the
  *  move starts it itself (storedStarts) */
-export function storedCharges(data: ReplayData, attrs: (char: number) => ChargeAttrs | null): Map<string, Uint8Array> {
+export function storedCharges(data: ReplayData, attrs: (char: number) => ChargeAttrs | null,
+                              copyAt?: (port: number, frame: number) => number): Map<string, Uint8Array> {
   const out = new Map<string, Uint8Array>();
   const run = (port: number, nana: boolean) => {
-    let r: Rule | null = null, char = -1, last = -1;
+    let r: Rule | null = null, char = -1, copy = -1, last = -1;
     const n: Counter = { n: 0, t: 0, full: false };
     let arr: Uint8Array | null = null;
     for (let f = 0; f < data.frames.length; f++) {
       const p = data.frames[f]?.players[port];
       const s = nana ? p?.nanaState : p?.state;
       if (!s) continue;
-      if (s.internalCharacterId !== char) {
+      const nextCopy = s.internalCharacterId === KIRBY ? copyAt?.(port, f) ?? -1 : -1;
+      if (s.internalCharacterId !== char || nextCopy !== copy) {
         char = s.internalCharacterId;
         const a = attrs(char);
-        r = a ? rule(char, a) : null;
+        copy = nextCopy;
+        r = a ? (char === KIRBY ? copiedRule(copy, a) : rule(char, a)) : null;
         n.n = n.t = 0; n.full = false; last = -1;
       }
       if (!r) continue;

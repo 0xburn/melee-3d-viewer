@@ -1,3 +1,4 @@
+import { itemTransitionEffects, iceTransitionEffects } from "../item-effects";
 /* 3D replay viewer: the game's effects, run alongside the replay.
  *
  * Each frame the effects the game started are placed as its own dispatch
@@ -44,6 +45,8 @@ export interface SpawnCtx {
   /** the fighter it is made for: its effects all end together when the game
    *  says (efLib_DestroyAll: the track's "fxend") */
   by?: string;
+  /** Explicit lifetime tag for item-attached generators. Impact bursts omit it. */
+  tag?: string;
 }
 
 /** one piece of an effect in the learned table (effect-table.json, optional):
@@ -934,6 +937,7 @@ export class FxWorld {
       if (!this.itemBorn.has(it.spawnId)) this.itemBorn.set(it.spawnId, frame);
       const age = frame - this.itemBorn.get(it.spawnId)!;
       for (const [gfx, pieces] of this.learned!(`i${it.typeId}:${it.state ?? 0}:${age}`) ?? []) {
+        if (it.typeId === 0x5d && gfx === 0x40c) continue; // explicit state transition below
         place("i", it.spawnId, gfx, pieces, [it.x, it.y], 1, undefined, it.spawnId);
       }
     }
@@ -1432,29 +1436,32 @@ export class FxWorld {
       }
       return;
     }
+    const bank = s.bank === undefined ? this.common : this.banks.get(s.bank);
+    if (!bank) return;
     if ("m" in s) {
       const index = Array.isArray(s.m) ? (R.next() < 1 / 8 ? s.m[0] : s.m[1]) : s.m;
-      const desc = this.common.models[index];
+      const desc = bank.models[index];
       if (!desc || desc.joint < 0) return;
       let scale = 1;
       if (s.scale === "damage") scale = Math.max(0.3, Math.min(1.5, 0.04 * ctx.damage + 0.3));
       else if (s.scale === "arg") scale = ctx.scale;
-      const prop = this.common.prop(index, 0, true);
+      const prop = bank.prop(index, 0, true);
       const life = desc.life >= 1 ? Math.trunc(desc.life) + 1 : Math.max(8, Math.min(240, prop?.length ?? 60));
       const m: ModelFx = {
-        bank: this.common, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2],
+        bank, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2],
         rotY: s.face ? (ctx.facing < 0 ? -Math.PI / 2 : Math.PI / 2) : 0,
         rotZ: s.rotZ === "rand" ? Math.PI * 2 * R.next() : s.rotZ === "arg" ? ctx.angle : 0,
-        scale, age: 0, life, follow: s.attach ? ctx.follow : null, owner: ctx.owner, turn: null, by: ctx.by,
+        scale, age: 0, life, follow: s.attach ? ctx.follow : null, under: s.child ? ctx.follow : null, owner: ctx.owner, turn: null, by: ctx.by,
         steady: NEVER_PAUSED.has(this.spawning),
       };
       this.models.push(m);
       if (ctx.owner) this.own(ctx.owner).models.push(m);
       return;
     }
-    const g = this.ps.generator(this.common, s.g);
+    const g = this.ps.generator(bank, s.g);
     if (!g) return;
-    if (ctx.by) g.tag = `f:${ctx.by}`;
+    if (ctx.tag) g.tag = ctx.tag;
+    else if (ctx.by) g.tag = `f:${ctx.by}`;
     if (s.life !== undefined && (g.genLife === 0 || g.genLife > s.life)) g.genLife = s.life;
     if (s.attach && ctx.follow) {
       // (sized: a transform of its own that follows, at the call's scale)
@@ -1715,6 +1722,7 @@ export class FxWorld {
 
   private itemEvents(list: FxItem[]) {
     const now = new Set<number>();
+    const previous = this.items?.(this.stepping - 1) ?? [];
     for (const it of list) {
       now.add(it.spawnId);
       let m = this.itemAt.get(it.spawnId);
@@ -1725,6 +1733,23 @@ export class FxWorld {
         m[0] = m[5] = m[10] = m[15] = 1;
       }
       m[12] = it.x; m[13] = it.y; m[14] = 0;
+      // Native impact callbacks run on entry, not every frame of the hidden
+      // impact lifetime. End trails first; the detached burst outlives the item.
+      if (!(this.tracked && this.trackOrdered)) {
+        const before = previous.find(q => q.spawnId === it.spawnId);
+        const ice = iceTransitionEffects(before, it);
+        if (ice?.stop) this.ps.endTag(`i:${it.spawnId}`);
+        for (const id of ice?.effects ?? []) this.spawn(id, {
+          pos: [it.x, it.y, 0], follow: () => this.itemAt.get(it.spawnId) ?? null,
+          facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1,
+          owner: null, by: `i:${it.spawnId}`, tag: `i:${it.spawnId}`,
+        });
+        const effects = itemTransitionEffects(before, it);
+        if (effects.length) this.ps.endTag(`i:${it.spawnId}`);
+        for (const id of effects) this.spawn(id, { pos: [it.x, it.y, 0], follow: null,
+          facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1,
+          owner: null, by: `i:${it.spawnId}` });
+      }
       // the particles its model's animation starts on this frame of it,
       // going with it (efLib's particle callback on the item's joints)
       // (not with the track's own generator events: the item's keys the game ran are in the track)

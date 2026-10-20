@@ -8,9 +8,9 @@
 
 /** a common effect model: `m` its index in EfCoData's model table (two:
  *  one of them at random, the first 1 in 8) */
-export interface ModelSpawn { m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
-/** a particle generator: `g` its index in EfCoData's particle bank */
-export interface GenSpawn { g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
+export interface ModelSpawn { bank?: number; child?: boolean; m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
+/** A particle generator: `g` is its full ID in the selected particle bank. */
+export interface GenSpawn { bank?: number; g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
                            /** frames it makes particles for, when its effect is given a lifetime (EF_Effect.lifetime) */
                            life?: number;
                            /** made at the call's place under the joint it goes with, not the
@@ -26,6 +26,79 @@ const M = (m: number, o: Omit<ModelSpawn, "m"> = {}): Spawn => ({ m, ...o });
 const G = (g: number, o: Omit<GenSpawn, "g"> = {}): Spawn => ({ g, ...o });
 
 export const SPAWNS: Record<number, Spawn> = {
+  // Lucky Stats: native efAlt/efSync character-bank dispatch. These definitions
+  // describe the asset and placement; native-only callbacks still need triggers.
+  0x479: G(1010, { bank: 1 }),
+  0x47a: { all: [M(0, { bank: 1, attach: true, face: true }), G(1001, { bank: 1, attach: true })] },
+  0x47b: G(1003, { bank: 1 }),
+  0x47d: G(1008, { bank: 1, attach: true }),
+  0x47e: G(1009, { bank: 1, attach: true }),
+  0x47f: G(2004, { bank: 2, attach: true }),
+  0x480: G(2002, { bank: 2, attach: true }),
+  0x481: G(2003, { bank: 2, attach: true }),
+  0x483: G(2007, { bank: 2 }),
+  0x484: G(2011, { bank: 2, attach: true }),
+  0x485: G(2014, { bank: 2, attach: true }),
+  0x486: M(1, { bank: 2, face: true }),
+  0x487: M(2, { bank: 2, child: true, scale: "arg" }),
+  0x48b: M(3, { bank: 3, attach: true }),
+  0x48d: G(3008, { bank: 3, face: 1 }),
+  0x491: M(4, { bank: 4, attach: true }),
+  0x492: M(3, { bank: 4, attach: true, scale: "arg", face: true }),
+  0x493: M(5, { bank: 4, attach: true, scale: "arg", face: true }),
+  0x498: M(6, { bank: 5, child: true }),
+  0x499: M(7, { bank: 5, child: true }),
+  0x49a: G(5003, { bank: 5, face: 1 }),
+  0x49b: G(5007, { bank: 5, attach: true }),
+  0x49c: G(5013, { bank: 5, attach: true }),
+  0x49f: { all: [M(0, { bank: 32, attach: true, face: true }), G(32000, { bank: 32, attach: true })] },
+  0x4a0: G(32002, { bank: 32 }),
+  0x4a1: G(34004, { bank: 34, attach: true }),
+  0x4a2: G(34002, { bank: 34, attach: true }),
+  0x4a3: G(34003, { bank: 34, attach: true }),
+  0x4a4: M(0, { bank: 34, face: true }),
+  0x4a5: G(41000, { bank: 41, attach: true, scale: "arg" }),
+  0x4a6: G(41001, { bank: 41, attach: true, scale: "arg" }),
+  0x4a7: G(41002, { bank: 41, attach: true, scale: "arg" }),
+  0x4a8: G(41003, { bank: 41, attach: true, scale: "arg" }),
+  0x4ed: M(0, { bank: 14, child: true }),
+  0x4d2: M(0, { bank: 15 }),
+  0x4d4: G(0x11e, { attach: true }),
+  0x4f1: G(16000, { bank: 16, face: 1 }),
+  0x4f2: M(0, { bank: 16, attach: true, scale: "arg", face: true }),
+  0x4f3: M(1, { bank: 16, attach: true, scale: "arg", face: true }),
+  0x4f4: M(0, { bank: 17, child: true, scale: "arg" }),
+  0x4f5: M(1, { bank: 17, child: true, scale: "arg" }),
+  0x4f6: M(2, { bank: 17, attach: true, scale: "arg" }),
+  0x4f7: M(3, { bank: 17, attach: true, scale: "arg" }),
+  0x4f8: G(0x6e, { attach: true, scale: "arg" }),
+  0x4f9: G(0x1c8, { attach: true, scale: "arg" }),
+  0x4fa: G(0x166, { attach: true, scale: "arg" }),
+  0x4fb: G(0x71, { attach: true }),
+  0x4fc: G(17005, { bank: 17, attach: true }),
+  0x4fd: G(17009, { bank: 17, attach: true }),
+  0x4fe: M(4, { bank: 17, attach: true }),
+  0x503: G(0x6a),
+  0x504: G(0x6d, { scale: "arg" }),
+  0x505: G(0x79, { scale: "arg" }),
+  0x495: M(3, { bank: 5, attach: true, scale: "arg", face: true }),
+  0x496: M(4, { bank: 5, attach: true }),
+  0x4c6: M(0, { bank: 8, attach: true, scale: "arg", face: true }),
+  0x4c7: M(1, { bank: 8, attach: true, scale: "arg", face: true }),
+  0x4ca: M(4, { bank: 8, attach: true, scale: "arg" }),
+  0x4cb: M(5, { bank: 8, attach: true, scale: "arg" }),
+  0x4ce: G(9000, { bank: 9 }),
+  0x4e0: M(0, { bank: 13, attach: true }),
+  0x4e2: M(2, { bank: 13 }),
+  0x4e7: G(0x196),
+  0x4e8: M(3, { bank: 13 }),
+  0x4e9: G(14000, { bank: 14, attach: true }),
+  0x4ea: G(14001, { bank: 14, attach: true }),
+  0x4eb: G(14006, { bank: 14, face: 1 }),
+  0x4ec: G(14007, { bank: 14, attach: true }),
+  0x4ae: G(46000, { bank: 46, attach: true }),
+  0x4af: G(46001, { bank: 46, attach: true }),
+  0x4b0: G(46006, { bank: 46, face: 1 }),
   // hits: the spark (1 in 8 the other one), sized by the damage
   0x3e8: { m: [9, 10], scale: "damage" },
   0x3e9: G(0x0c),                       // electric

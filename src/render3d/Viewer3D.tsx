@@ -1,3 +1,5 @@
+import { itemAnimation, itemAnimationIndex } from "./item-animation";
+import { samusBombRotation, samusBombClocks } from "./item-facing";
 /* 3D replay viewer: the replay drawn with the game's own models.
  *
  * A drop-in for Slippi Lab's SVG <Viewer/>: it reads the same replayStore
@@ -2087,10 +2089,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       return fi ? { int: (o) => fi.specialInt(o), float: (o) => fi.specialAttr(o) } : null;
     };
     const said = tr ? storedFromTrack(data, tr, attrs) : null;
-    if (!said) return storedCharges(data, attrs);
+    if (!said) return storedCharges(data, attrs, (port, frame) => copiesOf(data, port)[frame]);
     if (!tr!.diverges) return said;
     // (a track that parts from the replay: its charges up to there, the replay's after)
-    const own = storedCharges(data, attrs), n = data.frames.length, cut = Math.min(n, Math.max(0, tr!.until + 123));
+    const own = storedCharges(data, attrs, (port, frame) => copiesOf(data, port)[frame]), n = data.frames.length, cut = Math.min(n, Math.max(0, tr!.until + 123));
     for (const key of new Set([...own.keys(), ...said.keys()])) {
       const arr = own.get(key) ?? new Uint8Array(n);
       arr.fill(0, 0, cut);
@@ -2209,6 +2211,13 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // (an item's model's particles: its article's animation's keys, by how far into it the item is)
     w.itemPtcl = (it, f) => {
       const q = data.frames[f]?.items?.find((x) => x.spawnId === it.spawnId);
+      if (q && articleEntry(q.typeId)?.gone?.includes(q.state)) return null;
+      if (q) {
+        const anim = itemAnimation(data, f, q);
+        if (anim.frozen) return null;
+        const previous = data.frames[f - 1]?.items?.find(x => x.spawnId === q.spawnId);
+        if (previous && previous.state === q.state && itemAnimAge(data, f - 1, previous) === itemAnimAge(data, f, q)) return null;
+      }
       const art = q ? articleOf(data, fs, q, f) : null;
       return q && art?.ptcl?.length ? { keys: art.ptcl, age: itemAnimAge(data, f, q) } : null;
     };
@@ -3580,10 +3589,10 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x5a: { art: 2 },
   0x5b: { art: 1 },                // Pichu's, the same way
   0x5c: { art: 2 },
-  0x56: { art: 0 },                // Yoshi's egg, thrown
-  0x5d: { art: 0 },                // Samus's bomb
+  0x56: { art: 0, gone: [2] },                // Yoshi's egg, thrown
+  0x5d: { art: 0, gone: [3] },     // Samus's bomb
   0x5e: { art: 1, charge: true },  // Samus's charge shot
-  0x5f: { art: 2, tilt: true },    // Samus's missile
+  0x5f: { art: 2, tilt: true, gone: [2, 3] },    // Samus's missile
   0x63: { art: 1 },                // Peach's turnip
   // Peach's parasol: the game ties it to her joint 109 (ftpeachspecialhi.c
   // hands the joint list's 109th straight to Item_AttachToParent), so it
@@ -3595,7 +3604,7 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   // Mewtwo's Shadow Ball (his article 1: ftmewtwo.c), held at his right
   // shoulder while it grows (joint 35, which his code names by number), and
   // Disable (article 0)
-  0x70: { art: 1, held: { 0: { joint: 35 } } },
+  0x70: { art: 1, held: { 0: { joint: 35 } }, gone: [10, 11, 12, 13, 14, 15, 16, 17] },
   0x6e: { art: 0 },
   // Mr. Game & Watch's props (his articles 0 to 9: ftgamewatch.c), each tied
   // to his joint for as long as it lasts (Item_AttachGameWatchArticle; the
@@ -3760,7 +3769,9 @@ function pillColor(data: ReplayData, it: ReplayItem): number {
 
 function itemAnimAge(data: ReplayData, frame: number, it: ReplayItem): number {
   if (articleEntry(it.typeId)?.colorPick) return pillColor(data, it);
-  return itemClock((k) => data.frames[frame - k]?.items?.find((q) => q.spawnId === it.spawnId), itemAge(data, frame, it));
+  // Samus bomb movement-state changes preserve the same animation.
+  if (it.typeId === 0x5d && it.state < 3) return samusBombClocks(data, frame, it, Infinity, 1).material;
+  return itemAnimation(data, frame, it).age;
 }
 
 function ownerOf(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number): Fighter | null {
@@ -3787,20 +3798,21 @@ function articleEntry(typeId: number): (typeof ARTICLES)[number] | undefined {
  *  state's script), or null when not known */
 function itemElement(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number): number | null {
   const a = KIRBY_ITEMS[it.typeId] ? undefined : ARTICLES[it.typeId];
-  return a ? ownerOf(data, fs, it, frame)?.articleElement(a.art, it.state) ?? null : null;
+  return a ? ownerOf(data, fs, it, frame)?.articleElement(a.art, itemAnimationIndex(it.typeId, it.state)) ?? null : null;
 }
 
 function articleOf(data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number) {
+  const animation = itemAnimation(data, frame, it).index;
   // (a common item - one pulled from the ground, a stage's: ItCo.dat's own)
-  if (it.typeId <= COMMON_ITEM_LAST) return commonItemArts?.article(it.typeId, it.state) ?? null;
+  if (it.typeId <= COMMON_ITEM_LAST) return commonItemArts?.article(it.typeId, animation) ?? null;
   const k = KIRBY_ITEMS[it.typeId];
-  if (k) return kirbyCopies.get(k.kind)?.article(k.slot, it.state) ?? null;
+  if (k) return kirbyCopies.get(k.kind)?.article(k.slot, animation) ?? null;
   // (which of its owner's articles the game made it with, when the viewer track says)
   const said = trackArticles.get(data)?.get(it.typeId);
-  if (said !== undefined) return ownerOf(data, fs, it, frame)?.article(said, it.state) ?? null;
+  if (said !== undefined) return ownerOf(data, fs, it, frame)?.article(said, animation) ?? null;
   const a = ARTICLES[it.typeId];
   if (!a) return null;
-  return ownerOf(data, fs, it, frame)?.article(a.art, it.state) ?? null;
+  return ownerOf(data, fs, it, frame)?.article(a.art, animation) ?? null;
 }
 
 /** a list's median, 90th and 99th percentile and its largest (the harness's) */
@@ -4007,13 +4019,16 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
     });
   }
   const byZ = a.tilt === "z";
+  const rotationY = it.typeId === 0x5d ? samusBombRotation(data, frame, it) : facing * Math.PI / 2;
   // a thrown item's turn, as the game has it (the viewer track's: a
   // tumbling bomb), else the way it faces and flies
   const turn = a.tilt ? null : turnOf?.(it.spawnId) ?? null;
-  if (turn) art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, turn[1], true, turn[2], turn[0]);
+  const clock = it.typeId === 0x5d && art.special
+    ? samusBombClocks(data, frame, it, art.special(4), art.special(8)) : null;
+  if (turn) art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, turn[1], true, turn[2], turn[0], false, clock?.joint);
   else {
-    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, facing * Math.PI / 2, true, byZ ? tilt : 0,
-                  byZ ? 0 : tilt);
+    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
+                  byZ ? 0 : tilt, false, clock?.joint);
   }
   drawnArticles.push({ type: it.typeId, state: it.state, x: it.xPosition, y: it.yPosition, tilt, scale,
                        shown: Array.from(art.prop.skeleton.shown) });
