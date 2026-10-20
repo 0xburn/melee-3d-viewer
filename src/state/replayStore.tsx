@@ -302,7 +302,8 @@ export function jumpPercent(percent: number): void {
 }
 
 export function adjust(delta: number): void {
-  setReplayState("frame", (f) => wrapFrame(replayState, f + delta));
+  // (through jump, so the sound follows a step or a skip too)
+  jump(replayState.frame + delta);
 }
 
 const [running, start, stop] = createRAF(
