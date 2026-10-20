@@ -229,7 +229,7 @@ export function Controls() {
       <Show when={soundConfigured}>
         <button
           type="button"
-          class="rounded px-2 py-1 hover:bg-slate-700 disabled:opacity-50"
+          class="rounded px-2 py-1 hover:bg-slate-200 disabled:opacity-50"
           disabled={!soundAvailable()}
           aria-pressed={soundState() === "on"}
           onClick={() => toggleSound()}
