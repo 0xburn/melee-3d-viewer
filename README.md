@@ -103,6 +103,26 @@ frame that differs and the viewer uses the track only before it.
 Load the replay and its track on the dev page, or pass `trackUrl` to the
 embed page (below).
 
+## The item animation table
+
+An item's state number is not the index of the animation it plays: each item
+kind has a table of its states in the game's code, and each entry names the
+state's animation (or none: the item keeps the pose it had).
+`src/render3d/item-animations.generated.ts` has that number for every state of
+every item kind. It is made from the [Melee decompilation](https://github.com/doldecomp/melee)'s
+item state tables (`src/melee/it/kinds/*.c`), not from the game's files, by
+`scripts/generate-item-animations.py`:
+
+```
+git clone https://github.com/doldecomp/melee vendor/melee-native
+python scripts/generate-item-animations.py            # writes the table
+python scripts/generate-item-animations.py --check    # compares it with the repository's
+```
+
+`--native-root <folder>` reads a checkout somewhere else (`vendor/` is in
+`.gitignore`). The table in the repository was made from doldecomp/melee
+1f0499b.
+
 ## Embedding
 
 `embed.html` is meant to sit in an iframe. URL parameters: `replayUrl`,
