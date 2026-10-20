@@ -60,13 +60,21 @@ export function fileListSource(list: File[]): FileSource {
   };
 }
 
-let source: FileSource = folderUrlSource(new URLSearchParams(location.search).get("files") ?? "game/");
+// (made when first used: the module can be imported where there is no page, as the tests do)
+let source: FileSource | undefined;
+const currentSource = () => source ??= folderUrlSource(new URLSearchParams(location.search).get("files") ?? "game/");
+// whether anything was read from the source yet (setFileSource)
+let sourceUsed = false;
 let statusPromise: Promise<Status> | undefined;
 
-/** read the game files from here on (what was read before is dropped) */
+/** read the game files from here on (what was read before is dropped). A
+ *  source set before anything was read, as a host page does when it starts,
+ *  drops nothing: what the page's other players read stays shared */
 export function setFileSource(s: FileSource) {
   source = s;
   statusPromise = undefined;
+  if (!sourceUsed) return;
+  sourceUsed = false;
   files.clear();
   pageCache<Promise<MotionTable>>("motion").clear();
   dol = undefined;
@@ -87,8 +95,9 @@ export function status(): Promise<Status> {
 const files = pageCache<Promise<ArrayBuffer>>("gameFiles");
 
 export function file(name: string): Promise<ArrayBuffer> {
+  sourceUsed = true;
   const p = sharedPromise(files, name, () => {
-    const made = source(name);
+    const made = currentSource()(name);
     // a failure is not kept, so a folder fixed while the page is open works next time
     made.catch(() => { if (files.get(name) === made) files.delete(name); });
     return made;
@@ -153,10 +162,22 @@ export async function effectTable(): Promise<{ table?: Record<string, unknown>; 
   }
 }
 
-/** a player that can be seen is warming up: the host page is told ({type:
- *  "warming"}), in case it wants to hold other work back for a moment */
-export function tellWarming() {
+/** what a player that can be seen does while it warms up (every 2 s): by
+ *  default the page that embeds it is told ({type: "warming"}), in case it
+ *  wants to hold other work back for a moment */
+let warming = () => {
   if (window.parent !== window) window.parent.postMessage({ type: "warming" }, "*");
+};
+
+/** tell the host of a player warming up some other way (a host serving the
+ *  page itself may want a request instead of the message) */
+export function setWarmingHandler(fn: () => void) {
+  warming = fn;
+}
+
+/** a player that can be seen is warming up (setWarmingHandler says who is told) */
+export function tellWarming() {
+  warming();
 }
 
 export function motionTable(): Promise<MotionTable> {

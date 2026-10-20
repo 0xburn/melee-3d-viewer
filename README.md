@@ -150,6 +150,26 @@ Screen or Full Window, as the dev page does; the 3D view draws at the size it
 is given) back to the parent. The full list, with fields, is at the top of
 `src/embed.tsx`.
 
+### A page of your own around the renderer
+
+A site that builds its own page with `src/render3d/` (its own `embed.tsx`, its
+own server) sets these from `src/render3d/files.ts` before the player reads
+anything, and leaves the renderer's files as they are:
+
+- `setFileSource(source)`: where the game files come from. A source is a
+  function from a file's name on the disc (`PlFxNr.dat`, `Start.dol`) to its
+  bytes; `folderUrlSource(url)` and `fileListSource(files)` are the two kinds
+  here. A source set before anything was read drops nothing, so several
+  players on one page keep sharing what they read.
+- `setTrackUrl(replayUrl, trackUrl)`: the viewer track for a replay. The URL
+  may answer with the track (JSON or the compact form, `trackcodec.ts`) or,
+  while a server is still making it, with `{"state": "pending"}` (asked again
+  every few seconds) or `{"state": "none", "reason": ...}`.
+- `setWarmingHandler(fn)`: what is done every 2 s while a player that can be
+  seen warms up, instead of the `warming` message.
+- `status()` checks the files; a host with its own settings may answer the
+  page's "3D or not" itself instead.
+
 ## Optional browser audio
 
 The viewer makes no sound by itself. A page that embeds it can supply a
