@@ -26,6 +26,7 @@ import { CRT_LOOKS, type CrtPreset, crtPixels } from "./crt";
 import { drawingSize } from "./drawsize";
 import { pageWeak } from "../state/pageCache";
 import { idle } from "./idle";
+import { timed } from "./startup";
 
 const tmpM = new Float32Array(16);
 const MIRROR_W = 80, MIRROR_H = 60;
@@ -1084,9 +1085,9 @@ void main() {
    *  page cannot move in); warmed() says when the queue is empty */
   warm(sk: Skeleton) {
     for (const d of sk.drawables) {
-      this.warmQueue.push(() => this.upload(d));
+      this.warmQueue.push(() => timed("upload", "", () => this.upload(d)));
       for (const t of d.state.tex) {
-        this.warmQueue.push(() => { try { this.texture(d.archive, t.image, t.tlut, t.tobj); } catch { /* drawn without it */ } });
+        this.warmQueue.push(() => timed("texture", "", () => { try { this.texture(d.archive, t.image, t.tlut, t.tobj); } catch { /* drawn without it */ } }));
       }
     }
     this.pumpWarm();

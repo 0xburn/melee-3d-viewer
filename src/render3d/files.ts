@@ -27,6 +27,7 @@ import { motionTableFromDol, textFontFromDol } from "./dol";
 import { plateFontFromDol } from "./plates";
 import type { ViewerTrack } from "./track";
 import type { GameFilesFrom } from "../sim/protocol";
+import { fileRead, timed, timing } from "./startup";
 
 export interface Status {
   available: boolean; // the files and the action table are there
@@ -105,7 +106,9 @@ const files = pageCache<Promise<ArrayBuffer>>("gameFiles");
 export function file(name: string): Promise<ArrayBuffer> {
   sourceUsed = true;
   const p = sharedPromise(files, name, () => {
+    const t0 = timing ? performance.now() : 0;
     const made = currentSource()(name);
+    if (timing) made.then((b) => fileRead(name, b.byteLength, "source", t0), () => {});
     // a failure is not kept, so a folder fixed while the page is open works next time
     made.catch(() => { if (files.get(name) === made) files.delete(name); });
     return made;
@@ -210,7 +213,7 @@ export function tellWarming() {
 export function motionTable(): Promise<MotionTable> {
   const shared = pageCache<Promise<MotionTable>>("motion");
   return sharedPromise(shared, "table", () => {
-    const made = executable().then((b) => motionTableFromDol(b));
+    const made = executable().then((b) => timed("dol", "action table", () => motionTableFromDol(b)));
     made.catch(() => { if (shared.get("table") === made) shared.delete("table"); });
     return made;
   });
@@ -232,7 +235,7 @@ export function fighter(internalId: number, costume: number): Promise<Fighter> {
       ? Promise.all([file(shares[0]), file(shares[1])]).then(([pl, aj]) => ({ pl, aj }))
       : Promise.resolve(undefined);
     p = Promise.all([file(names[0]), file(names[1]), file(names[2]), motionTable(), shared])
-      .then(([pl, aj, md, mt, sh]) => new Fighter(internalId, pl, aj, md, costume, mt, `f${key}`, sh));
+      .then(([pl, aj, md, mt, sh]) => timed("fighter", key, () => new Fighter(internalId, pl, aj, md, costume, mt, `f${key}`, sh)));
     p.catch(() => fighters.delete(key));
     fighters.set(key, p);
   }
@@ -305,7 +308,7 @@ export function effects(): Promise<EffectKit> {
   effectKit ??= (async () => {
     const kit = new EffectKit();
     const read = async (name: string, use: (b: ArrayBuffer) => void) => {
-      try { use(await file(name)); } catch (e) { console.warn(`3D replay viewer: no ${name} effects:`, e); }
+      try { const b = await file(name); timed("effects", name, () => use(b)); } catch (e) { console.warn(`3D replay viewer: no ${name} effects:`, e); }
     };
     await Promise.all([
       read("EfCoData.dat", (b) => kit.common(b)),
@@ -337,7 +340,7 @@ export function effectFile(kit: EffectKit, n: number): Promise<boolean> {
   if (kit.banks.has(n)) return Promise.resolve(true);
   let p = fighterFx.get(n);
   if (!p) {
-    p = file(f.name).then((b) => { kit.fighter(n, f.table, b); return true; })
+    p = file(f.name).then((b) => { timed("effects", f.name, () => kit.fighter(n, f.table, b)); return true; })
       .catch((e) => { console.warn(`3D replay viewer: no ${f.name} effects:`, e); fighterFx.delete(n); return false; });
     fighterFx.set(n, p);
   }
@@ -352,8 +355,8 @@ let hudKit: Promise<HudKit> | undefined;
  *  by (PlCo.dat, optional). */
 export function hud(): Promise<HudKit> {
   hudKit ??= file("IfAll.usd").catch(() => file("IfAll.dat")).then(async (b) => {
-    const kit = new HudKit(b);
-    try { kit.common(await file("PlCo.dat")); } catch { /* the game's usual counts */ }
+    const kit = timed("hud", "IfAll", () => new HudKit(b));
+    try { const pl = await file("PlCo.dat"); timed("hud", "PlCo", () => kit.common(pl)); } catch { /* the game's usual counts */ }
     // the plates' letters: the game's own font, from its executable (the canvas letters without it)
     try { kit.plates = plateFontFromDol(await executable()); } catch { /* the canvas letters */ }
     return kit;
@@ -377,11 +380,11 @@ export function stage(stageId: number): Promise<Stage> {
     const info = STAGES[stageId];
     if (!info) return Promise.reject(new Error(`no 3D model for this stage (${stageId})`));
     p = file(`${info.file}.dat`).then(async (b) => {
-      const st = new Stage(b, stageId);
+      const st = timed("stage", info.file, () => new Stage(b, stageId));
       // Pokemon Stadium: its four forms too, when the files can be read
       if (info.file === "GrPs") {
         for (const [type, name] of Object.entries(STADIUM_FORMS)) {
-          try { st.addForm(Number(type), await file(`${name}.dat`)); } catch { /* the base stage stands */ }
+          try { const fb = await file(`${name}.dat`); timed("stage", name, () => st.addForm(Number(type), fb)); } catch { /* the base stage stands */ }
         }
         // its big screen's text (sistext.ts)
         try { st.lettering = await stadiumLettering(b); } catch { /* the browser's lettering */ }

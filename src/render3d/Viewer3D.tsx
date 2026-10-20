@@ -67,6 +67,7 @@ import { itemSource } from "./item-source";
 import { isShadowBall, shadowBallScale } from "./shadow-ball";
 import { shadowCamera } from "./shadow";
 import { stageFrame, stageRevision } from "~/simulation-stage";
+import { mark, timed } from "./startup";
 
 const FOVY = (30 * Math.PI) / 180;
 // the SVG viewer frames the players in 640 x 480 of its 730 x 600 box
@@ -947,7 +948,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
 
   onMount(() => {
     try {
+      mark("rendererStart");
       renderer = new Renderer(canvas);
+      mark("rendererCreated");
     } catch (e) {
       fail(e);
       return;
@@ -963,7 +966,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (props.onLost) { failed = true; hold(false); props.onLost(why); } else fail(why);
     });
     // (its programs are linked while the rest loads: the first draw waits for them)
-    renderer.ready.then(() => { setLinked(true); schedule(); }).catch(fail);
+    renderer.ready.then(() => { mark("programsLinked"); setLinked(true); schedule(); }).catch(fail);
     // the canvas's size as the observer reports it: asking the canvas itself
     // while drawing would make the browser lay the page out first, every frame
     const ro = new ResizeObserver((entries) => {
@@ -1191,6 +1194,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     warmStartedAt = performance.now();
     setWarmKick((k) => k + 1);
     if (!data) return;
+    mark("replayData");
     if (!untrack(() => props.quiet)) hold(true);
     const t = setTimeout(() => setTrackWaited(true), TRACK_WAIT);
     // (a warm-up that stops getting anywhere - a file that never comes, a
@@ -1238,6 +1242,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (warmFor !== data || failed) return;
       setWarm(true);
       diagWarmed(warmStartedAt);
+      mark("ready");
       hold(false);
       props.onReady?.();
       schedule();
@@ -1280,7 +1285,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (!fi) continue;
       for (const s of states) {
         if (warmFor !== data) return;
-        fi.animFor(s);
+        timed("anim", k, () => fi.animFor(s));
         await breathe();
       }
     }
@@ -1302,9 +1307,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         }
       }
     }
+    mark("animsRead");
     await r.warmed();
+    mark("texturesWarmed");
     // (a frame drawn, under the cover: what is made on a first draw is made now)
-    if (warmFor === data) draw();
+    if (warmFor === data) {
+      draw();
+      mark("firstDraw");
+      requestAnimationFrame(() => mark("firstFramePresented"));
+    }
   };
 
   // Kirby's hats for every copy he takes in the replay, before it plays (a

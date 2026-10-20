@@ -109,6 +109,7 @@ import { isHudSlots, setHudSlotsMode } from "~/common/hudslots";
 import { diagLoaded, diagLoading, diagRunning, diagView } from "~/diag";
 import { fileListSource, setFileSource, setTrackUrl, status } from "~/render3d/files";
 import { simAsked, simForReplay } from "~/sim/embed";
+import { mark } from "~/render3d/startup";
 import "~/state/fileStore";
 import "~/state/replayStore";
 import "~/state/selectionStore";
@@ -165,6 +166,7 @@ async function loadUrl(url: string, name: string, frame?: number, trackUrl?: str
 }
 
 async function loadReplay(url: string, name: string, frame?: number) {
+  mark("replayRequested");
   diagLoading();
   const blob = await (await fetch(url)).blob();
   const start = frame === undefined ? 0 : toIndex(frame);
@@ -173,6 +175,7 @@ async function loadReplay(url: string, name: string, frame?: number) {
   if (source() !== url) setSource(null);
   // a start frame > 0 keeps it paused there (Slippi Lab's own behavior)
   await load([new File([blob], name)], start === 0 ? 1 : start);
+  mark("replayParsed");
   const stub = fileStore.stubs[0];
   if (stub !== undefined) await localLibrary.select(stub);
   // (once it is in: the 3D viewer finds its viewer track by it)
