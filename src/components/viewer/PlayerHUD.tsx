@@ -2,6 +2,7 @@ import { createMemo, For, Show } from "solid-js";
 import { hudCharacterName } from "~/common/ids";
 import { RenderData, replayStore } from "~/state/replayStore";
 import { hudSlot } from "~/common/hudslots";
+import { hudSlotsNow } from "~/state/hudSlotsStore";
 
 export function PlayerHUD(props: { player: number }) {
   const renderData = createMemo(() =>
@@ -11,9 +12,9 @@ export function PlayerHUD(props: { player: number }) {
         renderData.playerState.isNana === false
     )
   );
-  // by the HUD's slot, not the port (two players: the outer slots, hudslots.ts)
+  // by the HUD's slot, not the port (the HUD Slots option: hudslots.ts)
   const position = createMemo(() => ({
-    x: -30 + 20 * hudSlot(replayStore.replayData!.settings, props.player), // slots at: -30%, -10%, 10%, 30%
+    x: -30 + 20 * hudSlot(replayStore.replayData!.settings, props.player, hudSlotsNow()), // slots at: -30%, -10%, 10%, 30%
     y: 40, // y% is flipped by css to make the text right-side up.
   }));
   const name = createMemo(() =>

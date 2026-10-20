@@ -20,7 +20,9 @@ import type { Tint as ColTint } from "./fx/colanim";
 import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, textureMatrix } from "./gx";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
 import { LOOK_H, LOOK_W, Look480 } from "./look480";
+import { GamePicture, type PictureOptions } from "./picture";
 import { CRT_LOOKS, type CrtPreset, crtPixels } from "./crt";
+import { drawingSize } from "./drawsize";
 import { pageWeak } from "../state/pageCache";
 import { idle } from "./idle";
 
@@ -529,7 +531,8 @@ export class Renderer {
 
   constructor(public canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
-      antialias: true, alpha: false, depth: true, stencil: true, preserveDrawingBuffer: false,
+      // (the canvas only takes the finished picture: picture.ts or the 480p look draws the scene)
+      antialias: false, alpha: false, depth: true, stencil: true, preserveDrawingBuffer: false,
       powerPreference: "high-performance",
     });
     if (!gl) throw new Error("this browser has no WebGL2");
@@ -806,7 +809,7 @@ export class Renderer {
     const gl = this.gl;
     const l = this.live.get(image);
     if (!l?.tex) return;
-    const [PW, PH] = this.look ? [LOOK_W, LOOK_H] : this.size;
+    const [PW, PH] = this.look ? [LOOK_W, LOOK_H] : this.pic ? [this.pic.w, this.pic.h] : this.size;
     const sx = rect[0] * PW, sy = rect[1] * PH, sw = rect[2] * PW, sh = rect[3] * PH;
     // the picture's pixels under the part, bottom-up as GL counts its rows
     const x0 = Math.max(0, Math.floor(sx - 1)), x1 = Math.min(PW, Math.ceil(sx + sw + 1));
@@ -821,6 +824,8 @@ export class Renderer {
       // (color alone: the canvas's picture has no alpha to copy)
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, c.w, c.h, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
     }
+    // (from the picture as drawn so far: the game's frame buffer resolved, when it is multisampled)
+    if (!this.look) this.pic?.readable();
     gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, x0, y0, cw, ch);
     // into the screen's texture: each of its pixels (x, y from the top) takes
     // the picture at (sx + (x + 0.5) sw / w, sy + (y + 0.5) sh / h)
@@ -836,8 +841,7 @@ export class Renderer {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     // back to the frame's picture
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
-    if (this.look) this.look.bind();
-    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.size[0], this.size[1]); }
+    this.bindPicture();
     gl.enable(gl.DEPTH_TEST);
     gl.useProgram(this.prog);
     this.bound.fill(null);
@@ -1042,8 +1046,7 @@ void main() {
     this.overlayVP = null;
     this.setCull(this.viewProj);
     // back to the frame's picture: the canvas, or the 480p look's frame buffer
-    if (this.look) this.look.bind();
-    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.canvas.width, this.canvas.height); }
+    this.bindPicture();
     gl.uniformMatrix4fv(this.loc.uViewProj, false, this.viewProj);
     gl.uniformMatrix4fv(this.loc.uView, false, this.view);
     this.camera(this.viewProj, this.view);
@@ -1102,16 +1105,20 @@ void main() {
   begin(viewProj: Mat, view: Mat, clear: [number, number, number], cssW: number, cssH: number,
         device?: [number, number]) {
     const gl = this.gl;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const exact = this.look && this.crt !== "off" && device && device[0] > 0 && device[1] > 0;
-    const w = exact ? device[0] : Math.max(1, Math.round(cssW * dpr));
-    const h = exact ? device[1] : Math.max(1, Math.round(cssH * dpr));
+    // (its size follows the element, the screen's pixel ratio counted, within a cap: drawsize.ts)
+    if (this.maxDim === 0) {
+      const v = gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array | null;
+      this.maxDim = v ? Math.min(v[0], v[1]) : 4096;
+    }
+    const exact = !!(this.look && this.crt !== "off" && device && device[0] > 0 && device[1] > 0);
+    const [w, h] = drawingSize(cssW, cssH, window.devicePixelRatio || 1, { device, exact, maxDim: this.maxDim });
     if (this.canvas.width !== w || this.canvas.height !== h) { this.canvas.width = w; this.canvas.height = h; }
     this.size = [w, h];
-    this.viewH = this.look ? LOOK_H : h;
-    // the 480p look: the scene into its 640 x 480 frame buffer (look480.ts)
-    if (this.look) this.look.bind();
-    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, w, h); }
+    // the scene into the 480p look's 640 x 480 frame buffer (look480.ts), else into one of the game's shape at
+    // the canvas's scale, stretched over the canvas at the end as Dolphin shows it (picture.ts)
+    if (!this.look) (this.pic ??= new GamePicture(gl, this.picOpts)).resize(w, h);
+    this.viewH = this.look ? LOOK_H : this.pic!.h;
+    this.bindPicture();
     gl.clearColor(clear[0], clear[1], clear[2], 1);
     gl.depthMask(true);
     gl.colorMask(true, true, true, true);
@@ -1151,6 +1158,25 @@ void main() {
     gl.uniform1f(l.uInflate, 0);
   }
 
+  /** where the frame's scene is drawn: the 480p look's frame buffer, or the game's picture's */
+  private bindPicture() {
+    const gl = this.gl;
+    if (this.look) this.look.bind();
+    else if (this.pic) this.pic.bind();
+    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.size[0], this.size[1]); }
+  }
+  /** the picture as the game's frame buffer has it, stretched over the canvas as Dolphin shows it
+   *  (picture.ts); made on the first frame */
+  private pic: GamePicture | null = null;
+  // (no anti-aliasing, as the game's frame buffer: its edges are the game's)
+  private picOpts: PictureOptions = { samples: 0 };
+  /** the game's picture made again with other options, from the next frame (trials: __viewer3d.setPicture) */
+  setPicture(opts: Partial<PictureOptions>) {
+    this.picOpts = { ...this.picOpts, ...opts };
+    this.pic?.dispose();
+    this.pic = null;
+  }
+
   /** the 480p look (look480.ts), from the next frame on */
   private look: Look480 | null = null;
   setLook480(on: boolean) {
@@ -1188,13 +1214,14 @@ void main() {
   }
   /** the 480p look's copy and stretch on the graphics card, ms (null: off or not known) */
   get lookGpuMs(): number | null { return this.look?.gpuMs ?? null; }
-  /** how many pixels tall the picture is drawn: the 480p look's 480, else the canvas's */
-  get pictureHeight(): number { return this.look ? 480 : this.canvas.height; }
+  /** how many pixels tall the scene is drawn: the 480p look's 480, else the game's picture's */
+  get pictureHeight(): number { return this.look ? 480 : this.pic?.h ?? this.canvas.height; }
 
-  /** the end of a frame: with the 480p look, the copy onto the canvas */
+  /** the end of a frame: the picture onto the canvas (the 480p look's copy, or the game's picture's stretch) */
   finish() {
-    if (!this.look) return;
-    this.look.present(this.canvas.width, this.canvas.height);
+    if (this.look) this.look.present(this.canvas.width, this.canvas.height);
+    else if (this.pic) this.pic.present(this.canvas.width, this.canvas.height);
+    else return;
     this.dirty();
     this.bound.fill(null);
     this.gl.useProgram(this.prog);
@@ -1588,6 +1615,8 @@ void main() {
                                     rx: 0, ry: 0, m: new Float32Array(12), epoch: 0, ver: 0 };
   private mirrorDrawn = false;
   private size = [1, 1];
+  // the most either side of the canvas can be (the card's MAX_VIEWPORT_DIMS; 0 until it is asked)
+  private maxDim = 0;
   /** the picture's height in pixels, drawn to now (points are sized by it) */
   private viewH = 1;
   private mirrorState(): TexCache {
@@ -1657,8 +1686,7 @@ void main() {
   endMirror() {
     const gl = this.gl;
     this.overlayVP = null;
-    if (this.look) this.look.bind();
-    else { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, this.size[0], this.size[1]); }
+    this.bindPicture();
     gl.uniformMatrix4fv(this.loc.uViewProj, false, this.viewProj);
     gl.uniformMatrix4fv(this.loc.uView, false, this.view);
     this.camera(this.viewProj, this.view);
@@ -1675,8 +1703,7 @@ void main() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.mirror.fb);
     const px = new Uint8Array(MIRROR_W * MIRROR_H * 4);
     gl.readPixels(0, 0, MIRROR_W, MIRROR_H, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    if (this.look) this.look.bind();
-    else gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.bindPicture();
     return { w: MIRROR_W, h: MIRROR_H, px: Array.from(px), tex: Array.from(this.mirrorCache.m), mirrorView: Array.from(this.mirrorView),
              mirrorViewProj: Array.from(this.mirrorViewProj), view: Array.from(this.view), proj: Array.from(this.proj) };
   }
@@ -2052,6 +2079,8 @@ void main() {
     this.spriteTex.clear();
     this.look?.dispose();
     this.look = null;
+    this.pic?.dispose();
+    this.pic = null;
     if (this.mirror) {
       gl.deleteFramebuffer(this.mirror.fb); gl.deleteTexture(this.mirror.tex); gl.deleteRenderbuffer(this.mirror.depth);
       this.mirror = null;

@@ -55,8 +55,11 @@ const WORLD_AXES = { right: [1, 0, 0], up: [0, 1, 0] };
 
 /** the particles as quads, grouped into batches by texture and blend, each
  *  in the plane of the camera whose right and up (world directions) are
- *  given */
-export function buildParticles(list: Particle[], axes: { right: number[]; up: number[] } = WORLD_AXES,
+ *  given; with its perspective projection (viewProj), a trail's or a
+ *  direction particle's way across the picture is where the projection
+ *  puts it and where it was, as the game's psDispSub measures it */
+export function buildParticles(list: Particle[],
+                               axes: { right: number[]; up: number[]; viewProj?: ArrayLike<number> } = WORLD_AXES,
                                shift: ((p: Particle) => [number, number] | null) | null = null):
     { data: Float32Array; batches: Batch[] } {
   const R = axes.right, U = axes.up;
@@ -113,8 +116,19 @@ export function buildParticles(list: Particle[], axes: { right: number[]; up: nu
     // (drawn somewhere else than the game has it: the HUD's, at this player's own HUD's place)
     const moved = shift ? shift(p) : null;
     if (moved) { cx += moved[0]; cy += moved[1]; }
-    // its motion as the camera sees it (across and up the picture)
-    const vx = wx * R[0] + wy * R[1] + wz * R[2], vy = wx * U[0] + wy * U[1] + wz * U[2];
+    // its motion as the camera sees it (across and up the picture): with a perspective camera, from where it is
+    // and where it was (one step of its velocity back) as the projection puts them (psDispSub); else its
+    // velocity in the camera's plane
+    let vx = wx * R[0] + wy * R[1] + wz * R[2], vy = wx * U[0] + wy * U[1] + wz * U[2];
+    const P = axes.viewProj;
+    if (P && (p.kind & (K.TRAIL | K.DIRVEC))) {
+      const qx = cx - wx, qy = cy - wy, qz = cz - wz;
+      const w0 = P[3] * cx + P[7] * cy + P[11] * cz + P[15], w1 = P[3] * qx + P[7] * qy + P[11] * qz + P[15];
+      if (w0 !== 0 && w1 !== 0) {
+        vx = (P[0] * cx + P[4] * cy + P[8] * cz + P[12]) / w0 - (P[0] * qx + P[4] * qy + P[8] * qz + P[12]) / w1;
+        vy = (P[1] * cx + P[5] * cy + P[9] * cz + P[13]) / w0 - (P[1] * qx + P[5] * qy + P[9] * qz + P[13]) / w1;
+      }
+    }
     const size = p.size * scale;
     // the game turns a quad clockwise (about the axis away from the
     // camera): by its rotation, or to point along its motion
@@ -129,11 +143,10 @@ export function buildParticles(list: Particle[], axes: { right: number[]; up: nu
     // the game's diagonal basis: R = right + up, U = right - up, turned
     const rx = (c - s) * size, ry = (s + c) * size, ux = (c + s) * size, uy = (s - c) * size;
     // corners, across and up the picture from its middle: -R, -U, +R, +U
-    // (a trail's first and last start where it was)
-    const bx = trail ? -vx : 0, by = trail ? -vy : 0;
+    // (a trail's first and last from where it was: one step of its velocity back, in the world - psDispSubMakePolygon)
     const corners = CORNERS;
-    corners[0] = bx - rx; corners[1] = by - ry; corners[2] = -ux; corners[3] = -uy;
-    corners[4] = rx; corners[5] = ry; corners[6] = bx + ux; corners[7] = by + uy;
+    corners[0] = -rx; corners[1] = -ry; corners[2] = -ux; corners[3] = -uy;
+    corners[4] = rx; corners[5] = ry; corners[6] = ux; corners[7] = uy;
     const uv = UV[((p.kind >>> 18) & 3)];
     const ms = p.kind & K.MIRROR_S ? 2 : 1, mt = p.kind & K.MIRROR_T ? 2 : 1, mtOff = p.kind & K.MIRROR_T ? 1 : 0;
     const pr = shown(p.prim.r, p.primTarget.r, p.primRemain, p.primCount);
@@ -149,7 +162,9 @@ export function buildParticles(list: Particle[], axes: { right: number[]; up: nu
     const a2 = p.aCmpCount ? p.aCmp2Target + ((p.aCmp2 - p.aCmp2Target) * p.aCmpRemain) / p.aCmpCount : p.aCmp2;
     for (let k = 0; k < 4; k++) {
       const a = corners[k * 2], b = corners[k * 2 + 1];
-      out[o++] = cx + a * R[0] + b * U[0]; out[o++] = cy + a * R[1] + b * U[1]; out[o++] = cz + a * R[2] + b * U[2];
+      const back = trail && (k === 0 || k === 3) ? 1 : 0;
+      const ox = cx - back * wx, oy = cy - back * wy, oz = cz - back * wz;
+      out[o++] = ox + a * R[0] + b * U[0]; out[o++] = oy + a * R[1] + b * U[1]; out[o++] = oz + a * R[2] + b * U[2];
       out[o++] = uv[k * 2] * ms; out[o++] = uv[k * 2 + 1] * mt + mtOff;
       const fade = trail && (k === 0 || k === 3) ? p.trail : 1;
       out[o++] = pr; out[o++] = pg; out[o++] = pb; out[o++] = pa * fade;

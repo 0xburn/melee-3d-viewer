@@ -7,8 +7,10 @@
  * stretches the column's root joint to the platform's height (tall by the
  * height over the column's own, 45; wide by half that and a half), and when
  * the platform goes under the water the column goes with it until it comes
- * back up (grIzumi_801CC358). The replay says how high each platform is
- * (Slippi 3.18 on); before that they stand where the file starts them.
+ * back up (grIzumi_801CC358). A viewer track says how high each platform is
+ * ("fod"), whatever the replay's version, and so does the replay from Slippi
+ * 3.18 on; else they stand where the file starts them. The platforms are the
+ * main part's joints, which the stage poses from the heights apply leaves.
  */
 import type { Part, Run, Stage, StageFrame, StageLogic } from "../stage";
 import type { Emitter } from "./particles";
@@ -61,6 +63,7 @@ export class Fountain implements StageLogic {
   }
 
   apply(st: Stage, frame: number) {
+    st.fodHeights = [this.heightAt(frame, 0), this.heightAt(frame, 1)];
     for (const c of this.cols) {
       if (this.height(st, frame, c.side) >= SUNK) st.extraRuns.set(c.part, this.run);
     }

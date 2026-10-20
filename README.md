@@ -108,14 +108,19 @@ embed page (below).
 `embed.html` is meant to sit in an iframe. URL parameters: `replayUrl`,
 `name`, `frame`, `trackUrl`, `files`, `renderer` (`3d` or `svg`), `zoom`,
 `look=480`, `crt` (`off`, `trinitron`, `pvm`), `controllers` (`both`, `left`,
-`right`, `you`, `opponent`, `off`), `you` (port 1-4), `mini=1`.
+`right`, `you`, `opponent`, `off`), `you` (port 1-4), `hudslots` (`outer`:
+a two-player game's HUDs in slots 1 and 4 whatever the ports, the default;
+`game`: each in their port's slot, as in the game), `mini=1`.
 
 It is driven by `postMessage`: `load` (`url`, `name`, `frame`, `trackUrl`),
 `gameFiles` (`files`: `File[]`), `seek`, `play`, `pause`, `toggle`, `range`,
 `ghosts` (other replays drawn over this one, see-through), `renderer`, `view`
-(`simple`, `3d`, `console`), `look`, `crt`, `controllers`. It posts `frame`,
-`loaded`, `renderer`, `track`, `warming` and `viewKey` back to the parent. The
-full list, with fields, is at the top of `src/embed.tsx`.
+(`simple`, `3d`, `console`), `look`, `crt`, `controllers`, `hudslots`. It
+posts `frame`, `loaded`, `renderer`, `track`, `warming`, `viewKey` and
+`fullKey` (F, W or Esc pressed on the player: the page may make it Full
+Screen or Full Window, as the dev page does; the 3D view draws at the size it
+is given) back to the parent. The full list, with fields, is at the top of
+`src/embed.tsx`.
 
 ## Optional browser audio
 

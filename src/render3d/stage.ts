@@ -82,9 +82,14 @@ export const STAGES: Record<number, StageInfo> = {
   // it changes, hidden until then (grBattle_BG_Callback0); the match starts
   // on background 1. It changes 40 to 60 seconds in, to 2 or 4, as the
   // game's random numbers fall - which a replay does not give: without a
-  // viewer track (track.ts, setBattle) 1 stays.
+  // viewer track (track.ts, setBattle) 1 stays. The backgrounds and the
+  // wireframe are on the background's layer (their callbacks' x11 b012 = 2:
+  // grDisplay_801C5DB0 draws them with that camera), in the order the code
+  // made them: the wireframe, then the background up, then the next one
+  // (battleOrder) - the background's light added over the wireframe's black
   31: { file: "GrNBa", name: "Battlefield", parts: [0, 1, 2, 3, 4, 6], later: [2, 3, 4],
-        lightsPart: 6, fogPart: 6 },
+        lightsPart: 6, fogPart: 6,
+        layers: { 1: { layer: 2 }, 2: { layer: 2 }, 3: { layer: 2 }, 4: { layer: 2 } } },
   // Final Destination: parts 4 to 8 are the background, 9 the one that
   // stands in for them part of the time: its code decides (gr/finaldest.ts)
   32: { file: "GrNLa", name: "Final Destination", parts: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9], later: [9],
@@ -428,6 +433,7 @@ export class Stage {
     this.extraRuns.clear();
     this.tints.clear();
     this.background = null;
+    this.fodHeights = null;
     this.up.clear();
     for (const p of this.parts) if (!this.info.later?.includes(p.index)) this.up.add(p.index);
     if (this.forms.size) this.setForms(stadiumForms(undefined, 0, STADIUM_TIMES, this.scale));
@@ -476,6 +482,8 @@ export class Stage {
     for (const p of this.parts) if (!this.info.later?.includes(p.index)) this.up.add(p.index);
     this.up.delete(1);
     this.up.add(curr > 0 ? curr : 1);
+    // (drawn as the code made them: the wireframe at the start, each background as it came up)
+    this.battleOrder = [3, ...(state === 2 && prev > 0 ? [prev] : []), curr > 0 ? curr : 1];
     this.tints.clear();
     if (state === 0) { this.animFrom.delete(3); return; }
     this.up.add(3);
@@ -494,6 +502,9 @@ export class Stage {
     fade(curr, 0);
     fade(prev, 4);
   }
+
+  /** Battlefield: the order its background layer's parts are drawn in (setBattle), or null: by number */
+  private battleOrder: number[] | null = null;
 
   /** a part's color overlay this frame, or null */
   tintOf(sk: Skeleton): Tint | null {
@@ -800,15 +811,15 @@ export class Stage {
       }
     }
     if (this.fod && p === this.fod.main) {
-      sk.trans[1 * 3 + 1] = st?.fodLeftPlatformHeight ?? this.fod.start[0];
-      sk.trans[2 * 3 + 1] = st?.fodRightPlatformHeight ?? this.fod.start[1];
+      sk.trans[1 * 3 + 1] = this.fodHeight(0, st);
+      sk.trans[2 * 3 + 1] = this.fodHeight(1, st);
     }
     // the mirror's copies of the side platforms (part 2's joints 2 and 3)
     // stand where the platforms are, shown while they are out of the water
     // (grIzumi_801CC0D4)
     if (this.fod && p === this.fod.mirror && sk.n > 3) {
       const m = this.fod.main.skeleton;
-      const h = [st?.fodLeftPlatformHeight ?? this.fod.start[0], st?.fodRightPlatformHeight ?? this.fod.start[1]];
+      const h = [this.fodHeight(0, st), this.fodHeight(1, st)];
       for (let side = 0; side < 2; side++) {
         const from = (side + 1) * 3, to = (side + 2) * 3;
         sk.trans[to] = m.trans[from]; sk.trans[to + 1] = h[side]; sk.trans[to + 2] = m.trans[from + 2];
@@ -818,9 +829,10 @@ export class Stage {
   }
 
   /** Fountain of Dreams: the side platforms are joints 1 and 2 of the main
-   * part, resting in the floor until the game's code lifts them; a replay
-   * says how high each one is (Slippi 3.18 and later). Before any word from
-   * the replay they stand where the file's own yakumono_param starts them. */
+   * part, resting in the floor until the game's code lifts them; a viewer
+   * track says how high each one is, and so does a replay from Slippi 3.18 on
+   * (fodHeight). Before any word they stand where the file's own
+   * yakumono_param starts them. */
   private setupFountain() {
     const main = this.parts.find((p) => p.index === 3);
     if (!main || main.joints.length < 3) return;
@@ -851,6 +863,18 @@ export class Stage {
   /** Fountain of Dreams: where its side platforms stand before the replay says (left, right) */
   get fountainStart(): [number, number] | null {
     return this.fod?.start ?? null;
+  }
+
+  /** Fountain of Dreams: the side platforms' heights this frame as its logic
+   *  has them (a viewer track's "fod" whatever the replay's version, else the
+   *  replay's from Slippi 3.18 on), left by its apply; null before */
+  fodHeights: [number | undefined, number | undefined] | null = null;
+
+  /** Fountain of Dreams: a side platform's height (0 left, 1 right): the
+   *  logic's, else the frame's, else where the file starts it */
+  private fodHeight(side: 0 | 1, st: StageFrame | undefined): number {
+    return this.fodHeights?.[side] ?? (side === 0 ? st?.fodLeftPlatformHeight : st?.fodRightPlatformHeight) ??
+      this.fod!.start[side];
   }
 
   /** the frame last posed (the replay's index) */
@@ -907,7 +931,13 @@ export class Stage {
   get skeletons(): Skeleton[] {
     if (!this.forms.size) {
       const mo = this.info.mirrorOnly;
-      const out = this.drawOrder.filter((p) => this.up.has(p.index) && !mo?.includes(p.index)).map((p) => p.skeleton);
+      let parts = this.drawOrder.filter((p) => this.up.has(p.index) && !mo?.includes(p.index));
+      const bo = this.battleOrder;
+      if (bo) {
+        const rank = (p: Part) => (bo.includes(p.index) ? bo.indexOf(p.index) : -1);
+        parts = parts.map((p, k) => ({ p, k })).sort((x, y) => y.p.layer - x.p.layer || rank(x.p) - rank(y.p) || x.k - y.k).map((x) => x.p);
+      }
+      const out = parts.map((p) => p.skeleton);
       if (this.stars) out.unshift(this.stars);
       for (const e of this.extras) if (this.extraRuns.has(e)) out.push(e.skeleton);
       return out;

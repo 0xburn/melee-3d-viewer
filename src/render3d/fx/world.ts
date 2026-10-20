@@ -466,6 +466,17 @@ export class FxWorld {
     for (const m of this.models) if (runs(m)) m.age++;
     this.models = this.models.filter((m) => m.age < m.life);
     this.frame = frame;
+    this.keepRng(frame);
+  }
+
+  /** the game's random state at the end of each frame's particles and HUD generators (the replay's index), the
+   *  last few hundred stepped: where the HUD's own draws start (its percent's shake and scatter, hud.ts) */
+  readonly rngAfter = new Map<number, number>();
+  private keepRng(frame: number) {
+    const s = this.ps.rng.state;
+    if (s === null) return;
+    this.rngAfter.set(frame, s);
+    if (this.rngAfter.size > 600) this.rngAfter.delete(this.rngAfter.keys().next().value!);
   }
 
   /** the generators the HUD's code made on a frame, from the viewer track

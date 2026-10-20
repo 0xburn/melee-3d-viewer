@@ -5,3 +5,7 @@ label { display: inline-flex; gap: 6px; align-items: center; }
 #status { color: #475569; }
 iframe { display: block; width: calc(100% - 24px); margin: 0 12px 12px; aspect-ratio: 73 / 60;
          max-height: calc(100vh - 80px); border: 1px solid #cbd5e1; background: white; }
+/* Full Window and Full Screen: the largest 73:60 picture that fits, black bars around it */
+#box.full { position: fixed; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center;
+            background: black; }
+#box.full iframe { width: min(100vw, calc(100vh * 73 / 60)); height: auto; max-height: 100vh; margin: 0; border: 0; }

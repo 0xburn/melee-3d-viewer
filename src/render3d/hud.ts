@@ -23,14 +23,14 @@ import { applyMatAnim, Skeleton } from "./skeleton";
 import { ident, lookAt, Mat, mul, perspective, srt } from "./math";
 import type { PlayerState, ReplayData } from "../common/types";
 import type { EffectBank } from "./fx/bank";
-import { type Particle, ParticleSystem } from "./fx/particles";
+import { hsdFloat, hsdNext, type Particle, ParticleSystem } from "./fx/particles";
 import { buildParticles } from "./fx/draw";
 import {
   FIRST_FRAME, GO_FRAME, HUNDREDS, markFrame, ONES, PlayerHud, portColor, portColorIndex, SIGN, TAG_IDLE, TAG_LAUNCH, TAG_LAUNCH_SPEED,
   TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
 } from "./hudlogic";
 import { PLATE_FONT, quad, tagText, textPicture } from "./hudtext";
-import { hudSlot, outerSlots } from "../common/hudslots";
+import { hudSlot, hudSlotsMode, outerSlots, type HudSlots } from "../common/hudslots";
 
 // Slippi's name plate (its playback, 1285 x 1056 frames): 254 x 31 pixels, its
 // middle 16.5 pixels right of the percent's place and 1 unit below it, black at
@@ -308,6 +308,9 @@ export class Hud {
   private players: {
     slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
     tag: HudModel | null; lupe: HudModel | null; arrow: HudModel | null; pic: RenderTarget | null; place: [number, number];
+    /** where it sits by the HUD Slots option (hudslots.ts): the outer slots of four for two players, or as in
+     *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
+    places: Record<HudSlots, [number, number]>;
     colorIdx: number; external: number; costume: number; tagFrame: number; human: boolean; nametag: string;
   }[] = [];
   /** the words the page holds for the plates and nametags, demo mode's
@@ -382,17 +385,51 @@ export class Hud {
       // fighter all game, the tag's plain arrow under it
       const nametag = ps.playerType === 0 ? tagText(ps.nametag) : "";
       const tf = tagFrame(slot, ps.playerType === 0, s.isTeams, ps.teamId);
+      const at: Record<HudSlots, [number, number]> = {
+        outer: outerSlots(s, "outer") ? kit.placeOf(hudSlot(s, slot, "outer"), 4) : kit.placeOf(slot, places),
+        game: kit.placeOf(slot, places),
+      };
       this.players.push({
         slot, life: new PlayerHud(data, slot, { ...kit.tags }, this.goAt + FIRST_FRAME, nametag.length > 0), nametag,
         num: kit.model(kit.num, "hud:num"), mark: kit.model(kit.mark, "hud:mark"),
         stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
         arrow: kit.model(kit.arrow, "hud:arrow"), human: ps.playerType === 0,
-        // (two players: the outer slots of four, whatever their ports - hudslots.ts)
-        pic: null, place: outerSlots(s) ? kit.placeOf(hudSlot(s, slot), 4) : kit.placeOf(slot, places), colorIdx,
+        pic: null, place: at[hudSlotsMode()], places: at, colorIdx,
         external: ps.externalCharacterId, costume: ps.costumeIndex,
         tagFrame: nametag ? nametagFrame(tf) : tf,
       });
     }
+    for (const p of this.players) {
+      p.life.shakeDraws = (i) => this.shakeDraws(i, p.slot, "shake");
+      p.life.scatterDraws = (i) => this.shakeDraws(i, p.slot, "scatter");
+    }
+  }
+
+  /** the game's random state at a frame (the viewer's) when the HUD's own draws start, or null (not known: the
+   *  shake is a stand-in). Set by the player: a viewer track's state after the frame's gameplay (track.ts rngAt) */
+  rngAt: ((i: number) => number | null) | null = null;
+  private drawsAt = -1;
+  private draws = new Map<string, number[]>();
+  /** a player's eight draws at frame i for its percent's shake or its KO's scatter: each player's percent, by
+   *  port, draws eight in turn from the frame's state when it shakes (ifStatus_802F4B84) and eight when its
+   *  scatter starts (ifStatus_PercentOnDeathAnimationThink) - HSD_Randf, x then y for each of the four pieces */
+  private shakeDraws(i: number, slot: number, kind: "shake" | "scatter"): number[] | null {
+    if (this.drawsAt !== i) {
+      this.drawsAt = i;
+      this.draws.clear();
+      let s = this.rngAt?.(i) ?? null;
+      if (s !== null) {
+        for (const p of [...this.players].sort((a, b) => a.slot - b.slot)) {
+          for (const what of ["scatter", "shake"] as const) {
+            if (!(what === "shake" ? p.life.shakingAt(i) : p.life.scatterStartsAt(i))) continue;
+            const out: number[] = [];
+            for (let k = 0; k < 8; k++) { s = hsdNext(s); out.push(hsdFloat(s)); }
+            this.draws.set(`${what}:${p.slot}`, out);
+          }
+        }
+      }
+    }
+    return this.draws.get(`${kind}:${slot}`) ?? null;
   }
   private ready: HudModel | null;
   private go: HudModel | null;
@@ -436,6 +473,8 @@ export class Hud {
     // the picture's width over the game's
     const k = (this.k = aspect / this.kit.cam.aspect);
     const out: Hud["last"] = { percents: [], timer: null, tags: [], magnified: [], arrows: [], stocks: [] };
+    const slots = hudSlotsMode();
+    for (const p of this.players) p.place = p.places[slots];
     // --- the magnifiers' pictures first: each a fighter off the screen, drawn into its own texture
     const magnified: { p: Hud["players"][number]; sx: number; sy: number }[] = [];
     // (the magnifier waits for the HUD to be on: the match clock's start, frame 0)

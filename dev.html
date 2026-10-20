@@ -22,10 +22,18 @@
           <option value="simple">Simple (line art)</option>
         </select>
       </label>
+      <label>HUD Slots
+        <select id="hudslots">
+          <option value="outer">Outer Slots (1 and 4)</option>
+          <option value="game">As in the Game</option>
+        </select>
+      </label>
       <button id="play">Play / Pause</button>
+      <button id="fullwindow" title="W">Full Window</button>
+      <button id="fullscreen" title="F">Full Screen</button>
       <span id="status"></span>
     </header>
-    <iframe id="player" src="embed.html"></iframe>
+    <div id="box"><iframe id="player" src="embed.html"></iframe></div>
     <script type="module" src="/src/dev.ts"></script>
   </body>
 </html>

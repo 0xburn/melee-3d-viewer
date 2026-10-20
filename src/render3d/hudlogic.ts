@@ -101,7 +101,8 @@ export function rand(...seed: number[]): number {
  *  0.1014 to 1.5207), never less than 0.2028 either way; the tenth frame puts
  *  them back. A new hit starts it again. */
 export const SHAKE_FRAMES = 10;
-export function shakeOffset(frame: number, hit: number, damage: number, piece: number, port: number): [number, number] | null {
+export function shakeOffset(frame: number, hit: number, damage: number, piece: number, port: number,
+                            draws: number[] | null = null): [number, number] | null {
   const k = frame - hit;
   if (k < 0 || k > SHAKE_FRAMES - 2) return null;
   const mag = Math.max(0.1014, Math.min(1.5207, 0.1014 * (damage & 0xff)));
@@ -109,6 +110,8 @@ export function shakeOffset(frame: number, hit: number, damage: number, piece: n
     const v = mag * 2 * (r - 0.5);
     return v < 0 ? v - 0.2028 : v + 0.2028;
   };
+  // (the game's own draws when known - HSD_Randf, x then y for each piece in turn; else a stand-in of our own)
+  if (draws) return [step(draws[piece * 2]), step(draws[piece * 2 + 1])];
   return [step(rand(port, frame, piece, 1)), step(rand(port, frame, piece, 2))];
 }
 
@@ -120,10 +123,12 @@ export function shakeOffset(frame: number, hit: number, damage: number, piece: n
  *  0.2028 a frame, until it is well off the screen (100 either way across,
  *  100 down). Returns each piece's offset from where it was, `frames` after
  *  the KO. */
-export function scatter(frames: number, piece: number, port: number, ko: number): [number, number] {
+export function scatter(frames: number, piece: number, port: number, ko: number,
+                        draws: number[] | null = null): [number, number] {
   const sign = piece % 2 === 0 ? 1 : -1;
-  const vx = sign * (0.6083 * rand(port, ko, piece, 3) + 0.3041);
-  let vy = 0.811 * rand(port, ko, piece, 4) + 1.2165;
+  // (the game's own draws when known - HSD_Randf, x then y for each piece in turn; else a stand-in of our own)
+  const vx = sign * (0.6083 * (draws ? draws[piece * 2] : rand(port, ko, piece, 3)) + 0.3041);
+  let vy = 0.811 * (draws ? draws[piece * 2 + 1] : rand(port, ko, piece, 4)) + 1.2165;
   let x = 0, y = 0;
   for (let k = 0; k < frames && k < 400; k++) {
     if (Math.abs(x) < 100) x += vx;
@@ -362,6 +367,24 @@ export class PlayerHud {
    *  frame's animation has run) - which makes them the replay's own percent,
    *  and a hit's first shaking frame still shows the number before it (the
    *  reference frames). */
+  /** whether the digits shake at frame i (and so draw eight random numbers there: ifStatus_802F4B84) */
+  shakingAt(i: number): boolean {
+    const l = this.lifeAt(i);
+    const at = l.ko !== null && i >= l.ko ? Math.max(l.from, l.ko - 1) : i;
+    const hit = this.hitAt[at];
+    return hit >= 0 && at - hit >= 0 && at - hit <= SHAKE_FRAMES - 2;
+  }
+
+  /** the game's own random numbers for the shake at a frame (eight: x and y of each piece), or null */
+  shakeDraws: ((i: number) => number[] | null) | null = null;
+  /** and for the KO's scatter, drawn on the KO's frame */
+  scatterDraws: ((i: number) => number[] | null) | null = null;
+
+  /** whether the percent's scatter starts at frame i (its eight draws: ifStatus_PercentOnDeathAnimationThink) */
+  scatterStartsAt(i: number): boolean {
+    return this.lifeAt(i).ko === i;
+  }
+
   percentAt(i: number): PercentView {
     const l = this.lifeAt(i);
     const exploding = l.ko !== null && i >= l.ko;
@@ -378,11 +401,13 @@ export class PlayerHud {
     let spaced = true;
     if (hit >= 0 && at - hit <= SHAKE_FRAMES - 1) {
       spaced = false;
-      for (let p = 0; p < 4; p++) offset[p] = shakeOffset(at, hit, this.hitDmg[at], p, this.port) ?? [0, 0];
+      const draws = this.shakeDraws?.(at) ?? null;
+      for (let p = 0; p < 4; p++) offset[p] = shakeOffset(at, hit, this.hitDmg[at], p, this.port, draws) ?? [0, 0];
     }
     if (exploding) {
+      const sd = this.scatterDraws?.(l.ko!) ?? null;
       for (let p = 0; p < 4; p++) {
-        const [sx, sy] = scatter(i - l.ko!, p, this.port, l.ko!);
+        const [sx, sy] = scatter(i - l.ko!, p, this.port, l.ko!, sd);
         offset[p] = [offset[p][0] + sx, offset[p][1] + sy];
       }
     }

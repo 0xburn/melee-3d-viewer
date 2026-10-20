@@ -12,7 +12,7 @@
  * URL parameters: replayUrl, name, frame (game frame, -123 = first),
  * trackUrl (the replay's viewer track), files, renderer, zoom, look=480,
  * crt=<off|trinitron|pvm>, controllers=<both|left|right|you|opponent|off>,
- * you=<port 1-4>, mini=1.
+ * you=<port 1-4>, hudslots=<outer|game>, mini=1.
  *
  * Messages in (window.postMessage from the parent):
  *   {type: "load", url, name?, frame?, trackUrl?}
@@ -47,6 +47,12 @@
  *                                        ("both", "left", "right", "you",
  *                                        "opponent" or "off"; you: the port,
  *                                        1-4, that is "you") (Controllers.tsx)
+ *   {type: "hudslots", slots}            the HUD Slots option, on the spot,
+ *                                        in every view: "outer" (two players
+ *                                        in slots 1 and 4, the default) or
+ *                                        "game" (each in their port's slot)
+ *                                        (hudslots.ts; ?hudslots= starts
+ *                                        with it)
  *
  * The picture is always the game's own shape (73:60, GameFrame), centered in
  * whatever box the page gives it.
@@ -61,6 +67,13 @@
  *   {type: "warming"}                    the 3D player is warming up
  *   {type: "viewKey"}                    V pressed on the player: the page
  *                                        may move every player to the next view
+ *   {type: "fullKey", how}               F ("screen"), W or Shift+F
+ *                                        ("window") or Esc ("leave") pressed
+ *                                        on the player: the page may make it
+ *                                        Full Screen or Full Window, or leave
+ *                                        either (the picture follows its new
+ *                                        size: render3d/drawsize.ts; the dev
+ *                                        page does this)
  */
 import "~/icons.css";
 import { render } from "solid-js/web";
@@ -84,6 +97,7 @@ import { look480, setCrtCurve, setCrtPreset, setLook480, Viewer3D } from "~/rend
 import { CURVE_MAX, isCrtPreset } from "~/render3d/crt";
 import { Controllers } from "~/components/viewer/Controllers";
 import { isOverlayShow, type OverlayShow } from "~/viewer/controllerInputs";
+import { isHudSlots, setHudSlotsMode } from "~/common/hudslots";
 import { diagLoaded, diagLoading, diagRunning, diagView } from "~/diag";
 import { fileListSource, setFileSource, setTrackUrl, status } from "~/render3d/files";
 import "~/state/fileStore";
@@ -229,6 +243,9 @@ window.addEventListener("message", (event) => {
       setOverlay(isOverlayShow(m.show) ? m.show : "off");
       if (m.you !== undefined) setYou(portOf(m.you));
       break;
+    case "hudslots":
+      setHudSlotsMode(isHudSlots(m.slots) ? m.slots : "outer");
+      break;
   }
 });
 
@@ -241,6 +258,23 @@ function viewKey(e: KeyboardEvent) {
   post({ type: "viewKey" });
 }
 document.addEventListener("keydown", viewKey);
+
+// F, W (or Shift+F) and Esc on a player with the keyboard's focus: the page
+// is told, and may make it Full Screen or Full Window, or leave either (the
+// player itself cannot fill the page's window). Embedded only: the keys are
+// the page's then, never Slippi Lab's own F (Controls.tsx), which only hides
+// its panels in its own app.
+function fullKey(e: KeyboardEvent) {
+  if (window.parent === window || e.ctrlKey || e.altKey || e.metaKey) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) return;
+  const k = e.key;
+  const how = k === "Escape" ? "leave" : k === "w" || k === "W" || k === "F" ? "window" : k === "f" ? "screen" : null;
+  if (how === null) return;
+  if (how !== "leave") { e.preventDefault(); e.stopPropagation(); }
+  post({ type: "fullKey", how });
+}
+document.addEventListener("keydown", fullKey);
 
 /** the page's drawing: 3D (failed: it cannot run here at all, `reason`
  *  says why), the line art, or not known yet */

@@ -10,12 +10,13 @@
 import { EffectBank } from "./fx/bank";
 import { animTime } from "./animtime";
 import { diagWarmed } from "~/diag";
-import { createEffect, createMemo, createSignal, Index, JSX, onCleanup, onMount, Show, untrack } from "solid-js";
+import { createEffect, createMemo, createSignal, Index, JSX, on as follow, onCleanup, onMount, Show, untrack } from "solid-js";
 import { unwrap } from "solid-js/store";
 import { Controls } from "~/components/viewer/Controls";
 import { GameFrame } from "~/components/viewer/GameFrame";
 import { Item } from "~/components/viewer/Item";
 import { getPlayerColor, holdPlay, replayStore } from "~/state/replayStore";
+import { hudSlotsNow } from "~/state/hudSlotsStore";
 import { PagePlayer } from "./pagePlayers";
 import { actionMapByInternalId } from "~/viewer/characters";
 import type { PlayerInputs, PlayerState, ReplayData } from "~/common/types";
@@ -94,6 +95,11 @@ const MINI = new URLSearchParams(location.search).get("mini") === "1";
 const SNAP = new URLSearchParams(location.search).get("snap") === "1";
 // ?debug=nohud: the picture without the game's HUD (to time what it costs)
 const NO_HUD = new URLSearchParams(location.search).get("debug") === "nohud";
+// A pixel comparison's layers (__viewer3d.setLayers): groups of what is drawn left
+// out of the next draws, so a picture drawn with and without one says where that group is on the canvas.
+// Nothing sets them but such a tool; empty, every draw is the player's own.
+type Layer = "back" | "stage" | "fighters" | "items" | "effects" | "hud";
+let layersOff: Partial<Record<Layer, boolean>> = {};
 
 // A fighter the game does not draw: dead, or waiting to come back (action
 // states 0-11: the Dead* states and Sleep), or in the middle of a move that
@@ -998,6 +1004,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       }
       schedule();
     });
+    // (HUD Slots changed: the HUD is drawn again where it now sits, paused too)
+    createEffect(follow(hudSlotsNow, () => schedule(), { defer: true }));
   });
 
   // load the stage and every fighter the replay and its ghosts will need
@@ -1025,11 +1033,25 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     setMagColors(null);
     if (data) files.magnifierColors(data.settings.stageId).then(setMagColors);
   });
+  // (where the HUD's draws start: after the frame's particles and the HUD's own generators, as the game runs its
+  // procs - trials against Dolphin's pictures of the others: the percent area 0.886 against 0.862 to 0.864)
+  let hudRng: "track" | "trackprev" | "ps" | "off" = "ps";
+  // (the plates' and nametags' words as the page last gave them: a HUD made again - the stage's colors for its
+  // magnifier coming in after it - takes them at once, as Hud3D gives them only when they change)
+  let hudWords: { data: unknown; w: Map<string, string> } | null = null;
   const hudOf = createMemo(() => {
     const k = hudKit(), data = rawData(), st = stage();
     if (!k || !data) return null;
     try {
       const h = new Hud(k, data, magColors(), st?.camBounds ?? null);
+      if (hudWords && hudWords.data === data) h.setWords(hudWords.w);
+      // (the percent's shake and scatter from the game's own random numbers, when a viewer track has them:
+      // the effect world's state at the end of the frame's particles - hud.ts shakeDraws)
+      h.rngAt = (i) => {
+        if (hudRng === "off") return null;
+        if (hudRng === "ps") return fxw?.rngAfter.get(i) ?? null;
+        return viewerTrack()?.rngAt(i - 123 - (hudRng === "trackprev" ? 1 : 0)) ?? null;
+      };
       if (renderer) h.warm(renderer);
       return h;
     } catch (e) {
@@ -1431,6 +1453,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // (the back layers whole, first: the game draws them before the rest)
       r.setLighting(stageLit);
       for (const sk of st.skeletons) {
+        if (layersOff[st.layerOf(sk) > 0 ? "back" : "stage"]) continue;
         r.setTint(st.tintOf(sk));
         r.drawSkeleton(sk, "opa");
         if (st.layerOf(sk) > 0) r.drawSkeleton(sk, "xlu");
@@ -1581,6 +1604,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     }
     lastShakes = shakes;
     const drawFighters = (pass: "opa" | "xlu", mirror = false) => {
+      if (layersOff.fighters) return;
       for (const { f: fi, a } of posed) {
         const again = shared.has(fi);
         if (again) poseActor(fi, a);
@@ -1656,7 +1680,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         fi.skeleton.passHidden = null;
         // its sword's swing strip, drawn with its see-through parts
         // (ftafterimage.c; not in a mirror, whose draw leaves it out)
-        if (pass === "xlu" && fxw && !mirror) {
+        if (pass === "xlu" && fxw && !mirror && !layersOff.effects) {
           const strip = fxw.swords.strip(actorKey(a.player, a.nana), fxw.swordOf(fi));
           if (strip) {
             if (sh) r.shiftDraws(0, 0);
@@ -1739,15 +1763,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // (a pass takes a joint by its own flags - OPA, TEXEDGE, XLU - not by its
       // materials': the mirror-only scenery's backdrop, joint 4, is a cut-out
       // joint whose material is see-through, so it is in the mirror's passes)
-      for (const sk of st.mirrorSkeletons) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
+      if (!layersOff.stage) for (const sk of st.mirrorSkeletons) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
       r.endPass();
       r.setLighting(lighting);
       drawFighters("opa", true);
       drawFighters("xlu", true);
-      for (const it of frame.items ?? []) drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake);
+      if (!layersOff.items) for (const it of frame.items ?? []) drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake);
       drawnArticles = [];
       r.setFog(null);
-      if (ek?.bank && fxw) {
+      if (ek?.bank && fxw && !layersOff.effects) {
         drawFxModels(r, fxw);
         const mine = fxw.particlesOf(false);
         if (mine.length) {
@@ -1763,7 +1787,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (st) {
       r.setLighting(stageLit);
       for (const sk of st.skeletons) {
-        if (st.layerOf(sk)) continue;
+        if (st.layerOf(sk) || layersOff.stage) continue;
         r.setTint(st.tintOf(sk));
         r.drawSkeleton(sk, "xlu");
       }
@@ -1792,7 +1816,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (st?.shyGuy) drawShyGuys(r, st.shyGuy, frame.items ?? [], fno);
     prof.mark("fighters2");
     let projectiles = 0;
-    for (const it of frame.items ?? []) if (drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake)) projectiles++;
+    for (const it of layersOff.items ? [] : frame.items ?? []) if (drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake)) projectiles++;
     // one Yoshi laid in an egg: hidden, the egg (his articles' slot 3) worn
     // in its place - its child on the victim's TransN, the egg the victim's
     // size and growing to it over his attributes' +0x20 frames from +0x1C
@@ -1888,7 +1912,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // (the shield's bubble and the reflector: from the track's pieces while it
     // holds and has them, else from the replay's states)
     const shapes = shapesAt(viewerTrack(), fno);
-    for (const a of actors) {
+    for (const a of layersOff.effects ? [] : actors) {
       if (hidden(a.st)) continue;
       const key = actorKey(a.player, a.nana);
       const fa = frameActors.find((x) => x.key === key);
@@ -1900,14 +1924,14 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     prof.mark("articles");
     let models = 0, particles = 0;
     // (square to the camera: its right and up, in world directions)
-    const axes = { right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]] };
+    const axes = { right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]], viewProj };
     // the stage's own particles, behind everything else's
-    const stagePs = st && scene?.st === st ? scene.particles.particles : [];
+    const stagePs = st && scene?.st === st && !layersOff.stage ? scene.particles.particles : [];
     if (stagePs.length) {
       const built = buildParticles(stagePs, axes);
       r.drawParticles(built.data, built.batches);
     }
-    if (ek?.bank && fxw) {
+    if (ek?.bank && fxw && !layersOff.effects) {
       models = drawFxModels(r, fxw, !mirrorDrawn);
       // (every list but the HUD's: that one is drawn in the HUD's pass, in its space)
       const mine = fxw.particlesOf(false);
@@ -1981,7 +2005,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     prof.mark("ghosts");
     // the game's HUD over it all (hud.ts)
     let hudMs = 0;
-    const hud = NO_HUD ? null : hudOf();
+    const hud = NO_HUD || layersOff.hud ? null : hudOf();
     if (hud) {
       const hudActors: HudActor[] = [];
       for (const a of actors) {
@@ -3331,6 +3355,33 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     },
     /** the stage mirror's image and matrices (Fountain's pond) */
     mirror: () => renderer?.mirrorDebug() ?? null,
+    /** a pixel comparison: leave these groups out of the draws from now on (null:
+     *  draw everything again), and draw now */
+    setLayers: (off: Partial<Record<Layer, boolean>> | null) => { layersOff = { ...(off ?? {}) }; draw(); return true; },
+    /** a pixel comparison's trials: the game's picture (picture.ts) made again with these options, then drawn */
+    setPicture: (opts: { samples?: number }) => { renderer?.setPicture(opts); draw(); return true; },
+    /** a pixel comparison's trials: where the HUD's shake draws start ("track": after the frame's gameplay, "ps":
+     *  after the particles' update, the default; "trackprev": the frame before's; "off": a stand-in of our own) */
+    setHudRng: (mode: "track" | "trackprev" | "ps" | "off") => { hudRng = mode; draw(); return true; },
+    /** a pixel comparison: each fighter drawn on the last frame, every one of its parts on the canvas (0..1
+     *  from the top left, and depth), and the parts the game names (FtPart 0..52) as their part numbers */
+    partsOnScreen: () => {
+      const ek = kit();
+      if (!lastDepth || !ek) return null;
+      const m = viewProj;
+      const on = (X: number, Y: number, Z: number) => {
+        const cw = m[3] * X + m[7] * Y + m[11] * Z + m[15];
+        return [+(((m[0] * X + m[4] * Y + m[8] * Z + m[12]) / cw + 1) / 2).toFixed(5),
+                +((1 - (m[1] * X + m[5] * Y + m[9] * Z + m[13]) / cw) / 2).toFixed(5),
+                +((m[2] * X + m[6] * Y + m[10] * Z + m[14]) / cw).toFixed(5)];
+      };
+      return lastDepth.actors.filter((fa) => fa.world !== NO_WORLD).map((fa) => {
+        const c = fa.st.internalCharacterId, n = Math.floor(fa.world.length / 16);
+        return { key: fa.key, char: c, x: fa.st.xPosition, y: fa.st.yPosition,
+                 parts: Array.from({ length: n }, (_, k) => on(fa.world[k * 16 + 12], fa.world[k * 16 + 13], fa.world[k * 16 + 14])),
+                 named: Array.from({ length: 53 }, (_, p) => ek.partToJoint(c, p)) };
+      });
+    },
     /** draw now and read a pixel of it (x, y from the canvas's bottom-left, in 0..1) */
     probe: (x: number, y: number) => {
       draw();
@@ -3444,7 +3495,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           </g>
         </svg>
         <Show when={replayStore.replayData && hudOf()}>
-          {(h) => <Hud3D nametags={h().nametags()} onWords={(w) => { h().setWords(w); schedule(); }} />}
+          {(h) => <Hud3D nametags={h().nametags()} onWords={(w) => { hudWords = { data: rawData(), w }; h().setWords(w); schedule(); }} />}
         </Show>
         <Show when={showFps}>
           <div class="absolute right-1 top-1 rounded bg-black/60 px-1.5 font-mono text-[11px] text-white" data-fps>{fpsText()}</div>

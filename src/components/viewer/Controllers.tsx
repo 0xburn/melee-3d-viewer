@@ -2,8 +2,8 @@
  * picture (the View menu's Controller overlay section; embed.tsx).
  *
  * The controller is M'Overlay's default GameCube skin (Bkacjios, MIT;
- * src/assets/controllers/m-overlay/, its SOURCE.txt and license;
- * docs/THIRD_PARTY.md), used as it ships and drawn the way its
+ * src/assets/controllers/m-overlay/, its SOURCE.txt and license),
+ * used as it ships and drawn the way its
  * skins/default.lua does: each button's outline, its pressed picture while
  * held, in the skin's own colors; the sticks moved over their gates, the gate
  * cut away under the stick; L and R filled by how far they are pressed, the
@@ -27,6 +27,7 @@
 import { createEffect, createMemo, For, onCleanup, onMount, Show } from "solid-js";
 import { characterNameByExternalId } from "~/common/ids";
 import { hudSlot, outerSlots } from "~/common/hudslots";
+import { hudSlotsNow } from "~/state/hudSlotsStore";
 import { replayStore } from "~/state/replayStore";
 import { OverlayShow, overlayPorts, Pad, padAt, trailAt } from "~/viewer/controllerInputs";
 import { MO_PATHS } from "~/assets/controllers/m-overlay/paths";
@@ -76,7 +77,7 @@ export function Controllers(props: { show: OverlayShow; you: number | null }) {
   });
   const outer = createMemo(() => {
     const d = replayStore.replayData;
-    return d ? outerSlots(d.settings) : false;
+    return d ? outerSlots(d.settings, hudSlotsNow()) : false;
   });
   // each shown player's inputs on the frame shown, and every ghost's
   const shown = createMemo((): Shown[] => {
@@ -103,7 +104,7 @@ export function Controllers(props: { show: OverlayShow; you: number | null }) {
   };
   // two players: beside the outer slots, inward; more: over each one's slot
   const place = (i: number): Record<string, string> => {
-    const slot = hudSlot(replayStore.replayData!.settings, i);
+    const slot = hudSlot(replayStore.replayData!.settings, i, hudSlotsNow());
     if (outer()) return slot === 0 ? { left: "30%", bottom: "2%", width: "19.5%" }
                                    : { right: "30%", bottom: "2%", width: "19.5%" };
     return { left: `${11.5 + 20 * slot}%`, bottom: "24%", width: "17%" };
