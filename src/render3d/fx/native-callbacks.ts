@@ -3,7 +3,7 @@ import type { ScriptEvent } from './script';
 /** Native callbacks driven by observable motion entries and command variables.
  * Keep these separate from asset-script gfx events: loading an effect definition
  * does not run the C callback that creates it. Parts are Fighter_Part indices. */
-export interface NativeEffectEvent { frame: number; gfx: number; part: number }
+export interface NativeEffectEvent { frame: number; gfx: number; part: number; commonPart?: boolean }
 export function nativeEffectEvents(character: number, state: number, _grounded: boolean,
                                    script: readonly ScriptEvent[]): NativeEffectEvent[] {
   const out: NativeEffectEvent[] = [];
@@ -30,12 +30,19 @@ export function nativeEffectEvents(character: number, state: number, _grounded: 
   if ((character === 10 || character === 11) && (state === 357 || state === 358)) command(0, 1, 0x4ec, 29);
   // ftmewtwospecialhi.c accessory callback, once at Teleport startup.
   if (character === 16 && (state === 353 || state === 356)) entry(0x4e8, 5);
+  // Fox and Falco share ftFx_SpecialHi_Create{Charge,Launch}GFX.
+  // These two callbacks explicitly remap common bones with ftParts_GetBoneIndex.
+  if (character === 1 || character === 22) {
+    if (state === 353 || state === 354) out.push({frame: 0, gfx: 0x48b, part: 1, commonPart: true});
+    if (state === 355 || state === 356) out.push({frame: 0, gfx: 0x48c, part: 4, commonPart: true});
+  }
   return out;
 }
 
 /** Ground/air switches preserve these C callbacks' effect state. Other motion
  * transitions (including interruption) destroy it and permit a new activation. */
 const FAMILIES: Record<number, number[][]> = {
+  1: [[353,354], [355,356]], 22: [[353,354], [355,356]],
   3: [[372,377], [373,378], [381,382], [384]],
   4: [[458,463], [459,464], [385,386,387,388,389,390,391,392]],
   10: [[357,358]], 11: [[357,358]], 16: [[353,356]],

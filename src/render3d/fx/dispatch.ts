@@ -8,7 +8,7 @@
 
 /** a common effect model: `m` its index in EfCoData's model table (two:
  *  one of them at random, the first 1 in 8) */
-export interface ModelSpawn { callback?: "face" | "offsetY" | "jabZ" | "cutter"; part?: number; startFrame?: number; bank?: number; child?: boolean; m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
+export interface ModelSpawn { callback?: "face" | "offsetY" | "jabZ" | "cutter" | "fireLaunch"; part?: number; startFrame?: number; bank?: number; child?: boolean; m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
 /** A particle generator: `g` is its full ID in the selected particle bank. */
 export interface GenSpawn { bank?: number; g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
                            /** frames it makes particles for, when its effect is given a lifetime (EF_Effect.lifetime) */
@@ -42,6 +42,7 @@ export const SPAWNS: Record<number, Spawn> = {
   0x486: M(1, { bank: 2, face: true }),
   0x487: M(2, { bank: 2, child: true, scale: "arg" }),
   0x48b: M(3, { bank: 3, attach: true }),
+  0x48c: M(4, { bank: 3, attach: true, callback: "fireLaunch" }),
   0x48d: G(3008, { bank: 3, face: 1 }),
   0x491: M(4, { bank: 4, attach: true }),
   0x492: M(3, { bank: 4, attach: true, scale: "arg", face: true }),

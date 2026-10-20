@@ -155,6 +155,7 @@ export interface ModelFx {
   jabZ?: boolean;
   cutter?: { releasedAt?: number };
   rootRotationY?: boolean;
+  rootRotationZ?: boolean;
   constrained?: boolean;
 }
 
@@ -718,7 +719,7 @@ export class FxWorld {
       for (const e of nativeClock.take(nativeEffectEvents(st.internalCharacterId, st.actionStateId, st.isGrounded, events), now)) {
         // Native callbacks index fp->parts directly; the script common-bone
         // lookup is a different namespace (and has no entry for Cutter part 44).
-        const joint = e.part;
+        const joint = e.commonPart ? this.partToJoint(st.internalCharacterId, e.part) : e.part;
         const m = this.jointWorld(a.key, joint);
         let age = picked ? Math.max(0, now - e.frame) : 0;
         const cutter = e.gfx === 0x494 ? this.cutterHistory(a, frame) : null;
@@ -1541,6 +1542,20 @@ export class FxWorld {
         const facing = ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing;
         p.rotY = facing < 0 ? -Math.PI / 2 : Math.PI / 2;
       };
+      if (s.callback === "fireLaunch") {
+        m.rootRotationY = m.rootRotationZ = true;
+        m.turn = p => {
+          const st = ctx.by ? this.sts.get(ctx.by) : undefined;
+          const facing = (st?.facingDirection ?? ctx.facing) < 0 ? -1 : 1;
+          const vx = st?.actionStateId === 355 ? st.selfInducedGroundXSpeed : st?.selfInducedAirXSpeed;
+          const vy = st?.selfInducedAirYSpeed;
+          p.rotY = facing * Math.PI / 2;
+          // Native rotateModel is atan2(self velocity Y, self velocity X * facing).
+          // Keep the last direction during hitlag or a zero-velocity transition.
+          if (vx || vy) p.rotZ = facing * (Math.atan2(vy ?? 0, (vx ?? 0) * facing) - Math.PI / 2);
+        };
+        m.turn(m);
+      }
       if (s.callback === "offsetY") { m.offsetY = (ctx.offset?.[1] ?? 0) * ctx.scale; m.rootSet = true; }
       if (s.callback === "jabZ") { m.jabZ = true; m.rotZ *= ctx.facing < 0 ? -1 : 1; }
       // efSync advances punch models once while creating them. Run the keys
@@ -1742,8 +1757,9 @@ export class FxWorld {
       return;
     }
     const [x, y, z] = this.modelPlace(m);
-    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rotZ, 0, m.rootSet);
+    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, 0, m.rootSet);
     if (m.rootRotationY) pr.setRootRotationY(m.rotY);
+    if (m.rootRotationZ) pr.setRootRotationZ(m.rotZ);
     if (m.jabZ) pr.setJointTranslationZ(1, m.z - 6 + 2 * age);
   }
 

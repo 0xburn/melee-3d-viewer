@@ -83,6 +83,11 @@ export class Prop {
     this.skeleton.update(this.place);
   }
 
+  setRootRotationZ(value: number) {
+    this.skeleton.rot[2] = value;
+    this.skeleton.update(this.place);
+  }
+
   /** Native callbacks mutate the posed joints after their animation step. */
   setJointTranslationZ(joint: number, value: number) {
     if (joint < 0 || joint >= this.skeleton.n) return;

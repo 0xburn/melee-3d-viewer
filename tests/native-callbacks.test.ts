@@ -166,3 +166,33 @@ test('native callback anchors use fp->parts indices, independent of script commo
   assert.equal(cutter[0].under?.()?.[12],440);
   assert.deepEqual(cutter.slice(1).map(m=>w.modelPlace(m)[0]),[440,10]);
 });
+
+test('Fox and Falco up-B fire replaces charge with launch and preserves ground/air transitions',()=>{
+  for(const character of [1,22]) {
+    const clock=new NativeCallbackClock();clock.enter(character,353);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,353,true,[]),0),[{frame:0,gfx:0x48b,part:1,commonPart:true}]);
+    assert.equal(clock.enter(character,354),false);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,354,false,[]),10),[]);
+    assert.equal(clock.enter(character,356),true);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,356,false,[]),0),[{frame:0,gfx:0x48c,part:4,commonPart:true}]);
+    assert.equal(clock.enter(character,355),false);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,355,true,[]),20),[]);
+    assert.equal(clock.enter(character,357),true);
+  }
+});
+
+test('actual Fox/Falco fire models include launch particles and replace root rotations', {skip:!assetDir},()=>{
+  const read=(name:string)=>{const b=fs.readFileSync(path.join(assetDir!,name));return b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength);};
+  const bank=new EffectBank(read('EfFxData.dat'),'effFoxDataTable',3);
+  const common=new EffectBank(read('EfCoData.dat'),'effCommonDataTable',0);
+  const w=new FxWorld(common,(_,p)=>p,new Map([[0,common],[3,bank]]));
+  (w as any).sts.set('0:0',{actionStateId:356,isGrounded:true,facingDirection:-1,selfInducedAirXSpeed:-2,selfInducedAirYSpeed:3,selfInducedGroundXSpeed:0});
+  w.spawn(0x48c,{pos:[0,0,0],follow:null,facing:-1,angle:0,damage:0,scale:1,owner:null,by:'0:0'});
+  const m=w.models.at(-1)!;assert.equal(m.index,4);assert.equal(m.bank,bank);
+  assert.ok(Math.abs(m.rotZ - (Math.PI/2-Math.atan2(3,2)))<1e-8);
+  assert.ok(bank.ptclKeys(4).length>0);
+  const p=bank.prop(4,0,true)!;assert.ok(p);
+  m.rotZ=0.7;w.poseModel(m,p,5);
+  assert.equal(p.skeleton.rot[1],Math.fround(-Math.PI/2));
+  assert.equal(p.skeleton.rot[2],Math.fround(0.7));
+});
