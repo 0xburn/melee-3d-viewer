@@ -10,6 +10,7 @@
  * first ambient light is the ambient, at most eight others. */
 import { Light, aobjFrame, sample, splineAt } from "./hsd";
 import { GxLight, LOBJ, distAttn, spotAttn } from "./gx";
+import { pickShadowLight } from "./shadow";
 
 /** what the renderer's shaders take */
 export interface Lighting {
@@ -76,13 +77,24 @@ export function applyOverrides(lights: Light[], overrides: Map<number, number>):
   });
 }
 
+export interface LightClock {
+  /** every animation loops (a stage's code can say so for a whole set, as
+   *  grIzumi_OnLoad does for the fighters' lights) */
+  loopAll?: boolean;
+  /** how many frames the set's animations have run at the replay's first
+   *  frame: the light objects are made as the match is set up, before it */
+  ahead?: number;
+}
+
 export class LightSet {
   private last = -1;
   private lit: Lighting | null = null;
 
   /** `scale`: the stage's (the lights' places are at it); `loops`: the
-   *  animations the stage says loop (by their offset) */
-  constructor(readonly lights: Light[], private scale = 1, private loops: Set<number> = new Set()) {}
+   *  animations the stage says loop (by their offset); `clock`: where the
+   *  animations stand against the replay's frames */
+  constructor(readonly lights: Light[], private scale = 1, private loops: Set<number> = new Set(),
+              private clock: LightClock = {}) {}
 
   /** whether anything about it changes from frame to frame */
   get animated(): boolean {
@@ -95,6 +107,17 @@ export class LightSet {
     this.last = frame;
     this.lit = this.build(frame);
     return this.lit;
+  }
+
+  /** the light the fighters' shadows come from at a frame (shadow.ts
+   *  pickShadowLight): its place and interest, at the stage's scale as the
+   *  set's own places are */
+  shadowLight(frame: number): { pos: number[]; interest: number[] | null } | null {
+    const all = this.lights.map((l) => this.animate(l, frame));
+    const l = pickShadowLight(all);
+    if (!l || !l.position) return null;
+    const k = l.animatedPlace ? 1 : this.scale;
+    return { pos: l.position.map((v) => v * k), interest: l.interest ? l.interest.map((v) => v * k) : null };
   }
 
   private build(frame: number): Lighting {
@@ -141,7 +164,8 @@ export class LightSet {
   private animate(l: Light, frame: number): Light & { animatedPlace?: boolean } {
     const an = l.anim;
     if (!an) return l;
-    const loop = this.loops.has(an.offset);
+    const loop = this.clock.loopAll === true || this.loops.has(an.offset);
+    frame += this.clock.ahead ?? 0;
     const out: Light & { animatedPlace?: boolean } = { ...l, color: [...l.color] as Light["color"] };
     if (an.aobj) {
       const t = aobjFrame(an.aobj, frame, loop);
@@ -162,9 +186,17 @@ export class LightSet {
         const v = sample(tr.keys, t);
         if (v === null) continue;
         if (tr.type === 4 && w.spline) {
+          // (WObjUpdateFunc: the point a share of the way along the curve by
+          // length; HSD_WObjGetPosition then takes it through the spline
+          // joint's matrix)
           const q = [0, 0, 0];
           splineAt(w.spline, Math.min(Math.max(v, 0), 1), q);
-          p[0] = q[0]; p[1] = q[1]; p[2] = q[2];
+          const m = w.mtx;
+          if (m) {
+            p[0] = m[0] * q[0] + m[4] * q[1] + m[8] * q[2] + m[12];
+            p[1] = m[1] * q[0] + m[5] * q[1] + m[9] * q[2] + m[13];
+            p[2] = m[2] * q[0] + m[6] * q[1] + m[10] * q[2] + m[14];
+          } else { p[0] = q[0]; p[1] = q[1]; p[2] = q[2]; }
         } else if (tr.type >= 5 && tr.type <= 7) p[tr.type - 5] = v;
       }
       return p;

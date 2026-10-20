@@ -43,7 +43,7 @@ import { GuardFrame, guardTilt } from "./guard";
 import { ENTRY, ENTRY_END, ENTRY_START, entryPose, standScale } from "./entry";
 import { copiesFromReplay, HAT_JOINT, KIRBY, KIRBY_ITEMS, KirbyCopy, KirbyHat, poseSkin, yoshiHatAnim } from "./kirby";
 import { onAngelPlatform, runNumber, shineAt, SHY_GUY } from "~/common/effects";
-import { ActorFrame, FxWorld, type LearnedFx, type LearnedPiece, NO_WORLD, STAGE_WARM, stepThrough } from "./fx/world";
+import { ActorFrame, FxWorld, type LearnedFx, type LearnedPiece, NO_WORLD, stepThrough } from "./fx/world";
 import { buildParticles } from "./fx/draw";
 import { srtApply } from "./fx/particles";
 import { Before, hitSparks, powershielded } from "./fx/contact";
@@ -65,6 +65,7 @@ import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
 import { itemSource } from "./item-source";
 import { isShadowBall, shadowBallScale } from "./shadow-ball";
+import { shadowCamera } from "./shadow";
 import { stageFrame, stageRevision } from "~/simulation-stage";
 
 const FOVY = (30 * Math.PI) / 180;
@@ -1437,6 +1438,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (scene.screen && st.screen) {
         scene.screen.draw(fno);
         r.liveImage(st.screen.image, scene.screen.canvas, scene.screen.version);
+        // (a copy of the match is shown in the screen's constant green, the rest in its vertex colors)
+        const m = scene.screen.mode;
+        for (const s of st.setScreenConstant(m === 7 || m === 8, scene.screen.tint)) r.forgetMaterial(s);
       }
     }
     // the game clears to its stage's fog color (black without fog); the
@@ -1452,20 +1456,24 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const posed: { f: Fighter; a: Actor }[] = [];
     drawnKirbyHats = [];
 
-    // stage and fighters, opaque parts first, then the see-through ones
-    if (st) {
-      // (the back layers whole, first: the game draws them before the rest)
-      r.setLighting(stageLit);
-      for (const sk of st.skeletons) {
-        if (layersOff[st.layerOf(sk) > 0 ? "back" : "stage"]) continue;
-        r.setTint(st.tintOf(sk));
-        r.drawSkeleton(sk, "opa");
-        if (st.layerOf(sk) > 0) r.drawSkeleton(sk, "xlu");
+    // stage and fighters, opaque parts first, then the see-through ones; the
+    // stage once the fighters are posed and their shadows made (below), as
+    // the game makes them before it draws the stage (lbShadow_8000F38C)
+    const drawStage = () => {
+      if (st) {
+        // (the back layers whole, first: the game draws them before the rest)
+        r.setLighting(stageLit);
+        for (const sk of st.skeletons) {
+          if (layersOff[st.layerOf(sk) > 0 ? "back" : "stage"]) continue;
+          r.setTint(st.tintOf(sk));
+          r.drawSkeleton(sk, "opa");
+          if (st.layerOf(sk) > 0) r.drawSkeleton(sk, "xlu");
+        }
+        r.setTint(null);
       }
-      r.setTint(null);
-    }
-    r.setLighting(lighting);
-    prof.mark("stageDraw");
+      r.setLighting(lighting);
+      prof.mark("stageDraw");
+    };
     const skins: Fighter[] = [];
     const poses: typeof lastPoses = [];
     const frameActors: ActorFrame[] = [];
@@ -1607,57 +1615,97 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (sh) shakes.set(actorKey(a.player, a.nana), sh);
     }
     lastShakes = shakes;
+    // what a fighter looks like this frame, found once for all its passes (its shadow's too)
+    const lookOf = (fi: Fighter, a: Actor, akey: string) => {
+      let look = looks.get(akey);
+      if (!look) {
+        // its model parts as the game switched them: the track's switches when
+        // it has them, else the states known to switch one (Yoshi's egg)
+        const parts: number[] = [];
+        for (let part = 0; part < fi.partCount; part++) {
+          let v = fi.defaultPart(part);
+          if (tr?.hasAt("part", fno - 123)) {
+            const c = tr.at("part", `${a.player}:${a.nana ? 1 : 0}:${part}`, fno - 123);
+            if (c) v = Number(c[0]);
+          } else v = ownPart(fi, a, part, frame.items ?? []);
+          parts.push(v);
+          fi.setPart(part, v);
+        }
+        // (a part shown now that was hidden when the pose was made: its
+        // meshes posed too - else the first frame of a switch drew them
+        // where they last stood: Kirby's Stone blinking out)
+        fi.skeleton.update();
+        const fromTrack = tr?.tint(a.player, a.nana ? 1 : 0, fno - 123, a.st.facingDirection);
+        const tint = fromTrack !== undefined ? fromTrack : fxw?.tintOf(akey, a.st.facingDirection) ?? null;
+        // Kirby's copy's hat: the viewer track's copy (kb.kind, 4 for none),
+        // else the replay's (kirby.ts). A hat in his colors covers his body:
+        // its meshes instead of his body's lookup 0, unless his face is in
+        // one of its special looks (part 0's variants 2 to 6), when it goes
+        // (ftKb_UnkIntBoolFunc0)
+        let kh: KirbyHat | null = null;
+        if (a.st.internalCharacterId === KIRBY) {
+          const key = `${a.player}:${a.nana ? 1 : 0}:kb.kind`;
+          const said = tr?.hasKey("charge", key) ? tr.at("charge", key, fno - 123) : null;
+          const kind = said ? Number(said[0]) : copiesOf(data, a.player)[fno] ?? -1;
+          kh = kind >= 0 && kind !== KIRBY ? kbHat(kind, a.costume) : null;
+          if (kh?.skin) {
+            const face = fi.partNow(0);
+            if (face >= 2 && face <= 6) kh = null;
+          }
+          drawnKirbyHats.push({ player: a.player, kind, loaded: !!kh });
+        }
+        look = { parts, tint, kh };
+        looks.set(akey, look);
+        lastTints.push({ key: akey, tint, anims: fxw?.colAnimsOf(akey) ?? null });
+      } else {
+        for (let part = 0; part < look.parts.length; part++) fi.setPart(part, look.parts[part]);
+      }
+      return look;
+    };
+    prof.mark("fxStep");
+    // the fighters' shadows (shadow.ts): each drawn flat into its own picture
+    // through its shadow camera, before the stage, which takes them
+    const shadowMaps: { tex: WebGLTexture; mtx: Float32Array }[] = [];
+    const sl = st && !layersOff.fighters ? st.playerLighting.shadowLight(fno) : null;
+    if (st && sl) {
+      const scales = playerScales(data.settings.playerSettings);
+      for (const { f: fi, a } of posed) {
+        if (shared.has(fi)) poseActor(fi, a);
+        const look = lookOf(fi, a, actorKey(a.player, a.nana));
+        // (the camera bone, ftLib_800866DC: attributes +0x16C name it by its place in the fighter's bone list,
+        // fp->parts, not by a common part's name)
+        const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
+        if (joint < 0 || joint >= fi.skeleton.n) continue;
+        const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
+        const bone = [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]);
+        const cam = shadowCamera(sl.pos, sl.interest, bone, (fi.cameraBox?.v[2] ?? 0) * (scales[a.player] ?? 1));
+        if (!cam) continue;
+        const t = r.shadowTarget(shadowMaps.length);
+        r.beginShadow(t, cam.viewProj, cam.view, st.shadowIntensity);
+        // (its low-detail model, as in a mirror: ftDrawCommon_80081200 switches every fighter to it first)
+        const low = look.kh?.skin ? null : fi.mirrorPassHidden();
+        if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
+        else if (look.kh?.skin) fi.skeleton.passHidden = fi.hiddenUnderHat();
+        r.drawSkeleton(fi.skeleton, "opa");
+        fi.skeleton.passHidden = null;
+        r.endShadow();
+        shadowMaps.push({ tex: t.tex, mtx: cam.tex });
+      }
+    }
+    r.setShadows(shadowMaps.reverse());
+    prof.mark("shadows");
+    drawStage();
+    // (a fighter's hats are posed on it once a frame, or for each pass when it is shared)
+    const hatsPosed = new Set<string>();
     const drawFighters = (pass: "opa" | "xlu", mirror = false) => {
       if (layersOff.fighters) return;
       for (const { f: fi, a } of posed) {
         const again = shared.has(fi);
         if (again) poseActor(fi, a);
         const akey = actorKey(a.player, a.nana);
-        let look = looks.get(akey);
-        // (its hats are posed on it once a frame, or for each pass when it is shared)
-        const poseHats = !look || again;
-        if (!look) {
-          // its model parts as the game switched them: the track's switches when
-          // it has them, else the states known to switch one (Yoshi's egg)
-          const parts: number[] = [];
-          for (let part = 0; part < fi.partCount; part++) {
-            let v = fi.defaultPart(part);
-            if (tr?.hasAt("part", fno - 123)) {
-              const c = tr.at("part", `${a.player}:${a.nana ? 1 : 0}:${part}`, fno - 123);
-              if (c) v = Number(c[0]);
-            } else v = ownPart(fi, a, part, frame.items ?? []);
-            parts.push(v);
-            fi.setPart(part, v);
-          }
-          // (a part shown now that was hidden when the pose was made: its
-          // meshes posed too - else the first frame of a switch drew them
-          // where they last stood: Kirby's Stone blinking out)
-          fi.skeleton.update();
-          const fromTrack = tr?.tint(a.player, a.nana ? 1 : 0, fno - 123, a.st.facingDirection);
-          const tint = fromTrack !== undefined ? fromTrack : fxw?.tintOf(akey, a.st.facingDirection) ?? null;
-          // Kirby's copy's hat: the viewer track's copy (kb.kind, 4 for none),
-          // else the replay's (kirby.ts). A hat in his colors covers his body:
-          // its meshes instead of his body's lookup 0, unless his face is in
-          // one of its special looks (part 0's variants 2 to 6), when it goes
-          // (ftKb_UnkIntBoolFunc0)
-          let kh: KirbyHat | null = null;
-          if (a.st.internalCharacterId === KIRBY) {
-            const key = `${a.player}:${a.nana ? 1 : 0}:kb.kind`;
-            const said = tr?.hasKey("charge", key) ? tr.at("charge", key, fno - 123) : null;
-            const kind = said ? Number(said[0]) : copiesOf(data, a.player)[fno] ?? -1;
-            kh = kind >= 0 && kind !== KIRBY ? kbHat(kind, a.costume) : null;
-            if (kh?.skin) {
-              const face = fi.partNow(0);
-              if (face >= 2 && face <= 6) kh = null;
-            }
-            drawnKirbyHats.push({ player: a.player, kind, loaded: !!kh });
-          }
-          look = { parts, tint, kh };
-          looks.set(akey, look);
-          lastTints.push({ key: akey, tint, anims: fxw?.colAnimsOf(akey) ?? null });
-        } else {
-          for (let part = 0; part < look.parts.length; part++) fi.setPart(part, look.parts[part]);
-        }
+        const poseHats = !hatsPosed.has(akey) || again;
+        hatsPosed.add(akey);
+        const look = lookOf(fi, a, akey);
         const kh = look.kh;
         r.setTint(look.tint);
         // (its shake moves its model, its hats and outline with it, not its trail)
@@ -2004,7 +2052,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const cw = m[3] * X + m[7] * Y + m[15];
         return [((m[0] * X + m[4] * Y + m[12]) / cw + 1) / 2, (1 - (m[1] * X + m[5] * Y + m[13]) / cw) / 2];
       });
-      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, sc.tint);
+      // (as it is: the screen's material lays its green on it, setScreenConstant)
+      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, [255, 255, 255]);
     }
     prof.mark("ghosts");
     // the game's HUD over it all (hud.ts)
@@ -2017,8 +2066,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
         if (!fi) continue;
         const drawn = posed.some((p) => p.a === a);
-        // (a part number: the model's joint past its part list's gaps, parts.ts)
-        const joint = ek ? partToModelJoint(a.st.internalCharacterId, ek.partToJoint(a.st.internalCharacterId, fi.cameraPart)) : -1;
+        // (the camera bone: its place in the fighter's bone list, ftLib_800866DC; the model's joint past its
+        // part list's gaps, parts.ts)
+        const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
         let bone: [number, number, number] | null = null;
         if (drawn && joint >= 0 && joint < fi.skeleton.n) {
           const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
@@ -2439,7 +2489,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       w.step(g, actors);
       dynStep(g, actors, data);
     };
-    return stepThrough(w, f, one, pose, st ? { frames: STAGE_WARM, start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
+    return stepThrough(w, f, one, pose, st ? { frames: (g) => w.stageFrames(g), start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
   };
 
   // the fighters' swinging chains (dynamics.ts): stepped with the effects, a

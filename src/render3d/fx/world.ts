@@ -76,7 +76,8 @@ export type LearnedFx = [number, LearnedPiece[]];
  *  go along) has to be as it was on that frame, the warm-up's too - and the
  *  last one posed is `f`. True when it stepped frames before `f`. */
 export function stepThrough(w: { frame: number; reset(f: number): void }, f: number, step: (g: number) => void,
-                            pose: (g: number) => void, far?: { frames: number; start(g: number): void; step(g: number): void }): boolean {
+                            pose: (g: number) => void,
+                            far?: { frames: number | ((f: number) => number); start(g: number): void; step(g: number): void }): boolean {
   if (f === w.frame) return false;
   const gap = f - w.frame;
   let from = w.frame + 1;
@@ -86,7 +87,7 @@ export function stepThrough(w: { frame: number; reset(f: number): void }, f: num
     // (what lives longer than WARM - the stage's particles - is warmed from
     // further back, by a lighter step that runs it alone)
     if (far) {
-      const first = Math.max(0, f - Math.max(WARM, far.frames));
+      const first = Math.max(0, f - Math.max(WARM, typeof far.frames === "number" ? far.frames : far.frames(f)));
       far.start(first);
       for (let g = first; g < from; g++) { pose(g); far.step(g); }
     }
@@ -113,6 +114,8 @@ const MODEL_KEY_SRT = new Set([0x2d, 0x2e, 0x31, 0x127, 0x4a38, 0x4a39, 0x4a3a, 
 
 /** how far back the stage's generators are warmed after a jump: longer than any stage particle lives */
 export const STAGE_WARM = 330;
+/** ... and the furthest back (FxWorld.stageFrames) */
+export const STAGE_FAR = 1200;
 
 export interface ModelFx {
   /** the effect file it is a model of */
@@ -1153,7 +1156,7 @@ export class FxWorld {
    *  joint, else placed once from the joint (grLib_801C97DC). A last value on
    *  an "sgen": "on" - made on the joint and going with it (grLib_801C9808);
    *  "kept" - the placed one the stage's code keeps, to end later ("send") */
-  private stageGen(e: TrackEvent) {
+  private stageGen(e: TrackEvent): Generator | null {
     const own = e[1] === "sgen";
     const v = e.map((x) => (typeof x === "number" ? x : 0));
     const o = own ? 3 : 2;
@@ -1163,7 +1166,7 @@ export class FxWorld {
     const g = bank ? this.ps.generator(bank, id, seed >>> 0) : null;
     this.ps.rng.phase = 0;
     if (g) g.made = "stage";
-    if (!g) return;
+    if (!g) return null;
     g.maxAge = Infinity;
     g.tag = "stage";
     // (a key on a fighter's or an item's joint: the event names whose - it ends with that owner's effects)
@@ -1185,7 +1188,7 @@ export class FxWorld {
       if (g.srt) Object.assign(g.srt, { tx: x, ty: y, tz: z, sx: g.srt.sx * s, sy: g.srt.sy * s, sz: g.srt.sz * s });
       else g.srt = srt;
       g.px = g.py = g.pz = 0;
-      return;
+      return g;
     }
     g.type |= g.kind & 0x20000 ? 0x500 : 0x700;
     g.px = x; g.py = y; g.pz = z;
@@ -1193,12 +1196,13 @@ export class FxWorld {
       const now = w?.();
       if (now) this.ps.placeOnce(g, now);
       else { g.follow = null; g.onJoint = false; }
-      return;
+      return g;
     }
     if (w) this.attach(g, w, [x, y, z]);
     else g.onJoint = true;
     // (on a joint of the stage's: the stage's code ends generators by joint)
     if (map >= 0 && joint >= 0) g.stageAt = map * 65536 + joint;
+    return g;
   }
   /** the placed generator the stage's code keeps (the last "sgen" marked "kept") */
   private stageKept: Generator | null = null;
@@ -1221,16 +1225,58 @@ export class FxWorld {
   /** every stage generator event of the track up to a frame (the replay's index), in order: set by the player */
   trackStageBefore: ((frame: number) => TrackEvent[]) | null = null;
   /** the warm-up after a jump starts at `frame`: the stage generators made
-   *  before it that never end of themselves are made now (the rest of the
-   *  earlier ones are gone by the frame jumped to, or near enough) */
+   *  before it and still running then are made now - the ones that never end
+   *  of themselves, and the ones whose life is not over (Battlefield's stars:
+   *  399 frames, made every 400) as they stand after the frames they ran:
+   *  their life and their count of particles to come (hsd_8039D214's step,
+   *  for a generator whose count grows by a set amount each frame) */
   stageStart(frame: number) {
     this.stepping = frame;
     for (const e of this.trackStageBefore?.(frame) ?? []) {
       if (e[1] === "send") { this.stageEnd(e); continue; }
-      const id = Number(e[e[1] === "sgen" ? 4 : 3]), file = Number(e[e[1] === "sgen" ? 3 : 2]);
-      const bank = file === 30 ? this.stageBank?.() ?? null : this.banks.get(file) ?? null;
-      if (bank?.cmds[id]?.genLife === 0) this.stageGen(e);
+      const c = this.stageCmd(e), made = Number(e[0]) + 123;
+      if (!c) continue;
+      if (c.genLife === 0) { this.stageGen(e); continue; }
+      const used = frame - made;
+      if (used <= 0 || used >= c.genLife) continue;
+      const g = this.stageGen(e);
+      if (!g) continue;
+      g.genLife -= used;
+      g.age += used;
+      if (g.random < 0) {
+        let n = g.count;
+        for (let k = 0; k < used; k++) {
+          n = Math.fround(n - g.random);
+          while (n >= 1) n = Math.fround(n - 1);
+        }
+        g.count = n;
+      }
     }
+  }
+  /** how many frames before `f` a jump warms the stage's generators from:
+   *  STAGE_WARM, or back to where one still running then was made, when what
+   *  it made before could still be up at `f` (its particles live longer than
+   *  the warm-up) or where it is depends on that frame (placed once from a
+   *  joint), up to STAGE_FAR */
+  stageFrames(f: number): number {
+    const start = f - STAGE_WARM;
+    let from = start;
+    for (const e of this.trackStageBefore?.(start) ?? []) {
+      if (e[1] === "send") continue;
+      const c = this.stageCmd(e), made = Number(e[0]) + 123;
+      if (!c || made >= from || (c.genLife > 0 && made + c.genLife <= start)) continue;
+      const own = e[1] === "sgen", joint = Number(e[own ? 10 : 9]), map = Number(e[own ? 9 : 8]);
+      const placedOnce = own && map >= 0 && joint >= 0 && e[own ? 11 : 10] !== "on";
+      if (placedOnce || c.life > STAGE_WARM) from = made;
+    }
+    return f - Math.max(from, f - STAGE_FAR);
+  }
+  /** a stage generator event's command list (its bank's) */
+  private stageCmd(e: TrackEvent) {
+    const own = e[1] === "sgen";
+    const id = Number(e[own ? 4 : 3]), file = Number(e[own ? 3 : 2]);
+    const bank = file === 30 ? this.stageBank?.() ?? null : this.banks.get(file) ?? null;
+    return bank?.cmds[id] ?? null;
   }
   /** one warm-up frame of the stage's generators alone: the ones the track
    *  has on it made, the particles stepped from the frame's random state */

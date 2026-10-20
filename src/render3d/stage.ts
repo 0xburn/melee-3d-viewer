@@ -9,9 +9,9 @@
  */
 import { AObj, Archive, DObj, Image, JObj, MatAnim, loadAnimJoint, loadJoint, loadLights, loadMatAnimJoint, parseArchive, ptr } from "./hsd";
 import { DEFAULT_LIGHTS, LightSet, applyOverrides } from "./lightset";
-import type { Fog } from "./gx";
+import { type Fog, RENDER } from "./gx";
 import { Mat, ident } from "./math";
-import { Skeleton, type Drawable } from "./skeleton";
+import { Skeleton, type Drawable, type MatState } from "./skeleton";
 import type { Lettering } from "./sistext";
 import { Prop } from "./prop";
 import type { StageCamera } from "./camera";
@@ -278,6 +278,8 @@ export class Stage {
   parts: Part[] = [];
   info: StageInfo;
   scale: number;
+  /** the fighters' shadows' gray (grGroundParam +0x04) */
+  shadowIntensity: number;
   /** the lights the stage is lit by (the flagged part's list, as the stage
    *  file's overrides leave it) */
   lighting: LightSet;
@@ -296,7 +298,27 @@ export class Stage {
   /** what the game's match camera takes from the stage (camera.ts), or null */
   camera: StageCamera | null = null;
   /** Pokemon Stadium: the big screen's image (the game renders into it) and its part */
-  screen: { image: Image; part: Part } | null = null;
+  screen: { image: Image; part: Part; states: MatState[] } | null = null;
+
+  /** Pokemon Stadium's screen's color source as its code sets it with what
+   *  it shows (grStadium_801D21E4): a copy of the match (modes 7, 8) in a
+   *  constant color, the screen's green, instead of its vertex colors;
+   *  the rest in its vertex colors. The materials whose mode changed (their
+   *  TEV made again: HSD_MObjCompileTev) */
+  setScreenConstant(on: boolean, color: [number, number, number]): MatState[] {
+    const out: MatState[] = [];
+    for (const s of this.screen?.states ?? []) {
+      const m = s.mobj, was = m.renderMode;
+      m.renderMode = on ? ((was & ~RENDER.VERTEX) | RENDER.CONSTANT) >>> 0 : ((was | RENDER.VERTEX) & ~RENDER.CONSTANT) >>> 0;
+      if (on) {
+        const c = color.map((v) => v / 255);
+        m.diffuse = [c[0], c[1], c[2], m.diffuse[3]];
+        s.diffuse.set(m.diffuse);
+      }
+      if (m.renderMode !== was) out.push(s);
+    }
+    return out;
+  }
   /** its floors' slopes (its collision data: collision.ts), or null without them */
   floors: Floors | null = null;
   /** its floor lines for the fighters' swinging parts (dynamics.ts), or null */
@@ -356,8 +378,21 @@ export class Stage {
     // grGroundParam starts with the stage's scale (Battlefield 0.8, Yoshi's 0.7, ...)
     const gp = a.publics.get("grGroundParam");
     this.scale = gp === undefined ? 1 : a.data.getFloat32(gp);
+    // (and its fighters' shadows' gray, an s16 at +0x04: Ground_801C0508, 128 without one)
+    this.shadowIntensity = gp === undefined ? 128 : a.data.getInt16(gp + 4);
     const head = a.publics.get("map_head");
     if (head === undefined) throw new Error("not a stage file (no map_head)");
+    // the materials that take the fighters' shadows: map_head +0x28 lists them
+    // (+0x2C how many), and the game sets RENDER_SHADOW in each one's render
+    // mode as the file is read (grDatFiles_801C6228) - here too, before the
+    // parts are made from them
+    {
+      const list = ptr(a, head + 0x28), n = a.data.getUint32(head + 0x2c);
+      for (let i = 0; list !== null && i < n && i < 4096; i++) {
+        const m = ptr(a, list + i * 4);
+        if (m !== null) a.data.setUint32(m + 4, (a.data.getUint32(m + 4) | RENDER.SHADOW) >>> 0);
+      }
+    }
     this.floors = readFloors(a);
     this.floorTest = readFloorTest(a);
     this.collision = readCollision(a);
@@ -375,10 +410,20 @@ export class Stage {
     const lp = ptr(a, head + 0x20), nlp = d.getUint32(head + 0x24);
     for (let i = 0; lp !== null && i < nlp && i < 256; i++) if (d.getUint8(lp + i * 8 + 4) & 0x80) loops.add(ptr(a, lp + i * 8) ?? -1);
     const part = (i: number, at: number) => (arr === null ? null : ptr(a, arr + i * 0x34 + at));
+    // The two sets' clocks, as their light objects are made: the stage's
+    // (Ground_801C466C) steps its animations once as it is made
+    // (HSD_LObjAnimAll), so they stand one frame ahead of the stage's own; the
+    // fighters' (ftCo_8009F4A4, from Fighter_800679B0) are made earlier in
+    // the match's setup and stand three ahead at the replay's first frame (as
+    // the game's recorded lights show: Fountain's colors and places, exact on
+    // both). Fountain's code makes every animation of the fighters' set loop
+    // (grIzumi_OnLoad)
     const list = part(info.lightsPart, 0x18);
-    this.lighting = new LightSet(list === null ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, list), overrides), this.scale, loops);
+    this.lighting = new LightSet(list === null ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, list), overrides), this.scale, loops,
+                                 { ahead: 1 });
     const plit = a.publics.get("map_plit");
-    this.playerLighting = new LightSet(plit === undefined ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, plit), overrides), this.scale);
+    this.playerLighting = new LightSet(plit === undefined ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, plit), overrides), this.scale,
+                                       new Set(), { ahead: 3, loopAll: info.file === "GrIz" });
     const fog = part(info.fogPart, 0x1c);
     if (fog !== null) {
       this.fog = { type: d.getUint32(fog), start: d.getFloat32(fog + 8) * this.scale, end: d.getFloat32(fog + 12) * this.scale,
@@ -961,12 +1006,18 @@ export class Stage {
 const NO_DOBJS: DObj[] = [];
 
 /** the image a render target's texture shows, and its part */
-function screenOf(a: Archive, parts: Part[], name: RegExp): { image: Image; part: Part } | null {
+function screenOf(a: Archive, parts: Part[], name: RegExp): { image: Image; part: Part; states: MatState[] } | null {
   let off = -1;
   for (const [n, o] of a.publics) if (name.test(n)) off = o;
   for (const p of parts)
     for (const d of p.skeleton.drawables)
-      for (const t of d.state.tex) if (t.tobj.image.offset === off) return { image: t.tobj.image, part: p };
+      for (const t of d.state.tex) {
+        if (t.tobj.image.offset !== off) continue;
+        // (every material that shows it: the code changes their color source with what it shows)
+        const states = [...new Set(p.skeleton.drawables.filter((e) => e.state.tex.some((u) => u.tobj.image.offset === off))
+          .map((e) => e.state))];
+        return { image: t.tobj.image, part: p, states };
+      }
   return null;
 }
 

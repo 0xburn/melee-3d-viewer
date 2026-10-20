@@ -16,6 +16,7 @@
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
 import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
+import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
 import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, textureMatrix } from "./gx";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
@@ -28,6 +29,8 @@ import { idle } from "./idle";
 
 const tmpM = new Float32Array(16);
 const MIRROR_W = 80, MIRROR_H = 60;
+// the fighters' shadows a material takes, at most, and their texture units (after the material's four)
+const MAX_SHADOWS = 4, SHADOW_UNIT = 4;
 
 // uMatF (vec4s): 0 diffuse.rgb alpha | 1 ambient.rgb shininess | 2 specular.rgb
 //   | 3 each sampler's blend | 4 each sampler's LOD bias | 5 alpha test refs
@@ -70,7 +73,7 @@ uniform int uOverMode;
 // (each texture's s, t and q: GX divides by q at each pixel, which a
 // projected texture - the stage's mirror image - needs across big triangles)
 out vec4 vRas0; out vec3 vRas1; out vec3 vT0; out vec3 vT1; out vec3 vT2; out vec3 vT3;
-out vec3 vNrmV; out vec3 vPosV; out vec3 vOverAdd;
+out vec3 vNrmV; out vec3 vPosV; out vec3 vOverAdd; out vec3 vPosW;
 out vec2 vBump; // an emboss bump map's coordinates, shifted toward the first diffuse light
 
 vec3 texGen(int i, vec2 uv0, vec2 uv1, vec3 nv, vec4 W) {
@@ -156,6 +159,7 @@ void main() {
   vec3 nv = normalize(mat3(uView) * N);
   vNrmV = nv;
   vPosV = (uView * w).xyz;
+  vPosW = w.xyz;
   ivec4 m0 = uMatI[0];
   vRas0 = vec4(1.0);
   if (m0.y == 1) vRas0 = aClr;
@@ -191,8 +195,15 @@ const FS = `#version 300 es
 precision highp float;
 precision highp int;
 in vec4 vRas0; in vec3 vRas1; in vec3 vT0; in vec3 vT1; in vec3 vT2; in vec3 vT3;
-in vec3 vNrmV; in vec3 vPosV; in vec3 vOverAdd; in vec2 vBump;
+in vec3 vNrmV; in vec3 vPosV; in vec3 vOverAdd; in vec2 vBump; in vec3 vPosW;
 uniform sampler2D uTex0; uniform sampler2D uTex1; uniform sampler2D uTex2; uniform sampler2D uTex3;
+// the fighters' shadows (shadow.ts): each a picture and its world-to-(s, t)
+// matrix, laid on a material that takes them (RENDER_SHADOW); and a shadow
+// being made: every pixel one flat gray, nothing else read (uCast.a > 0)
+uniform sampler2D uShadow0; uniform sampler2D uShadow1; uniform sampler2D uShadow2; uniform sampler2D uShadow3;
+uniform mat4 uShadowM[4];
+uniform int uShadowN;
+uniform vec4 uCast;
 ${MAT_DECL}
 uniform vec4 uTint; // a ghost: rgb, strength in a (0: not a ghost)
 uniform vec4 uFlat; // one flat color (a ghost's outline), when a > 0
@@ -302,6 +313,7 @@ bool cmp(int f, float a, float r) {
   return true;
 }
 void main() {
+  if (uCast.a > 0.0) { outColor = vec4(uCast.rgb, 1.0); return; }
   ivec4 m0 = uMatI[0];
   int nSt = m0.x, flags = m0.z;
   vec4 tx[4];
@@ -333,6 +345,17 @@ void main() {
     if (phase == 2 && bs >= 0) {
       vec4 u = bs == 0 ? texture(uTex0, vBump) : bs == 1 ? texture(uTex1, vBump) : bs == 2 ? texture(uTex2, vBump) : texture(uTex3, vBump);
       c = clamp(c + tx[bs].rgb * vRas0.rgb - u.rgb * vRas0.rgb, 0.0, 1.0);
+    }
+  }
+  // the shadows, after all of the material's own stages: its color times
+  // each one's texel (HSD_TObjSetupVolatileTev's TObjSetupTevModulateShadow)
+  if ((flags & 256) != 0) {
+    for (int k = 0; k < 4; k++) {
+      if (k >= uShadowN) break;
+      vec2 st = (uShadowM[k] * vec4(vPosW, 1.0)).xy;
+      vec3 s = k == 0 ? textureLod(uShadow0, st, 0.0).rgb : k == 1 ? textureLod(uShadow1, st, 0.0).rgb
+             : k == 2 ? textureLod(uShadow2, st, 0.0).rgb : textureLod(uShadow3, st, 0.0).rgb;
+      c = clamp(c * s, 0.0, 1.0);
     }
   }
   c += vOverAdd;
@@ -416,7 +439,8 @@ const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
 const UNIFORMS = ["uViewProj", "uView", "uMats", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
                   "uLCol", "uLA", "uLK", "uEye", "uSpecAt", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
-                  "uFog", "uFogColor", "uPointSize"];
+                  "uFog", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
+                  "uShadowN", "uCast"];
 const PARTICLE_ATTRS = ["aPos", "aUv", "aPrim", "aEnv", "aCmp", "aTex"];
 /** a particle quad buffer's layout (17 floats a vertex), into the vertex array bound */
 function particleAttribs(gl: WebGL2RenderingContext) {
@@ -614,6 +638,7 @@ export class Renderer {
       gl.useProgram(p);
       gl.uniform1i(loc.uTex0, 0); gl.uniform1i(loc.uTex1, 1);
       gl.uniform1i(loc.uTex2, 2); gl.uniform1i(loc.uTex3, 3);
+      for (let k = 0; k < MAX_SHADOWS; k++) gl.uniform1i(loc[`uShadow${k}`], SHADOW_UNIT + k);
     };
     setUp(this.prog, this.loc);
     for (const n of ["uViewProj", "uTex"]) this.ploc[n] = gl.getUniformLocation(this.particleProg, n);
@@ -1156,6 +1181,8 @@ void main() {
     gl.uniform4f(l.uOutline, 0, 0, 0, 0);
     gl.uniform1f(l.uFlash, 0);
     gl.uniform1f(l.uInflate, 0);
+    gl.uniform4f(l.uCast, 0, 0, 0, 0);
+    gl.uniform1i(l.uShadowN, 0);
   }
 
   /** where the frame's scene is drawn: the 480p look's frame buffer, or the game's picture's */
@@ -1280,6 +1307,64 @@ void main() {
 
   /** a debug aid (?debug=flat): what is drawn next in one flat color, over
    *  every pixel the material lets through, or back to its own (null) */
+  // ---- the fighters' shadows (shadow.ts)
+  /** a fighter's shadow picture: one target per fighter, made once */
+  shadowTarget(i: number): RenderTarget {
+    let t = this.shadowTargets[i];
+    if (!t) {
+      const gl = this.gl;
+      t = this.shadowTargets[i] = this.target(SHADOW_SIZE, SHADOW_SIZE);
+      // (the game's shadow texture: clamped, magnified nearest, minified linear)
+      gl.bindTexture(gl.TEXTURE_2D, t.tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      this.bound.fill(null);
+    }
+    return t;
+  }
+  private shadowTargets: RenderTarget[] = [];
+  /** draws from here on make a shadow: into `t`, cleared white, through the
+   *  shadow camera, every pixel the stage's shadow intensity (0..255) as the
+   *  copy keeps it (shadowGray), two pixels in from each edge
+   *  (HSD_ShadowStartRender); endShadow() puts the frame back */
+  beginShadow(t: RenderTarget, viewProj: Mat, view: Mat, intensity: number) {
+    const gl = this.gl;
+    this.overlay(viewProj, view, t, [1, 1, 1, 1]);
+    this.casting = true;
+    const gray = shadowGray(intensity);
+    gl.uniform4f(this.loc.uCast, gray, gray, gray, 1);
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(2, 2, t.w - 4, t.h - 4);
+  }
+  endShadow() {
+    const gl = this.gl;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.uniform4f(this.loc.uCast, 0, 0, 0, 0);
+    this.casting = false;
+    this.endOverlay();
+  }
+  /** a shadow being made (material() sets its pixel engine) */
+  private casting = false;
+  /** the shadows the materials that take them get from now on: each a
+   *  picture and its world-to-(s, t) matrix, the last made first, as
+   *  HSD_MObjAddShadowTexture puts each new one at the head of its list */
+  setShadows(list: { tex: WebGLTexture; mtx: Mat }[]) {
+    const gl = this.gl;
+    const n = Math.min(MAX_SHADOWS, list.length);
+    for (let k = 0; k < n; k++) {
+      gl.activeTexture(gl.TEXTURE0 + SHADOW_UNIT + k);
+      gl.bindTexture(gl.TEXTURE_2D, list[k].tex);
+      this.shadowM.set(list[k].mtx, k * 16);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    this.unit = 0;
+    if (n) gl.uniformMatrix4fv(this.loc.uShadowM, false, this.shadowM.subarray(0, n * 16));
+    gl.uniform1i(this.loc.uShadowN, n);
+    this.shadowMaps = list.slice(0, n).map((x) => ({ mtx: x.mtx }));
+  }
+  private shadowM = new Float32Array(16 * MAX_SHADOWS);
+  /** the shadows set now (the draw log reads them) */
+  shadowMaps: { mtx: Mat }[] = [];
+
   setFlat(c: [number, number, number] | null) {
     this.gl.uniform4f(this.loc.uFlat, c?.[0] ?? 0, c?.[1] ?? 0, c?.[2] ?? 0, c ? 1 : 0);
   }
@@ -1711,6 +1796,14 @@ void main() {
   private mirrorViewProj: Mat = new Float32Array(16);
 
   /** the material's program, compiled on its first draw */
+  /** a material whose render mode changed: its program and packed block made
+   *  again on its next draw (HSD_MObjCompileTev) */
+  forgetMaterial(s: MatState) {
+    this.programs.delete(s);
+    this.statics.delete(s);
+    s.gl = undefined;
+  }
+
   program(s: MatState): MatProgram {
     let p = this.programs.get(s);
     if (!p) {
@@ -1758,7 +1851,8 @@ void main() {
     }
     I[0] = Math.min(st.length, 8);
     I[1] = p.channel;
-    I[2] = (p.vertexBase ? 1 : 0) | (p.lit ? 2 : 0) | (p.specular ? 4 : 0) | ((p.bump + 1) << 4);
+    I[2] = (p.vertexBase ? 1 : 0) | (p.lit ? 2 : 0) | (p.specular ? 4 : 0) | ((p.bump + 1) << 4) |
+           (s.mobj.renderMode & RENDER.SHADOW ? 256 : 0);
     // the alpha test: the material's pixel engine's, else HSD's for its mode
     const mo = s.mobj, pe = mo.pe, mode = mo.renderMode;
     const at = pe ? [pe.alphaComp0, pe.ref0, pe.alphaOp, pe.alphaComp1, pe.ref1] : defaultAlphaTest(mode);
@@ -1852,6 +1946,8 @@ void main() {
       return true;
     }
     this.bindUbo(c.ubo);
+    // (a shadow being made: no blend, no depth, color only - HSD_ShadowStartRender's pixel engine)
+    if (this.casting) { this.setColorWrite(true); this.setBlend(false); this.setDepth(false, gl.ALWAYS); return true; }
     this.setColorWrite(c.colorOn);
     if (c.blend === 1) this.setBlend(true, c.srcF, c.dstF, gl.FUNC_ADD);
     else if (c.blend === 3) this.setBlend(true, gl.ONE, gl.ONE, gl.FUNC_REVERSE_SUBTRACT);
