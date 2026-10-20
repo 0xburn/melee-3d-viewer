@@ -1,5 +1,6 @@
+import { sound } from "../audio";
 import createRAF, { targetFPS } from "@solid-primitives/raf";
-import { batch, createEffect, createResource, createSignal } from "solid-js";
+import { batch, createEffect, createResource, createSignal, untrack } from "solid-js";
 import { createStore } from "solid-js/store";
 import {
   ActionName,
@@ -134,10 +135,7 @@ export function selectCustomAction(actionName: ActionName) {
 export function selectHighlight(nameAndHighlight: [string, Highlight]) {
   batch(() => {
     setReplayState("selectedHighlight", nameAndHighlight);
-    setReplayState(
-      "frame",
-      wrapFrame(replayState, nameAndHighlight[1].startFrame - 30)
-    );
+    jump(nameAndHighlight[1].startFrame - 30);
   });
 }
 
@@ -156,7 +154,7 @@ export function nextHighlight() {
   const nextIndex = wrapHighlight(replayState, currentIndex + 1);
   batch(() => {
     setReplayState("selectedHighlight", highlights[nextIndex]);
-    setReplayState("frame", highlights[nextIndex][1].startFrame - 30);
+    jump(highlights[nextIndex][1].startFrame - 30);
   });
 }
 
@@ -175,7 +173,7 @@ export function previousHighlight() {
   const previousIndex = wrapHighlight(replayState, currentIndex - 1);
   batch(() => {
     setReplayState("selectedHighlight", highlights[previousIndex]);
-    setReplayState("frame", highlights[previousIndex][1].startFrame - 30);
+    jump(highlights[previousIndex][1].startFrame - 30);
   });
 }
 
@@ -217,7 +215,10 @@ export function toggleFullscreen(): void {
 export function togglePause(): void {
   if (running()) stop();
   else if (playWanted) playWanted = false;
-  else begin();
+  else {
+    if (replayState.replayData && replayState.frame >= replayState.replayData.frames.length - 1) jump(0);
+    begin();
+  }
 }
 
 export function pause(): void {
@@ -277,11 +278,13 @@ export function ensureHighlights(): void {
 
 export function setRange(range?: [number, number]): void {
   setReplayState("range", range);
-  if (range) setReplayState("frame", (f) => wrapFrame(replayState, f));
+  if (range) jump(replayState.frame);
 }
 
 export function jump(target: number): void {
-  setReplayState("frame", wrapFrame(replayState, target));
+  const frame = wrapFrame(replayState, target);
+  sound.seek(frame);
+  setReplayState("frame", frame);
 }
 
 // percent is [0,1]
@@ -289,13 +292,10 @@ export function jumpPercent(percent: number): void {
   // inside a moment's range, percent of the range
   if (replayState.range) {
     const [a, b] = replayState.range;
-    setReplayState("frame", Math.round(a + (b - a) * percent));
+    jump(Math.round(a + (b - a) * percent));
     return;
   }
-  setReplayState(
-    "frame",
-    Math.round((replayState.replayData?.frames.length ?? 0) * percent)
-  );
+  jump(Math.round((replayState.replayData?.frames.length ?? 0) * percent));
 }
 
 export function adjust(delta: number): void {
@@ -304,17 +304,27 @@ export function adjust(delta: number): void {
 
 const [running, start, stop] = createRAF(
   targetFPS(
-    () =>
-      setReplayState("frame", (f) =>
-        wrapFrame(replayState, f + replayState.framesPerTick)
-      ),
+    () => {
+      const audioFrame = sound.frame();
+      if (audioFrame === null) return;
+      if (audioFrame !== undefined) {
+        const last = (replayState.replayData?.frames.length ?? 1) - 1;
+        setReplayState("frame", Math.min(last, audioFrame));
+        if (audioFrame >= last) pause();
+      } else setReplayState("frame", f => wrapFrame(replayState, f + replayState.framesPerTick));
+    },
     () => replayState.fps
   )
 );
 createEffect(() => setReplayState("running", running()));
+createEffect(() => {
+  const playing = running(), rate = replayState.fps * replayState.framesPerTick / 60;
+  sound.transport(playing, untrack(() => replayState.frame), rate);
+});
 
 createEffect(async () => {
   const selected = currentSelectionStore().data.selectedFileAndStub;
+  sound.load(selected?.[0]);
   if (selected === undefined) {
     setReplayState(defaultReplayStoreState);
     return;

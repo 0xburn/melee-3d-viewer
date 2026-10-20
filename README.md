@@ -151,3 +151,62 @@ MIT, see `LICENSE`. Third-party notices: `src/render3d/LICENSE-noclip.txt`,
 `src/assets/controllers/m-overlay/LICENSE`, and `THIRD_PARTY_LICENSES.txt` in
 a build. Melee and its assets belong to Nintendo and HAL Laboratory; none are
 included.
+
+## Optional browser audio (draft integration)
+
+An embedding host can supply a compatible sound-only playback controller. The
+viewer does not bundle a simulator, an AudioWorklet, or game sound assets, and
+stays silent with no extra simulation work unless the host configures audio and
+the user enables it. This draft provides the viewer integration; choosing and
+packaging a standalone audio engine remains a host requirement.
+
+Set this trusted host configuration **before** loading the embed entry script:
+
+```html
+<script>
+  globalThis.__MELEE_AUDIO_CONFIG__ = {
+    module: '/audio/player.mjs',
+    assetsUrl: '/audio/assets/index.bin'
+  };
+</script>
+```
+
+The module must export `ReplayPlayer`, implementing this adapter contract:
+
+- Constructor accepts `{ audioOnly: true, assetsUrl, music }`. It must skip all
+  rendering and renderer workers. Merely hiding a second canvas is insufficient.
+- `enableAudio()` unlocks the audio context synchronously from the user's click
+  and returns a readiness promise. `open(Blob)` loads the same game data and
+  resolves when `ready` is true. These operations may run concurrently.
+- `seek(gameFrame, { resume })` immediately clears old audio, increments
+  `_videoEpoch`, and cancels older seeks. `position` events carry
+  `{ videoEpoch, seeking }` in `CustomEvent.detail`; completion must acknowledge
+  the current epoch. This draft uses the existing controller's epoch field;
+  a public seek acknowledgement API would be preferable before stabilizing it.
+- `audioFrame` returns the fractional game frame at the audio device's current
+  PCM playback time (or `null` until anchored). It must not run ahead of the
+  simulation. Game frames start at -123; viewer indexes start at zero.
+- `setSpeed(rate)`, `setMusic(enabled)`, `speed`, and `destroy()` handle transport,
+  music, and full worker/audio-context cleanup. `error` and `audiointerrupted`
+  events disable sound while leaving the original visual-only player usable.
+
+Serve the top-level page and embedded document with
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` for a shared-memory Wasm backend.
+Asset hosts must permit the site's origin. The module and worklet files must be
+reachable by the browser; no backend audio-generation job is needed.
+
+With audio enabled, the picture follows the PCM clock. Seeks display their
+requested frame immediately, hold playback while sound catches up, and discard
+stale seek acknowledgements. Pause/resume and speed changes re-anchor sound at
+the visible frame. Music is independent; disabling sound releases the backend.
+The additional simulation still costs CPU/memory and can make backward seeks
+slower. A backend must surface its simulation failures instead of playing
+incorrect sound indefinitely.
+
+`node --test tests/audio.test.mjs` (Node 22+) checks transport with a fake backend,
+including rapid seeks and cancellation during startup. `npm run build` builds
+both embed and dev entries. These tests do not establish browser/device coverage
+or supply a standalone engine. The integration was also exercised in a host
+using a browser Wasm simulator and AudioWorklet; that host's admin controls,
+telemetry and private asset routes are intentionally absent here.

@@ -1,3 +1,4 @@
+import { sound, soundState, musicEnabled, soundAvailable, soundConfigured } from "../../audio";
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { MinusIcon, PlusIcon } from "~/components/common/icons";
 import {
@@ -194,6 +195,16 @@ export function Controls() {
           update
         </div>
       </div>
+      <Show when={soundConfigured}>
+      <button type="button" disabled={!soundAvailable()} class="rounded px-2 py-1 hover:bg-slate-700 disabled:opacity-50" aria-pressed={soundState() === 'on'}
+        onClick={() => soundState() === 'on' || soundState() === 'loading' ? sound.disable() : (sound.seek(replayStore.frame), void sound.enable())}>
+        {soundState() === 'loading' ? 'Cancel sound' : soundState() === 'on' ? 'Sound on' : soundState() === 'error' ? 'Retry sound' : 'Enable sound'}
+      </button>
+      <Show when={soundState() === 'on'}>
+        <label class="flex items-center gap-1 text-sm"><input type="checkbox" checked={musicEnabled()}
+          onChange={e => sound.music(e.currentTarget.checked)} />Music</label>
+      </Show>
+      </Show>
       <input
         id="seekbar"
         class="flex-grow accent-slippi-500"
