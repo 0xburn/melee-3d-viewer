@@ -1,5 +1,5 @@
-import { NativeCallbackClock, nativeEffectEvents, outgoingNativeScriptEvents, cutterAnimationFrame, nativeEffectFamily } from "./native-callbacks";
-import { itemTransitionEffects, iceTransitionEffects } from "../item-effects";
+import { NativeCallbackClock, nativeEffectEvents, nativeEffectIds, outgoingNativeScriptEvents, cutterAnimationFrame, nativeEffectFamily } from "./native-callbacks";
+import { itemTransitionEffects, iceTransitionEffects, itemRuleEffects } from "../item-effects";
 /* 3D replay viewer: the game's effects, run alongside the replay.
  *
  * Each frame the effects the game started are placed as its own dispatch
@@ -716,7 +716,7 @@ export class FxWorld {
       else this.scriptEvent(e, a);
     }
     if (!this.tracked && !this.generic) {
-      for (const e of nativeClock.take(nativeEffectEvents(st.internalCharacterId, st.actionStateId, st.isGrounded, events), now)) {
+      for (const e of nativeClock.take(nativeEffectEvents(st.internalCharacterId, st.actionStateId, events), now)) {
         // Native callbacks index fp->parts directly; the script common-bone
         // lookup is a different namespace (and has no entry for Cutter part 44).
         const joint = e.commonPart ? this.partToJoint(st.internalCharacterId, e.part) : e.part;
@@ -1001,6 +1001,8 @@ export class FxWorld {
         if (gfx === KO_BLAST_FX) continue;
         // (one the fighter's scripts started on this frame already: theirs)
         if (this.scriptStarted.get(`${a.key}:${gfx}`) === this.stepping) continue;
+        // (one its move's code starts in this state: the callbacks' (fx/native-callbacks.ts), not twice)
+        if (nativeEffectIds(st.internalCharacterId, st.actionStateId).includes(gfx)) continue;
         place("f", pl * 2 + nn, gfx, pieces, [st.xPosition, st.yPosition], st.facingDirection < 0 ? -1 : 1, a, null);
       }
     }
@@ -1008,7 +1010,9 @@ export class FxWorld {
       if (!this.itemBorn.has(it.spawnId)) this.itemBorn.set(it.spawnId, frame);
       const age = frame - this.itemBorn.get(it.spawnId)!;
       for (const [gfx, pieces] of this.learned!(`i${it.typeId}:${it.state ?? 0}:${age}`) ?? []) {
-        if (it.typeId === 0x5d && gfx === 0x40c) continue; // explicit state transition below
+        // (one the item's own code starts as it changes state: the rules' in itemEvents (../item-effects.ts),
+        // not twice)
+        if (itemRuleEffects(it.typeId).includes(gfx)) continue;
         place("i", it.spawnId, gfx, pieces, [it.x, it.y], 1, undefined, it.spawnId);
       }
     }

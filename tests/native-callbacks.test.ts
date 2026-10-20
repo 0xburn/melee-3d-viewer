@@ -16,14 +16,14 @@ test('DK and copied punch consume the first nonzero command once, not on every c
   for(const [character,ground,air,gfx] of [[3,372,377,0x4c8],[4,458,463,0x4a9]]) {
     const clock=new NativeCallbackClock();
     clock.enter(character,ground);
-    const events=nativeEffectEvents(character,ground,true,commands);
+    const events=nativeEffectEvents(character,ground,commands);
     assert.deepEqual(clock.take(events,11),[]);
     assert.equal(clock.take(events,12)[0]?.gfx,gfx);
     assert.deepEqual(clock.take(events,12),[]);
     assert.deepEqual(clock.take(events,0),[]);
     assert.deepEqual(clock.take(events,30),[]);
     assert.equal(clock.enter(character,air),false);
-    assert.deepEqual(clock.take(nativeEffectEvents(character,air,false,commands),30),[]);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,air,commands),30),[]);
     assert.equal(clock.enter(character,14),true);
     clock.enter(character,ground);
     assert.equal(clock.take(events,12).length,1);
@@ -31,15 +31,15 @@ test('DK and copied punch consume the first nonzero command once, not on every c
 });
 test('Blizzard starts from the command on both climbers; Teleport starts on entry',()=>{
   for(const character of [10,11]) {
-    const e=nativeEffectEvents(character,357,true,commands);
+    const e=nativeEffectEvents(character,357,commands);
     assert.deepEqual(e,[{frame:12,gfx:0x4ec,part:29}]);
   }
-  assert.deepEqual(nativeEffectEvents(16,356,false,commands),[{frame:0,gfx:0x4e8,part:5}]);
-  assert.deepEqual(nativeEffectEvents(16,354,false,commands),[]);
+  assert.deepEqual(nativeEffectEvents(16,356,commands),[{frame:0,gfx:0x4e8,part:5}]);
+  assert.deepEqual(nativeEffectEvents(16,354,commands),[]);
 });
 test('seek reconstruction consumes past triggers exactly once',()=>{
   const clock=new NativeCallbackClock();clock.enter(3,384);
-  const e=nativeEffectEvents(3,384,true,[]);
+  const e=nativeEffectEvents(3,384,[]);
   assert.equal(clock.take(e,24).length,1);
   assert.deepEqual(clock.take(e,0),[]);
   const rebuilt=new NativeCallbackClock();rebuilt.enter(3,384);
@@ -82,7 +82,7 @@ test('actual fighter scripts expose each required native callback command', {ski
     const files=fighterFiles(character,0)!;
     const fighter=new Fighter(character,read(files[0]),read(files[1]),read(files[2]),0,motion,'test');
     for(const state of states){
-      const events=nativeEffectEvents(character,state,true,fighter.scriptFor(state));
+      const events=nativeEffectEvents(character,state,fighter.scriptFor(state));
       assert.equal(events.length,1,`character ${character} state ${state} has a command-driven callback`);
       assert.ok(events[0].frame>=0);
     }
@@ -109,13 +109,13 @@ test('Cutter preserves its three-piece effect through all phases, then can resta
   const {cutterAnimationFrame}=await import('../src/render3d/fx/native-callbacks');
   const clock=new NativeCallbackClock();
   clock.enter(4,389);
-  assert.equal(clock.take(nativeEffectEvents(4,389,false,[]),0)[0]?.gfx,0x494);
+  assert.equal(clock.take(nativeEffectEvents(4,389,[]),0)[0]?.gfx,0x494);
   for(const state of [390,391,388]) {
     assert.equal(clock.enter(4,state),false);
-    assert.deepEqual(clock.take(nativeEffectEvents(4,state,true,[]),0),[]);
+    assert.deepEqual(clock.take(nativeEffectEvents(4,state,[]),0),[]);
   }
   clock.enter(4,14);clock.enter(4,385);
-  assert.equal(clock.take(nativeEffectEvents(4,385,true,[]),0).length,1);
+  assert.equal(clock.take(nativeEffectEvents(4,385,[]),0).length,1);
   assert.deepEqual([63,64,65,68,69].map(f=>cutterAnimationFrame(f)),[63,60,61,64,60]);
   assert.deepEqual([90,91,100].map(f=>cutterAnimationFrame(f,90)),[65,66,75]);
 });
@@ -170,13 +170,13 @@ test('native callback anchors use fp->parts indices, independent of script commo
 test('Fox and Falco up-B fire replaces charge with launch and preserves ground/air transitions',()=>{
   for(const character of [1,22]) {
     const clock=new NativeCallbackClock();clock.enter(character,353);
-    assert.deepEqual(clock.take(nativeEffectEvents(character,353,true,[]),0),[{frame:0,gfx:0x48b,part:1,commonPart:true}]);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,353,[]),0),[{frame:0,gfx:0x48b,part:1,commonPart:true}]);
     assert.equal(clock.enter(character,354),false);
-    assert.deepEqual(clock.take(nativeEffectEvents(character,354,false,[]),10),[]);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,354,[]),10),[]);
     assert.equal(clock.enter(character,356),true);
-    assert.deepEqual(clock.take(nativeEffectEvents(character,356,false,[]),0),[{frame:0,gfx:0x48c,part:4,commonPart:true}]);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,356,[]),0),[{frame:0,gfx:0x48c,part:4,commonPart:true}]);
     assert.equal(clock.enter(character,355),false);
-    assert.deepEqual(clock.take(nativeEffectEvents(character,355,true,[]),20),[]);
+    assert.deepEqual(clock.take(nativeEffectEvents(character,355,[]),20),[]);
     assert.equal(clock.enter(character,357),true);
   }
 });
