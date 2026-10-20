@@ -176,10 +176,19 @@ The module exports `ReplayPlayer`:
 - `audioFrame`: the fractional game frame at the audio device's current PCM
   playback time, or `null` until known. It must not run ahead of the
   simulation. Game frames start at -123; the viewer's frame indexes start at 0.
+- `play()` (a promise) and `pause()`: go on or stop where the sound is,
+  without a seek. A pause, a play or a change of speed is sent this way: a
+  seek would make a backend that simulates the game rewind it.
 - `speed`, `setSpeed(rate)`, `setMusic(on)`: playback speed and music.
   `destroy()` stops its workers and closes its audio context.
 - `error` and `audiointerrupted` events turn sound off; the viewer keeps
   playing without it.
+- `stage-frames` events (optional) carry Fountain of Dreams' platform heights
+  for replays from before Slippi 3.18, which do not record them:
+  `CustomEvent.detail.frames` is a list of `[gameFrame, left, right]`, the
+  platforms' joint translations before the stage's scale. What a replay records
+  comes first; the heights are forgotten when another replay is loaded. Without
+  them the platforms keep their starting height (`src/simulation-stage.ts`).
 
 A shared-memory Wasm backend needs the top-level page and the embedded
 document served with `Cross-Origin-Opener-Policy: same-origin` and
@@ -189,7 +198,8 @@ browser. No server-side audio generation is needed.
 
 While sound is on, a seek shows its frame at once and the picture holds until
 the sound has caught up; the acknowledgement of an older seek is ignored.
-Pause, play and speed changes start the sound again at the frame shown. Music
+A pause, a play or a change of speed goes to the host player as it is; a seek
+under way is sent again with the new playing state. Music
 is turned on and off separately. Turning sound off, or loading another replay,
 destroys the host's player. The extra simulation still costs CPU and memory,
 and can make backward seeks slower. A backend must report its simulation
@@ -237,21 +247,3 @@ MIT, see `LICENSE`. Third-party notices: `src/render3d/LICENSE-noclip.txt`,
 `src/assets/controllers/m-overlay/LICENSE`, and `THIRD_PARTY_LICENSES.txt` in
 a build. Melee and its assets belong to Nintendo and HAL Laboratory; none are
 included.
-
-### Audio transport and optional stage state
-
-The host audio adapter must expose `play(): Promise<unknown>` and `pause(): void`
-in addition to `seek`. Pause/resume and speed changes no longer unconditionally
-seek: a simulation backend may otherwise reopen the entire game to rewind its
-small audio reserve. An outstanding seek still receives the latest resume intent.
-
-A host may emit `stage-frames` CustomEvents with `detail.frames` rows
-`[gameFrame, leftPlatformHeight, rightPlatformHeight]`. Frames start at -123;
-heights are native Fountain platform joint translations before stage scaling.
-The viewer uses these for pre-3.18 recordings, including water-column animation.
-Recorded stage events take precedence. Entries clear on game change. Without
-this optional feed, old recordings retain the starting-height fallback.
-
-The Lucky Stats host implements this feed and bounded audio-only Wasm seek
-checkpoints in its separate native audio backend. Neither the engine nor that
-backend's snapshot implementation is bundled into this standalone renderer PR.

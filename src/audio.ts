@@ -10,12 +10,12 @@
 //
 // While sound is on, the picture follows the sound: each tick the viewer shows
 // the game frame the audio device is playing (PCM playback time, the host
-// player's audioFrame), not the next frame of its own clock. Seeks, pause,
-// play and speed changes go to the host player, which starts its sound again
-// at the frame shown.
+// player's audioFrame), not the next frame of its own clock. A seek goes to the
+// host player, which starts its sound again at the frame shown; pause, play and
+// speed changes go to it as they are, without a seek.
 
-import { clearSimulationStage, receiveSimulationStage } from "./simulation-stage";
 import { createSignal } from "solid-js";
+import { clearSimulationStage, receiveSimulationStage } from "./simulation-stage";
 
 /** what the host page sets before the viewer loads */
 interface AudioConfig {
@@ -45,7 +45,9 @@ interface AudioPlayer extends EventTarget {
   enableAudio(): Promise<unknown>;
   open(replay: Blob): Promise<unknown>;
   seek(gameFrame: number, options: { resume: boolean }): void;
+  /** play on from where the sound is (no seek) */
   play(): Promise<unknown>;
+  /** stop the sound where it is */
   pause(): void;
   setSpeed(rate: number): void;
   setMusic(on: boolean): void;
@@ -152,8 +154,10 @@ export const sound = {
     });
     player = p;
     setSoundState("loading");
-    p.addEventListener("stage-frames", event => {
-      if (p === player) receiveSimulationStage((event as CustomEvent<{frames: number[][]}>).detail.frames);
+    // (Fountain's platform heights for a replay that does not record them: src/simulation-stage.ts)
+    p.addEventListener("stage-frames", (event) => {
+      if (p !== player) return;
+      receiveSimulationStage((event as CustomEvent<{ frames: number[][] }>).detail.frames);
     });
     p.addEventListener("error", () => fail(p));
     p.addEventListener("audiointerrupted", () => fail(p));
@@ -188,9 +192,13 @@ export const sound = {
     speed = rate;
     if (changed && player?.ready) {
       if (player.speed !== rate) player.setSpeed(rate);
+      // (a pause, a play or a new speed goes to the host player as it is: a seek would make a backend that
+      // simulates the game rewind it, to start its sound again where it already is. A seek under way is
+      // sent again, with the new playing state)
+      const p = player;
       if (seeking) align();
-      else if (desired) { const p = player; void p.play().catch(() => fail(p)); }
-      else player.pause();
+      else if (desired) void p.play().catch(() => fail(p));
+      else p.pause();
     }
   },
 

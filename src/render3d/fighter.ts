@@ -111,6 +111,7 @@ export interface Article { prop: Prop; scale: number; special: ((o: number) => n
  *  states, its model) at `art` of an archive, in one of the item's states
  *  with that state's animations; null without a model */
 export function loadArticle(a: Archive, art: number, state: number, tag: string): Article | null {
+  // (the item state's animation, item-animation.ts: -1 is none, the model without an animation)
   if (!Number.isInteger(state) || state < -1 || state >= 256) return null;
   const d = a.data;
   const attr = ptr(a, art), special = ptr(a, art + 0x04), states = ptr(a, art + 0x0c), model = ptr(a, art + 0x10);

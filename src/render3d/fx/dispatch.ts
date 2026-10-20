@@ -6,10 +6,33 @@
  * landings, hits and special moves use; the tables below are ours, and the
  * models and generators themselves are read from your effect files. */
 
-/** a common effect model: `m` its index in EfCoData's model table (two:
+/** an effect model: `m` its index in its effect file's model table (two:
  *  one of them at random, the first 1 in 8) */
-export interface ModelSpawn { persistent?: boolean; callback?: "face" | "offsetY" | "jabZ" | "cutter" | "fireLaunch"; part?: number; startFrame?: number; bank?: number; child?: boolean; m: number | [number, number]; attach?: boolean; face?: boolean; rotZ?: "arg" | "rand"; scale?: "damage" | "arg" }
-/** A particle generator: `g` is its full ID in the selected particle bank. */
+export interface ModelSpawn {
+  m: number | [number, number];
+  /** the effect file whose model table it is in (EFFECT_FILES; none: EfCoData's) */
+  bank?: number;
+  /** follows the joint it is made on */
+  attach?: boolean;
+  /** a child of that joint, held to it by place and turn constraints (efLib_Create_AttachChild: Prop.poseConstrained) */
+  child?: boolean;
+  /** made on this fighter part (an index into fp->parts), not the call's joint */
+  part?: number;
+  /** turned to the side the fighter faces */
+  face?: boolean;
+  rotZ?: "arg" | "rand";
+  scale?: "damage" | "arg";
+  /** the frames its animation has already run as it is made (efSync steps a few models once as it makes them) */
+  startFrame?: number;
+  /** with no lifetime in its description, it lasts until its owner's move ends, not for its animation's length */
+  persistent?: boolean;
+  /** what its update callback does each frame (fx/world.ts place): "face", kept turned to the side the fighter
+   *  faces; "offsetY", the call's height above the joint it follows kept, at the fighter's size; "jabZ", its
+   *  joint 1 carried along z, 2 a frame; "cutter", Final Cutter's frames and lifetime through the move
+   *  (cutterAnimationFrame); "fireLaunch", turned the way Fire Fox or Fire Bird flies */
+  callback?: "face" | "offsetY" | "jabZ" | "cutter" | "fireLaunch";
+}
+/** a particle generator: `g` its full id in its effect file's particle bank (`bank`, as a model's; none: EfCoData's) */
 export interface GenSpawn { bank?: number; g: number; attach?: boolean; face?: 1 | -1; rotZ?: "arg"; srtRotY?: number; scale?: "arg" | "fighter";
                            /** frames it makes particles for, when its effect is given a lifetime (EF_Effect.lifetime) */
                            life?: number;
@@ -26,8 +49,8 @@ const M = (m: number, o: Omit<ModelSpawn, "m"> = {}): Spawn => ({ m, ...o });
 const G = (g: number, o: Omit<GenSpawn, "g"> = {}): Spawn => ({ g, ...o });
 
 export const SPAWNS: Record<number, Spawn> = {
-  // Lucky Stats: native efAlt/efSync character-bank dispatch. These definitions
-  // describe the asset and placement; native-only callbacks still need triggers.
+  // the fighters' own effects, each in its character's effect file (efalt.c, efsync.c): what is made and how it
+  // is placed. Those only a fighter's own code starts are started by fx/native-callbacks.ts
   0x479: G(1010, { bank: 1 }),
   0x47a: { all: [M(0, { bank: 1, attach: true, face: true }), G(1001, { bank: 1, attach: true })] },
   0x47b: G(1003, { bank: 1 }),

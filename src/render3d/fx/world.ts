@@ -1,5 +1,3 @@
-import { NativeCallbackClock, nativeEffectEvents, nativeEffectIds, outgoingNativeScriptEvents, cutterAnimationFrame, nativeEffectFamily } from "./native-callbacks";
-import { itemTransitionEffects, iceTransitionEffects, itemRuleEffects } from "../item-effects";
 /* 3D replay viewer: the game's effects, run alongside the replay.
  *
  * Each frame the effects the game started are placed as its own dispatch
@@ -28,6 +26,9 @@ import { effectsPaused } from "../hitlag";
 import { colAnimGfx, ColAnimGfx, ColAnimTables, FighterColAnim, keepsSecondColor, SECOND, startsOver, Tint } from "./colanim";
 import { storedAnim, storedStarts } from "./charges";
 import type { TrackEvent } from "../track";
+import { cutterAnimationFrame, NativeCallbackClock, nativeEffectEvents, nativeEffectFamily, nativeEffectIds,
+         outgoingNativeScriptEvents } from "./native-callbacks";
+import { iceTransitionEffects, itemRuleEffects, itemTransitionEffects } from "../item-effects";
 
 /** a fighter on one frame: its state, its model, and its joints' world
  *  matrices on that frame (16 floats each) */
@@ -46,12 +47,16 @@ export interface SpawnCtx {
   /** the fighter it is made for: its effects all end together when the game
    *  says (efLib_DestroyAll: the track's "fxend") */
   by?: string;
-  /** Explicit lifetime tag for item-attached generators. Impact bursts omit it. */
+  /** the tag its generators end with (an item's Ice Shot trail: "i:<spawn id>"); none, the fighter's (`by`).
+   *  An impact's burst has none: it outlives its item */
   tag?: string;
-  /** Age of a callback effect reconstructed when a seek enters mid-move. */
+  /** the frames it has already run: a callback's effect made where a seek lands part way through its move */
   age?: number;
+  /** the call's offset from its joint (a script's): for the "offsetY" callback */
   offset?: [number, number, number];
+  /** the world matrix of the maker's fighter part (an index into fp->parts), for a spawn made on a part */
   partFollow?: (part: number) => Float32Array | null;
+  /** the frame of Final Cutter's effects its move let go on, when it has (cutterAnimationFrame) */
   cutterRelease?: number;
 }
 
@@ -151,11 +156,17 @@ export interface ModelFx {
    *  place or on a joint: efLib_Create_Attach_Pos and the attach calls set the root's translation; a few
    *  models' roots have a place of their own in the file, 114 units toward the camera in one) */
   rootSet?: boolean;
+  /** kept this far above the joint it follows ("offsetY" callback) */
   offsetY?: number;
+  /** its joint 1 carried along z as it ages ("jabZ" callback) */
   jabZ?: boolean;
+  /** Final Cutter's effect: its frames follow the move, and when the move let go (cutterAnimationFrame) */
   cutter?: { releasedAt?: number };
+  /** its root's turn about y (`rotY`) or z (`rotZ`) set after its animation, in place of the animated one
+   *  (HSD_JObjSetRotationY and Z in its callback) rather than added to it */
   rootRotationY?: boolean;
   rootRotationZ?: boolean;
+  /** held to the joint it is under by place and turn constraints (Prop.poseConstrained), not made its child */
   constrained?: boolean;
 }
 
@@ -182,6 +193,14 @@ const LIFETIME_END_PART: Record<number, number> = { 0x501: 85 };
 
 // the KO blast's model in the common effect file, and its spawn (efSync 0x42B)
 const KO_BLAST = 0x19, KO_BLAST_FX = 0x42b;
+
+/** Kirby (internal id), and the states of his Final Cutter, whose effects carry on through all of them */
+const KIRBY = 4, CUTTER_FIRST = 385, CUTTER_LAST = 392, CUTTER_FX = 0x494;
+/** Fire Fox's and Fire Bird's launch on the ground (its speed forward is the ground's, not the air's) */
+const FIRE_LAUNCH_GROUND = 355;
+/** whether Final Cutter's script has let go of its effects by its frame `counter` (its command variable 2 set) */
+const letsGo = (script: readonly ScriptEvent[], counter: number) =>
+  script.some((e) => e.kind === "cmdVar" && e.index === 2 && e.value !== 0 && e.frame <= counter);
 // color animations: the invincibility blink, and the ones a stored charge
 // runs (Game & Watch's full bucket, Samus, DK, Sheik, Mewtwo)
 const INVINCIBLE = 9;
@@ -314,6 +333,7 @@ export class FxWorld {
   /** the last frame stepped */
   frame = Number.NEGATIVE_INFINITY;
   private tracks = new Map<string, Track>();
+  /** each fighter's callback effects started in its current move (fx/native-callbacks.ts) */
   private nativeClocks = new Map<string, NativeCallbackClock>();
   private worlds = new Map<string, Float32Array>();
   private prevWorlds = new Map<string, Float32Array>();
@@ -382,6 +402,7 @@ export class FxWorld {
   readonly unknownCallbacks = new Set<string>();
   /** where a fighter's current move started: its frame and counter there */
   entryCounterOf: ((key: string, frame: number) => { entry: number; counter: number } | undefined) | null = null;
+  /** a fighter's state on any frame of the replay (by its key), for what is worked out from before a seek */
   stateAt: ((key: string, frame: number) => PlayerState | undefined) | null = null;
 
   /** the color animations' scripts (PlCo.dat), and each fighter's running ones */
@@ -522,31 +543,34 @@ export class FxWorld {
     return all.filter((p) => (p.linkNo === 1) === hud);
   }
 
-  /** Rebuild Cutter across state changes and paused frames, not from the
-   * current phase's animation counter. No mutable history survives a seek. */
+  /** how old Final Cutter's effects are on `frame` and when the move let go of them (its command variable
+   *  2 set), counted from the frame the move began through all its states, less the frames its effects were
+   *  held still in hitlag: from the replay, so a seek gives the same as playing to there */
   private cutterHistory(a: ActorFrame, frame: number): { age: number; releasedAt?: number } {
     const read = (f: number) => this.stateAt?.(a.key, f);
-    const family = nativeEffectFamily(4, a.st.actionStateId);
+    const inCutter = (s: PlayerState | undefined) =>
+      s !== undefined && s.internalCharacterId === KIRBY && nativeEffectFamily(KIRBY, s.actionStateId) === family;
+    const family = nativeEffectFamily(KIRBY, a.st.actionStateId);
     let start = frame;
-    while (start > 0) {
-      const prev = read(start - 1);
-      if (!prev || prev.internalCharacterId !== 4 || nativeEffectFamily(4, prev.actionStateId) !== family) break;
-      start--;
-    }
-    let age = 0, releasedAt: number | undefined;
+    while (start > 0 && inCutter(read(start - 1))) start--;
+    let age = 0;
+    let releasedAt: number | undefined;
     for (let f = start; f <= frame; f++) {
       const st = read(f) ?? a.st;
       if (f > start && !effectsPaused(read(f - 1), st)) age++;
-      if (releasedAt === undefined && a.fighter.scriptFor(st.actionStateId).some(e =>
-          e.kind === "cmdVar" && e.index === 2 && e.value !== 0 && e.frame <= st.actionStateFrameCounter)) releasedAt = age;
+      if (releasedAt === undefined && letsGo(a.fighter.scriptFor(st.actionStateId), st.actionStateFrameCounter)) releasedAt = age;
     }
     return { age, releasedAt };
   }
 
   private fighterEvents(frame: number, a: ActorFrame) {
     const st = a.st;
+    // (a move whose callback effects are not the last one's: those end with it)
     let nativeClock = this.nativeClocks.get(a.key);
-    if (!nativeClock) this.nativeClocks.set(a.key, nativeClock = new NativeCallbackClock());
+    if (!nativeClock) {
+      nativeClock = new NativeCallbackClock();
+      this.nativeClocks.set(a.key, nativeClock);
+    }
     if (nativeClock.enter(st.internalCharacterId, st.actionStateId)) this.endOwned(`${a.key}:native`);
     if (st.isDead || st.actionStateId <= 11) {
       // a KO through a blast line: its blast, once, as the fighter goes
@@ -562,10 +586,10 @@ export class FxWorld {
       const entry = same ? t!.entry : t ? frame : this.entryCounterOf?.(a.key, frame)?.entry ?? frame;
       if (t && !same) { t.action = st.actionStateId; t.entry = entry; }
       else if (!t) this.tracks.set(a.key, { action: st.actionStateId, entry, entryCounter: 0, counter: 0, seen: frame });
+      // gone: the effects that go with its moves, its colors with it
       this.endOwned(a.key);
       this.endOwned(`${a.key}:native`);
       this.nativeClocks.delete(a.key);
-      // gone: its colors with it
       this.cols.delete(a.key);
       this.swords.clear(a.key);
       this.bodyStates.delete(a.key);
@@ -590,9 +614,13 @@ export class FxWorld {
       // there) left it some other way
       const ended = t !== undefined && !byAnimCallback(st.internalCharacterId, t.action, st.actionStateId) &&
         t.moved !== false && !t.looped && !LOOPING.has(t.action) && animEnded(a.fighter, t.action, t.counter, t.rate ?? 1);
-      if (t && !this.tracked) for (const e of outgoingNativeScriptEvents(st.internalCharacterId, t.action, st.actionStateId,
-          t.counter, t.rate ?? 1, a.fighter.scriptFor(t.action), ended)) {
-        this.scriptEvent(e, a, this.prevWorlds.get(a.key));
+      // (the effects of the old move's last step, which the replay's next state no longer shows: made where
+      // the fighter's joints were on that step, the frame before)
+      if (t && !this.tracked) {
+        const script = a.fighter.scriptFor(t.action);
+        const last = outgoingNativeScriptEvents(st.internalCharacterId, t.action, st.actionStateId, t.counter, t.rate ?? 1,
+                                                script, ended);
+        for (const e of last) this.scriptEvent(e, a, this.prevWorlds.get(a.key));
       }
       // (an animation that ended into what is taken up from standing: its
       // callback's change to Wait came first, unseen, with its own step of
@@ -715,27 +743,36 @@ export class FxWorld {
       if (t.looped && !clocked && (e as Once).once) continue;
       else this.scriptEvent(e, a);
     }
+    // what the move's own code starts besides its script (fx/native-callbacks.ts; with a track, the track's)
     if (!this.tracked && !this.generic) {
       for (const e of nativeClock.take(nativeEffectEvents(st.internalCharacterId, st.actionStateId, events), now)) {
-        // Native callbacks index fp->parts directly; the script common-bone
-        // lookup is a different namespace (and has no entry for Cutter part 44).
+        // (a callback's part is an index into fp->parts, which is the joint's, unlike the scripts' common bone
+        // numbers - which have no entry for Final Cutter's part 44 - unless the callback looks it up as one)
         const joint = e.commonPart ? this.partToJoint(st.internalCharacterId, e.part) : e.part;
         const m = this.jointWorld(a.key, joint);
-        let age = picked ? Math.max(0, now - e.frame) : 0;
-        const cutter = e.gfx === 0x494 ? this.cutterHistory(a, frame) : null;
-        if (cutter) age = cutter.age;
+        // (picked up part way through the move: as old as it would be by now; Final Cutter's, from its start)
+        const cutter = e.gfx === CUTTER_FX ? this.cutterHistory(a, frame) : null;
+        const age = cutter ? cutter.age : picked ? Math.max(0, now - e.frame) : 0;
         this.spawn(e.gfx, {
           pos: m ? [m[12], m[13], m[14]] : [st.xPosition, st.yPosition, 0],
-          follow: () => this.jointWorld(a.key, joint), facing: st.facingDirection || 1,
-          angle: 0, damage: 0, scale: a.fighter.modelScale, owner: `${a.key}:native`, by: a.key, age,
-          partFollow: part => this.jointWorld(a.key, part),
+          follow: () => this.jointWorld(a.key, joint),
+          facing: st.facingDirection || 1,
+          angle: 0,
+          damage: 0,
+          scale: a.fighter.modelScale,
+          owner: `${a.key}:native`,
+          by: a.key,
+          age,
+          partFollow: (part) => this.jointWorld(a.key, part),
           cutterRelease: cutter?.releasedAt,
         });
       }
     }
-    if (st.internalCharacterId === 4 && st.actionStateId >= 385 && st.actionStateId <= 392 &&
-        events.some(e => e.kind === "cmdVar" && e.index === 2 && e.value !== 0 && e.frame <= now)) {
-      for (const m of this.owned.get(`${a.key}:native`)?.models ?? []) if (m.cutter && m.cutter.releasedAt === undefined) {
+    // Final Cutter letting go of its effects: they play their last 11 frames
+    const cutting = st.internalCharacterId === KIRBY && st.actionStateId >= CUTTER_FIRST && st.actionStateId <= CUTTER_LAST;
+    if (cutting && letsGo(events, now)) {
+      for (const m of this.owned.get(`${a.key}:native`)?.models ?? []) {
+        if (!m.cutter || m.cutter.releasedAt !== undefined) continue;
         m.cutter.releasedAt = m.age;
         m.life = m.age + 11;
       }
@@ -1388,8 +1425,9 @@ export class FxWorld {
       const started = `${a.key}:${e.gfx}`;
       this.scriptStarted.set(started, this.stepping);
       const joint = e.common ? this.partToJoint(a.st.internalCharacterId, e.bone) : e.bone;
-      const m = previous && joint >= 0 && (joint + 1) * 16 <= previous.length
-        ? previous.subarray(joint * 16, joint * 16 + 16) : this.jointWorld(a.key, joint) ?? this.jointWorld(a.key, 0);
+      // (on the joints of the frame before, when given: an old move's last step, outgoingNativeScriptEvents)
+      const before = previous && joint >= 0 && (joint + 1) * 16 <= previous.length ? previous.subarray(joint * 16, joint * 16 + 16) : null;
+      const m = before ?? this.jointWorld(a.key, joint) ?? this.jointWorld(a.key, 0);
       const R = this.ps.rng;
       const ox = e.offset[0] + 2 * e.range[0] * (R.next() - 0.5);
       const oy = e.offset[1] + 2 * e.range[1] * (R.next() - 0.5);
@@ -1494,9 +1532,12 @@ export class FxWorld {
 
   private place(s: Spawn, ctx: SpawnCtx) {
     if ("all" in s) { for (const x of s.all) this.place(x, ctx); return; }
+    // (one made on a part of its own, not the call's joint: there, and following it)
     if ("part" in s && s.part !== undefined && ctx.partFollow) {
-      const part = s.part, matrix = ctx.partFollow(part);
-      ctx = { ...ctx, follow: () => ctx.partFollow!(part), pos: matrix ? [matrix[12], matrix[13], matrix[14]] : ctx.pos };
+      const part = s.part;
+      const partFollow = ctx.partFollow;
+      const matrix = partFollow(part);
+      ctx = { ...ctx, follow: () => partFollow(part), pos: matrix ? [matrix[12], matrix[13], matrix[14]] : ctx.pos };
     }
     const R = this.ps.rng;
     if ("pieces" in s) {
@@ -1526,47 +1567,62 @@ export class FxWorld {
       if (s.scale === "damage") scale = Math.max(0.3, Math.min(1.5, 0.04 * ctx.damage + 0.3));
       else if (s.scale === "arg") scale = ctx.scale;
       const prop = bank.prop(index, 0, true);
-      const life = s.persistent && desc.life === 0 ? Infinity : desc.life >= 1 ? Math.trunc(desc.life) + 1 : Math.max(8, Math.min(240, prop?.length ?? 60));
+      // (its lifetime: its description's, else its animation's length; one that lasts until its move ends,
+      // with none in its description, for as long as that)
+      let life = desc.life >= 1 ? Math.trunc(desc.life) + 1 : Math.max(8, Math.min(240, prop?.length ?? 60));
+      if (s.persistent && desc.life === 0) life = Infinity;
       const m: ModelFx = {
         bank, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2],
         rotY: s.face ? (ctx.facing < 0 ? -Math.PI / 2 : Math.PI / 2) : 0,
         rotZ: s.rotZ === "rand" ? Math.PI * 2 * R.next() : s.rotZ === "arg" ? ctx.angle : 0,
-        scale, age: (ctx.age ?? 0) + (s.startFrame ?? 0), life, follow: s.attach ? ctx.follow : null, under: s.child ? ctx.follow : null, owner: ctx.owner, turn: null, by: ctx.by,
-        steady: NEVER_PAUSED.has(this.spawning), constrained: !!s.child,
+        scale, age: (ctx.age ?? 0) + (s.startFrame ?? 0), life,
+        follow: s.attach ? ctx.follow : null, under: s.child ? ctx.follow : null, constrained: !!s.child,
+        owner: ctx.owner, turn: null, by: ctx.by, steady: NEVER_PAUSED.has(this.spawning),
+      };
+      // (its update callback: turned to the side its fighter faces now)
+      const faceFighter = (p: ModelFx) => {
+        const facing = ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing;
+        p.rotY = facing < 0 ? -Math.PI / 2 : Math.PI / 2;
       };
       if (s.callback === "cutter") {
+        // (Final Cutter's: until its move lets go, then 11 frames more; its frames follow the move)
         m.cutter = { releasedAt: ctx.cutterRelease };
         m.rootRotationY = !!s.face;
         m.rootSet = !s.child;
         m.life = ctx.cutterRelease === undefined ? Infinity : ctx.cutterRelease + 11;
-        if (s.face) m.turn = p => { p.rotY = (ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing) < 0 ? -Math.PI / 2 : Math.PI / 2; };
+        if (s.face) m.turn = faceFighter;
       }
-      if (s.callback === "face") m.rootRotationY = true;
-      if (s.callback === "face") m.turn = p => {
-        const facing = ctx.by ? this.sts.get(ctx.by)?.facingDirection ?? ctx.facing : ctx.facing;
-        p.rotY = facing < 0 ? -Math.PI / 2 : Math.PI / 2;
-      };
+      if (s.callback === "face") {
+        m.rootRotationY = true;
+        m.turn = faceFighter;
+      }
       if (s.callback === "fireLaunch") {
-        m.rootRotationY = m.rootRotationZ = true;
-        m.turn = p => {
+        // (Fire Fox's and Fire Bird's: turned the way the fighter flies, atan2 of its own speed up and its speed
+        // forward; with no speed, in hitlag or between states, it keeps the way it last had)
+        m.rootRotationY = true;
+        m.rootRotationZ = true;
+        m.turn = (p) => {
           const st = ctx.by ? this.sts.get(ctx.by) : undefined;
           const facing = (st?.facingDirection ?? ctx.facing) < 0 ? -1 : 1;
-          const vx = st?.actionStateId === 355 ? st.selfInducedGroundXSpeed : st?.selfInducedAirXSpeed;
+          const vx = st?.actionStateId === FIRE_LAUNCH_GROUND ? st.selfInducedGroundXSpeed : st?.selfInducedAirXSpeed;
           const vy = st?.selfInducedAirYSpeed;
           p.rotY = facing * Math.PI / 2;
-          // Native rotateModel is atan2(self velocity Y, self velocity X * facing).
-          // Keep the last direction during hitlag or a zero-velocity transition.
           if (vx || vy) p.rotZ = facing * (Math.atan2(vy ?? 0, (vx ?? 0) * facing) - Math.PI / 2);
         };
         m.turn(m);
       }
-      if (s.callback === "offsetY") { m.offsetY = (ctx.offset?.[1] ?? 0) * ctx.scale; m.rootSet = true; }
-      if (s.callback === "jabZ") { m.jabZ = true; m.rotZ *= ctx.facing < 0 ? -1 : 1; }
-      // efSync advances punch models once while creating them. Run the keys
-      // crossed by that initial animation step as well as the displayed pose.
+      if (s.callback === "offsetY") {
+        m.offsetY = (ctx.offset?.[1] ?? 0) * ctx.scale;
+        m.rootSet = true;
+      }
+      if (s.callback === "jabZ") {
+        m.jabZ = true;
+        if (ctx.facing < 0) m.rotZ = -m.rotZ;
+      }
+      // (efSync steps a few models' animations once as it makes them: the particle keys of the frames that
+      // step passes are made too, not only the pose it ends on)
       if (!ctx.age && s.startFrame) {
-        m.age = 0;
-        while (m.age < s.startFrame) { this.modelParticles(m); m.age++; }
+        for (m.age = 0; m.age < s.startFrame; m.age++) this.modelParticles(m);
       }
       this.models.push(m);
       if (ctx.owner) this.own(ctx.owner).models.push(m);
@@ -1574,8 +1630,12 @@ export class FxWorld {
     }
     const g = this.ps.generator(bank, s.g);
     if (!g) return;
+    // (made part way through its life: the frames it has had are gone, and one past its life is not made)
     if (ctx.age && g.genLife > 0) {
-      if (ctx.age >= g.genLife) { this.ps.endOwned(g); return; }
+      if (ctx.age >= g.genLife) {
+        this.ps.endOwned(g);
+        return;
+      }
       g.genLife -= ctx.age;
     }
     if (ctx.tag) g.tag = ctx.tag;
@@ -1639,12 +1699,15 @@ export class FxWorld {
    *  made (so a key at time 1 is on that same frame), drawing from the
    *  frame's state. Any other model: the key whose time is its age. */
   private modelParticles(m: ModelFx, first = false) {
+    // (one already ended - its owner's move over - makes no more)
     if (m.age >= m.life) return;
     const keys = m.bank.ptclKeys(m.index);
     if (!keys.length) return;
     const seeded = m.seed !== undefined;
     if (first !== (seeded && first)) return;
-    const step = m.cutter ? cutterAnimationFrame(m.age, m.cutter.releasedAt) : !seeded ? m.age : first ? 0 : m.age + 1;
+    let step = !seeded ? m.age : first ? 0 : m.age + 1;
+    // (Final Cutter's effects: the frame its move has them at)
+    if (m.cutter) step = cutterAnimationFrame(m.age, m.cutter.releasedAt);
     let state = first ? m.seed! : null;
     let posed = false;
     const prop = m.bank.prop(m.index, 0, true);
@@ -1754,6 +1817,7 @@ export class FxWorld {
    *  as the joint is, else at its place with the turn and size the dispatch gave its root */
   poseModel(m: ModelFx, pr: Prop, age: number) {
     if (m.cutter) age = cutterAnimationFrame(age, m.cutter.releasedAt);
+    // (under a joint: held by constraints, or its child)
     const parent = m.under?.() ?? null;
     if (parent) {
       if (m.constrained) pr.poseConstrained(age, parent, m.scale, false);
@@ -1762,6 +1826,7 @@ export class FxWorld {
     }
     const [x, y, z] = this.modelPlace(m);
     pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, 0, m.rootSet);
+    // (what its update callback sets after the animation: the root's turn, a joint's place)
     if (m.rootRotationY) pr.setRootRotationY(m.rotY);
     if (m.rootRotationZ) pr.setRootRotationZ(m.rotZ);
     if (m.jabZ) pr.setJointTranslationZ(1, m.z - 6 + 2 * age);
@@ -1778,7 +1843,11 @@ export class FxWorld {
     const o = this.owned.get(key);
     if (!o) return;
     for (const g of o.gens) this.ps.kill(g);
-    for (const m of o.models) { this.ps.endModel(m); m.age = m.life; }
+    for (const m of o.models) {
+      // (and the generators on its joints end with it)
+      this.ps.endModel(m);
+      m.age = m.life;
+    }
     this.owned.delete(key);
   }
 
@@ -1849,6 +1918,7 @@ export class FxWorld {
 
   private itemEvents(list: FxItem[]) {
     const now = new Set<number>();
+    // (the items on the frame before: what each item's change of state is)
     const previous = this.items?.(this.stepping - 1) ?? [];
     for (const it of list) {
       now.add(it.spawnId);
@@ -1860,22 +1930,23 @@ export class FxWorld {
         m[0] = m[5] = m[10] = m[15] = 1;
       }
       m[12] = it.x; m[13] = it.y; m[14] = 0;
-      // Native impact callbacks run on entry, not every frame of the hidden
-      // impact lifetime. End trails first; the detached burst outlives the item.
+      // what the item's own code starts as it changes state (../item-effects.ts; with a track, the track's):
+      // once, as it enters the state, not on each frame it stays there. The effects on it end first; a burst
+      // is made where it is and outlives it
       if (!(this.tracked && this.trackOrdered)) {
-        const before = previous.find(q => q.spawnId === it.spawnId);
+        const tag = `i:${it.spawnId}`;
+        const before = previous.find((q) => q.spawnId === it.spawnId);
         const ice = iceTransitionEffects(before, it);
-        if (ice?.stop) this.ps.endTag(`i:${it.spawnId}`);
-        for (const id of ice?.effects ?? []) this.spawn(id, {
-          pos: [it.x, it.y, 0], follow: () => this.itemAt.get(it.spawnId) ?? null,
-          facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1,
-          owner: null, by: `i:${it.spawnId}`, tag: `i:${it.spawnId}`,
-        });
-        const effects = itemTransitionEffects(before, it);
-        if (effects.length) this.ps.endTag(`i:${it.spawnId}`);
-        for (const id of effects) this.spawn(id, { pos: [it.x, it.y, 0], follow: null,
-          facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1,
-          owner: null, by: `i:${it.spawnId}` });
+        if (ice?.stop) this.ps.endTag(tag);
+        for (const id of ice?.effects ?? []) {
+          const follow = () => this.itemAt.get(it.spawnId) ?? null;
+          this.spawn(id, { pos: [it.x, it.y, 0], follow, facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1, owner: null, by: tag, tag });
+        }
+        const bursts = itemTransitionEffects(before, it);
+        if (bursts.length) this.ps.endTag(tag);
+        for (const id of bursts) {
+          this.spawn(id, { pos: [it.x, it.y, 0], follow: null, facing: it.facing ?? 1, angle: 0, damage: 0, scale: 1, owner: null, by: tag });
+        }
       }
       // the particles its model's animation starts on this frame of it,
       // going with it (efLib's particle callback on the item's joints)
@@ -1911,6 +1982,7 @@ export class FxWorld {
   modelPlace(m: ModelFx): [number, number, number] {
     if (m.follow) {
       const w = m.follow();
+      // (kept its own height above the joint, when its callback says: offsetY)
       if (w) return [w[12], w[13] + (m.offsetY ?? 0), w[14]];
     }
     return [m.x, m.y, m.z];
