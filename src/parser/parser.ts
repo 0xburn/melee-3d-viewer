@@ -581,6 +581,13 @@ function parseGameStartEvent(
         offset + 0x1a5 + 0x1f * playerIndex,
         31
       ),
+      displayNameRaw: readShiftJisRaw(
+        rawData,
+        settings.replayFormatVersion,
+        "3.9.0.0",
+        offset + 0x1a5 + 0x1f * playerIndex,
+        31
+      ),
       connectCode: readShiftJisString(
         rawData,
         settings.replayFormatVersion,
@@ -1074,6 +1081,24 @@ function readInt(
     case 32:
       return rawData.getInt32(offset);
   }
+}
+
+/** a string field's bytes as they are in the file, up to the first zero, each a character of the result */
+function readShiftJisRaw(
+  rawData: DataView,
+  replayVersion: string,
+  firstVersionPresent: string,
+  offset: number,
+  maxLength: number
+): string | undefined {
+  if (!isInVersion(replayVersion, firstVersionPresent)) return undefined;
+  let out = "";
+  for (let i = 0; i < maxLength; i++) {
+    const b = rawData.getUint8(offset + i);
+    if (b === 0) break;
+    out += String.fromCharCode(b);
+  }
+  return out;
 }
 
 function readShiftJisString(

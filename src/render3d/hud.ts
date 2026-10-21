@@ -33,13 +33,14 @@ import {
   TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
 } from "./hudlogic";
 import { PLATE_FONT, quad, tagText, texQuad, textPicture } from "./hudtext";
-import { glyphAtlas, PLATE_FULL, plateText, type PlateFont, type PlateText } from "./plates";
+import { glyphAtlas, PLATE_FULL, plateText, rawBytes, type PlateFont, type PlateText } from "./plates";
 import { hudSlot, hudSlotsMode, outerSlots, type HudSlots } from "../common/hudslots";
 
-// Slippi's name plate (its playback, 1285 x 1056 frames): 254 x 31 pixels, its
-// middle 16.5 pixels right of the percent's place and 1 unit below it, black at
-// a third (in the HUD camera's units)
-const PLATE = { dx: 0.76, dy: -1.02, w: 11.68, h: 1.425, fill: 0.34 };
+// Slippi's name plate (its playback, 1285 x 1056 frames) is a model of the game's: x from -2.77197 to 2.77197 and
+// y from -0.37598 to 1.92822, drawn at x scale = the name's sum times 0.0146 (plates.ts), y scale 0.62, its
+// origin 0.775 right of the percent's place and 1.51 below it (in the HUD camera's units, as the game's draws
+// give it: tx -20.225 and ty -22.51 for the place at -21, -21), black at 84/255
+const PLATE = { ox: 0.775, oy: -1.51, sy: 0.62, hx: 2.77197265625, y0: -0.3759765625, y1: 1.92822265625, fill: 84 / 255 };
 // where the name's glyphs sit, from the percent's place (HUD units, measured against the game's quads): the
 // line centered 0.8 right of it, the tops of the quads 0.525 below it
 const PLATE_TEXT = { dx: 0.8, top: -0.525 };
@@ -323,6 +324,8 @@ export class Hud {
      *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
     places: Record<HudSlots, [number, number]>;
     colorIdx: number; external: number; costume: number; tagFrame: number; human: boolean; nametag: string;
+    /** the display name as the replay gives it, and the bytes it holds (for the plate's lettering) */
+    plate: { text: string; raw: Uint8Array | null };
   }[] = [];
   /** the words the page holds for the plates and nametags, demo mode's
    *  stand-ins where it swaps them ("plate:<port>", "tag:<port>"; Hud3D.tsx) */
@@ -426,6 +429,7 @@ export class Hud {
       };
       this.players.push({
         slot, life: new PlayerHud(data, slot, { ...kit.tags }, this.goAt + FIRST_FRAME, nametag.length > 0), nametag,
+        plate: { text: ps.displayName ?? "", raw: ps.displayNameRaw ? rawBytes(ps.displayNameRaw) : null },
         num: kit.model(kit.num, "hud:num"), mark: kit.model(kit.mark, "hud:mark"),
         stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
         arrow: kit.model(kit.arrow, "hud:arrow"), human: ps.playerType === 0,
@@ -620,17 +624,18 @@ export class Hud {
       // Slippi's plate with the player's display name, under the percent
       const name = this.words.get(`plate:${p.slot}`);
       if (name) {
-        const cx = px + PLATE.dx, cy = py + PLATE.dy;
+        const cx = px + PLATE.ox, oy = py + PLATE.oy;
         const font = this.kit.plates;
-        const text = font ? plateText(font, name) : null;
-        // the plate is as wide as its name wants, up to the measured plate
-        const half = (text ? Math.min(PLATE.w, text.width * (PLATE.w / PLATE_FULL)) : PLATE.w) / 2;
-        this.box(cx - half, cy - PLATE.h / 2, cx + half, cy + PLATE.h / 2, [0, 0, 0, PLATE.fill]);
+        // (the bytes the replay holds for the name, while the page's text is still the replay's)
+        const text = font ? plateText(font, name, name === p.plate.text ? p.plate.raw : null, this.players[0] === p) : null;
+        // the plate is as wide as its name wants, up to the plate at its widest
+        const half = PLATE.hx * (text ? text.width : PLATE_FULL);
+        this.box(cx - half, oy + PLATE.sy * PLATE.y0, cx + half, oy + PLATE.sy * PLATE.y1, [0, 0, 0, PLATE.fill]);
         if (text) {
           this.lettered.push(text);
           this.letteredAt.push(px + PLATE_TEXT.dx, py + PLATE_TEXT.top);
         } else {
-          this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, cy - 0.36 * PLATE_FONT + ref]);
+          this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, oy + PLATE.sy * (PLATE.y0 + PLATE.y1) / 2 - 0.36 * PLATE_FONT + ref]);
         }
       }
     }

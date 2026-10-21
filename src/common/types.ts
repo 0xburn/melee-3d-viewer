@@ -90,6 +90,8 @@ export interface PlayerSettings {
   readonly controllerFix: "None" | "UCF" | "Dween" | "Mixed";
   readonly nametag: string;
   readonly displayName: string;
+  /** the display name's bytes as the replay holds them (a character a byte, up to the first zero), for the plates' lettering */
+  readonly displayNameRaw?: string;
   readonly connectCode: string;
 }
 

@@ -517,7 +517,11 @@ export class DrawLog {
     const vp = s.overlayVP ?? s.viewProj;
     for (const b of batches) {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      // (a lettering batch, the name plates': each quad's own box and the picture's corner it reads, to set beside the
+      // game's draws one glyph at a time)
+      const cells: { box: number[]; uv: number[] }[] | null = b.sprite?.key === "plate-font" ? [] : null;
       for (let q = b.first; q < b.first + b.count; q++) {
+        let qx0 = Infinity, qy0 = Infinity, qx1 = -Infinity, qy1 = -Infinity;
         for (let v = 0; v < 4; v++) {
           const o = (q * 4 + v) * 17, X = data[o], Y = data[o + 1], Z = data[o + 2];
           const w = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
@@ -525,6 +529,11 @@ export class DrawLog {
           const sx = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / w * 0.5 + 0.5) * 640;
           const sy = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / w * 0.5) * 480;
           x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
+          qx0 = Math.min(qx0, sx); qy0 = Math.min(qy0, sy); qx1 = Math.max(qx1, sx); qy1 = Math.max(qy1, sy);
+        }
+        if (cells) {
+          const t = (q * 4 + 1) * 17;
+          cells.push({ box: [qx0, qy0, qx1, qy1].map((v) => Math.round(v * 100) / 100), uv: [data[t + 3], data[t + 4]] });
         }
       }
       // (the sprite's identity as the game's texture's: its image's bytes in the effect file)
@@ -538,6 +547,7 @@ export class DrawLog {
         z: { test: true, func: b.nozcomp ? "always" : "lequal", write: b.zwrite }, near: b.near,
         overlay: s.overlayVP !== null,
         bbox: Number.isFinite(x0) ? [x0, y0, x1, y1].map((v) => Math.round(v * 10) / 10) : null,
+        ...(cells ? { cells } : {}),
       });
     }
   }
