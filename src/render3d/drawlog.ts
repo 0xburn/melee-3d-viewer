@@ -359,7 +359,7 @@ export class DrawLog {
       mtx, proj, cull: cullName, ...this.pe(),
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
       fog: this.fogRec(),
-      lights: this.lightsRec(view),
+      lights: this.lightsRec(view, this.firstOnly(d)),
       tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n])),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
@@ -419,14 +419,21 @@ export class DrawLog {
              color: f.color.map((v) => Math.round(v * 255)) };
   }
 
-  private lightsRec(view: Mat): Record<string, unknown>[] {
+  /** a see-through material while a color animation adds its light: lit by the set's first light alone (the
+   *  renderer's firstLightOnly: ftCo_8009F75C) */
+  private firstOnly(d: Drawable): boolean {
+    const ol = this.tint?.light ?? null;
+    return !!ol && ol.adds && (d.state.mobj.renderMode & RENDER.XLU) !== 0;
+  }
+
+  private lightsRec(view: Mat, first = false): Record<string, unknown>[] {
     const l = this.inner.lighting;
     if (!l) return [];
     const out: Record<string, unknown>[] = [];
     // (a color animation's light, ftCo_8009F5AC's x588: added to the set (white, its alpha the strength), or
     // with the ambient light alone (its color): the renderer's uOverMode 1 and 2)
     const ol = this.tint?.light ?? null;
-    for (let k = 0; k < l.n && !(ol && !ol.adds); k++) {
+    for (let k = 0; k < (first ? Math.min(1, l.n) : l.n) && !(ol && !ol.adds); k++) {
       const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4);
       const w = P[3];
       // (in view space, as the game loads its lights)
@@ -437,9 +444,9 @@ export class DrawLog {
                  color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((v) => Math.round(v * 255)),
                  cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
                  distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
-                 diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 });
+                 diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 && !first });
     }
-    if (ol) {
+    if (ol && !first) {
       const D = ol.dir;
       const at = [0, 1, 2].map((r) => view[r] * D[0] + view[4 + r] * D[1] + view[8 + r] * D[2]);
       const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
@@ -479,8 +486,10 @@ export class DrawLog {
     if (p.bump >= 0) return null;                     // (an emboss needs the shifted texel: not probed)
     const amb = l?.ambient ?? [0, 0, 0];
     const ol = this.tint?.light ?? null;
-    const anyDiffuse = !!ol || (!!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean));
-    const anySpec = !(ol && !ol.adds) && !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
+    const first = this.firstOnly(d);
+    const anyDiffuse = first ? !!l && l.n > 0 && (l.attnA[3] & 1) !== 0
+      : !!ol || (!!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean));
+    const anySpec = !first && !(ol && !ol.adds) && !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
     const addsOn = !!ol && ol.adds && !(s.mobj.renderMode & RENDER.XLU);
     const c01 = (v: number) => Math.min(Math.max(v, 0), 1);
     return this.inputs.map((q) => {
@@ -502,7 +511,9 @@ export class DrawLog {
         ras0, ras1, texels, blend: p.textures.map((ti) => s.tex[ti].blending),
       });
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
-      if (addsOn) for (let i = 0; i < 3; i++) out[i] = c01(c01(out[i]) + ol!.rgb[i] * c01(s.alpha * q.s[0][3]));
+      // (its strength the rasterized alpha: the lit channel's, else the vertex alpha or the material's)
+      const rasA = p.channel === 2 ? s.alpha * q.s[0][3] : p.channel === 1 ? q.v[0][3] : s.alpha;
+      if (addsOn) for (let i = 0; i < 3; i++) out[i] = c01(c01(out[i]) + ol!.rgb[i] * c01(rasA));
       const tc = this.tint?.color;
       if (tc && tc[3] > 0) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - tc[3]) + tc[i] * tc[3];
       // (an outline: the color so far taken toward the outline's by its alpha, ftMaterial_800BF6BC's stage)
