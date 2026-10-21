@@ -7,7 +7,7 @@ import assertNode from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   DrawLog, RENDERER_NAMES, dlPrims, drawLogCommand, geoHash, gxHash, gxProjection, imageId, probes, tlutId, vertexSize,
-  gameTexMaps,
+  gameTexMaps, normalMatrix,
 } from "../src/render3d/drawlog.ts";
 import { LOBJ, RENDER, compileMaterial } from "../src/render3d/gx.ts";
 import { LightSet } from "../src/render3d/lightset.ts";
@@ -279,4 +279,12 @@ test("the draw log numbers texture maps as HSD_TObjAssignResources does: the bum
   assertNode.deepEqual(gameTexMaps([4, BUMP, 0, BUMP]), [2, -1, 0, 1]);
   // at most 8 plain ones, 6 with a bump map
   assertNode.deepEqual(gameTexMaps([0, 0, 0, 0, 0, 0, 0, BUMP]), [0, 1, 2, 3, 4, 5, -1, 6]);
+});
+
+test("normalMatrix: the modelview's 3 x 3 inverse transposed", () => {
+  // (a turn about z by 90 degrees, scaled 0.6: the normal matrix is the turn over 0.6)
+  const m = new Float32Array([0, 0.6, 0, 0, -0.6, 0, 0, 0, 0, 0, 0.6, 0, 5, 6, 7, 1]);
+  const n = normalMatrix(m);
+  const want = [0, -1 / 0.6, 0, 1 / 0.6, 0, 0, 0, 0, 1 / 0.6];
+  n.forEach((v, i) => assertNode.ok(Math.abs(v - want[i]) < 1e-6, `${i}: ${v} vs ${want[i]}`));
 });

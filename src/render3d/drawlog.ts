@@ -161,6 +161,21 @@ export function gameTexMaps(flags: number[]): number[] {
   return out;
 }
 
+/** the normal matrix of a column-major modelview (its 3 x 3's inverse, transposed), as rows: N[k * 3 + c] */
+export function normalMatrix(m: ArrayLike<number>): number[] {
+  // (rows of the 3 x 3: a[r][c] = m[c * 4 + r])
+  const a = (r: number, c: number) => m[c * 4 + r];
+  const det = a(0, 0) * (a(1, 1) * a(2, 2) - a(1, 2) * a(2, 1)) - a(0, 1) * (a(1, 0) * a(2, 2) - a(1, 2) * a(2, 0))
+    + a(0, 2) * (a(1, 0) * a(2, 1) - a(1, 1) * a(2, 0));
+  const out: number[] = [];
+  // (the inverse transposed is the cofactor matrix over the determinant)
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    const r1 = (r + 1) % 3, r2 = (r + 2) % 3, c1 = (c + 1) % 3, c2 = (c + 2) % 3;
+    out.push((a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)) / det);
+  }
+  return out;
+}
+
 export function imageId(a: Archive, img: Image): string | null {
   const [bw, bh, bb] = blockOf(img.format);
   const size = Math.ceil(img.width / bw) * Math.ceil(img.height / bh) * bb;
@@ -455,7 +470,7 @@ export class DrawLog {
       tex: safe("tex", () => {
         // (by the map the game binds each to, its number the map's)
         const maps = gameTexMaps(d.state.tex.map((t) => t?.tobj.flags ?? 0));
-        return p.textures.map((ti, n) => ({ ...this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n, view), map: maps[ti] }))
+        return p.textures.map((ti, n) => ({ ...this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n, view, s.mvBuf), map: maps[ti] }))
           .sort((x, y) => x.map - y.map);
       }, []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
@@ -563,7 +578,8 @@ export class DrawLog {
     return out;
   }
 
-  private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0, view?: Mat): Record<string, unknown> {
+  private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0, view?: Mat,
+                 mv?: Float32Array): Record<string, unknown> {
     if (!t) return { id: null };
     const o = t.tobj;
     let id = this.images.get(t.image);
@@ -573,14 +589,25 @@ export class DrawLog {
     else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
     const game = id === "mirror" ? MIRROR_GAME : id === "efb:live" ? liveGame.get(t.image) : undefined;
     const at = 24 + n * 12;
-    let mirrorPost: number[][] | null = null;
+    let gameRows: number[][] | null = null;
     // (the mirror's: its three rows as the game's post-matrix has them, grIzumi_801CCEA0's texture_matrix times
     // the inverse of the view - it takes the point in view space - and t from the top)
     if (gen === 4 && view && F && F.length >= at + 12) {
       const g = [F.subarray(at, at + 4), F.subarray(at + 4, at + 8).map((v, c) => F[at + 8 + c] - v), F.subarray(at + 8, at + 12)];
       const vi = invert(new Float32Array(16), view);
       const post = g.map((r) => [0, 1, 2, 3].map((c) => r[0] * vi[c * 4] + r[1] * vi[c * 4 + 1] + r[2] * vi[c * 4 + 2] + r[3] * vi[c * 4 + 3]));
-      mirrorPost = post.map((r) => r.map(this.num));
+      gameRows = post.map((r) => r.map(this.num));
+    }
+    // (a reflection's: as the game's texgen goes, its post-matrix - tobj->mtx times HSD's reflection matrix, s and
+    // t from 0.5 + x / 2 and 0.5 - y / 2 - times the normal matrix, the modelview's inverse transposed: s and t)
+    if (gen === 2 && mv && F && F.length >= at + 12) {
+      const N = normalMatrix(mv);
+      gameRows = [0, 1].map((r) => {
+        const x = F[at + r * 4], y = F[at + r * 4 + 1], z = F[at + r * 4 + 2], w = F[at + r * 4 + 3];
+        const post = [0.5 * x, -0.5 * y, 0];
+        return [...[0, 1, 2].map((c) => post[0] * N[c] + post[1] * N[3 + c] + post[2] * N[6 + c]), 0.5 * x + 0.5 * y + z + w]
+          .map(this.num);
+      });
     }
     const m = F && F.length >= at + 8 ? Array.from(F.subarray(at, at + 8))
       : textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
@@ -590,7 +617,7 @@ export class DrawLog {
       wrap: [WRAP[o.wrapS] ?? String(o.wrapS), WRAP[o.wrapT] ?? String(o.wrapT)],
       mag: o.magFilt ? "linear" : "near", min: o.lod ? MIN[o.lod.minFilt] ?? String(o.lod.minFilt) : null,
       lod_bias: o.lod ? this.num(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
-      mtx: mirrorPost ?? [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
+      mtx: gameRows ?? [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
     };
     if (t.tlut) {
       rec.tlut = tlutId(a, t.tlut, t.image.format);
