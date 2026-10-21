@@ -1,9 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Five commits, one change each, as one series:
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Seven commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0005 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0007 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -83,3 +83,15 @@ Fountain of Dreams' stage joints got worse with `sp` (stage2 draws from 1,021 to
 - Also checked: the hosted build doesn't create part 2 (the platforms' shadows, `grIzumi_801CBCE8(2)`), so `sp` writes nothing for it and the viewer keeps its own. The column copies are numbered as the viewer names them (the left one 1004, the right one 4).
 
 **Needs game data.** Check stage2 against the game's draws. A visual-state lock that digests the column's joints or the effects at its keys may change on Fountain recordings.
+
+## 0006 Viewer track: sp leaves out joints that stand where a stopped animation left them
+
+0005 did not move Fountain of Dreams (stage2 still 7,884). The pair (stage2:1:1:0, part 1, joint 3) has the game's translation but a 3x3 about 1/940 of the game's. That is a uniform scale, not the column's stretch.
+
+- **Cause.** The hosted build plays a stage part's animation only if the part is in its stage's `runtime_animation_mask` (`configure_headless_ground_schedule`). Fountain's mask has only part 4, the columns. Every other part has its animation removed (`msl_ground_use_headless_epoch_proc`), so its joints stay where the animation was when it stopped. `sp` writes a joint once it leaves the file's rest pose, so it wrote such a joint once, at a scale its animation starts from near zero. That pose then stood over the viewer's own animation for the whole match.
+- **Fix.** On a part whose animation the hosted build stopped (its proc is `msl_ground_headless_epoch_proc`), a joint's baseline is the pose it has when `sp` first sees it, not the file's rest. A joint that only the animation moves is never written, so the viewer animates it. A joint the game's code moves is still written when it moves (the platforms on part 3).
+- **Other stages.** Yoshi's Story animates parts 2 and 3; Dream Land, Battlefield and the others have their own masks; Stadium animates none. Parts outside the masks change the same way.
+- **Left as is.** For a joint written on a stopped part, the viewer reads a value that was never sent as the file's rest value, where its own animation would be closer. That only matters for a joint that code moves and the animation also moves. None is known.
+- **Production.** `.text`, `.rodata` and `.data` are identical to the build after 0005.
+
+**Needs game data.** stage2 should come back to about the 1,021 draws it had before `sp`. Yoshi's Story (stage8) should not get worse.
