@@ -510,6 +510,91 @@ static void HSD_MtxInverseConcat(Mtx inv, Mtx src, Mtx dest)
     memcpy(dest, m, sizeof(Mtx));
 }
 
+/* ---------------------------------------------------------------- displayfunc.c's billboards */
+
+static float HSD_MtxColMag(Mtx m, int col)
+{
+    return sqrtf_msl((m[0][col] * m[0][col]) + (m[1][col] * m[1][col]) + (m[2][col] * m[2][col]));
+}
+
+static void colvec(Mtx m, int c, float* v) { v[0] = m[0][c]; v[1] = m[1][c]; v[2] = m[2][c]; }
+static void setcol(Mtx m, int c, const float* v) { m[0][c] = v[0]; m[1][c] = v[1]; m[2][c] = v[2]; }
+
+static void mkBillBoard(int kind, int persp, float rotZ, Mtx src, Mtx dst)
+{
+    static const float zOne[3] = { 0, 0, 1 }, yOne[3] = { 0, 1, 0 };
+    float ax[3], ay[3], az[3], pos[3], uy[3];
+    if (kind == 0x200) {
+        const float* pz;
+        float sx = HSD_MtxColMag(src, 0), sz = HSD_MtxColMag(src, 2), sy;
+        colvec(src, 1, ay);
+        sy = PSVECMag(ay);
+        colvec(src, 3, pos);
+        if (persp) {
+            PSVECCrossProduct(pos, ay, ax);
+            PSVECCrossProduct(ax, pos, ay);
+            pz = pos;
+            sz /= -PSVECMag(pz);
+        } else {
+            PSVECCrossProduct(ay, zOne, ax);
+            PSVECCrossProduct(zOne, ax, ay);
+            pz = zOne;
+            sz /= PSVECMag(zOne);
+        }
+        sx /= PSVECMag(ax);
+        sy /= PSVECMag(ay);
+        dst[0][0] = sx * ax[0]; dst[1][0] = sx * ax[1]; dst[2][0] = sx * ax[2];
+        dst[0][1] = sy * ay[0]; dst[1][1] = sy * ay[1]; dst[2][1] = sy * ay[2];
+        dst[0][2] = sz * pz[0]; dst[1][2] = sz * pz[1]; dst[2][2] = sz * pz[2];
+        setcol(dst, 3, pos);
+    } else if (kind == 0x400) {
+        float sx, sz;
+        colvec(src, 3, pos);
+        colvec(src, 1, ay);
+        sx = HSD_MtxColMag(src, 0);
+        sz = HSD_MtxColMag(src, 2);
+        if (persp) PSVECCrossProduct(pos, ay, ax);
+        else PSVECCrossProduct(ay, zOne, ax);
+        PSVECCrossProduct(ax, ay, az);
+        sx /= PSVECMag(ax);
+        sz /= PSVECMag(az);
+        dst[0][0] = sx * ax[0]; dst[1][0] = sx * ax[1]; dst[2][0] = sx * ax[2];
+        setcol(dst, 1, ay);
+        dst[0][2] = sz * az[0]; dst[1][2] = sz * az[1]; dst[2][2] = sz * az[2];
+        setcol(dst, 3, pos);
+    } else if (kind == 0x600) {
+        float sy, sz;
+        colvec(src, 3, pos);
+        colvec(src, 0, ax);
+        sy = HSD_MtxColMag(src, 1);
+        sz = HSD_MtxColMag(src, 2);
+        if (persp) {
+            uy[1] = sqrtf_msl(pos[0] * pos[0] + pos[2] * pos[2]);
+            uy[0] = -pos[1] / uy[1] * pos[0];
+            uy[2] = -pos[1] / uy[1] * pos[2];
+            PSVECCrossProduct(ax, uy, az);
+        } else {
+            PSVECCrossProduct(ax, yOne, az);
+        }
+        PSVECCrossProduct(az, ax, ay);
+        sy /= PSVECMag(ay);
+        sz /= PSVECMag(az);
+        setcol(dst, 0, ax);
+        dst[0][1] = sy * ay[0]; dst[1][1] = sy * ay[1]; dst[2][1] = sy * ay[2];
+        dst[0][2] = sz * az[0]; dst[1][2] = sz * az[1]; dst[2][2] = sz * az[2];
+        setcol(dst, 3, pos);
+    } else {
+        Mtx rot, scl;
+        float sx = HSD_MtxColMag(src, 0), sy = HSD_MtxColMag(src, 1), sz = HSD_MtxColMag(src, 2);
+        float sn = sinf_msl(rotZ), cs = cosf_msl(rotZ);
+        PSMTXScale(scl, sx, sy, sz);
+        memset(rot, 0, sizeof rot);
+        rot[0][0] = cs; rot[0][1] = -sn; rot[1][0] = sn; rot[1][1] = cs; rot[2][2] = 1;
+        rot[0][3] = src[0][3]; rot[1][3] = src[1][3]; rot[2][3] = src[2][3];
+        PSMTXConcat(rot, scl, dst);
+    }
+}
+
 /* ---------------------------------------------------------------- cobj.c's roll2upvec and the viewing matrix */
 
 static void cobjViewingMtx(Mtx m, const float* eye, const float* interest, float roll)
@@ -554,7 +639,7 @@ int main(int argc, char** argv)
         { "quat", 4, 12 }, { "rotaxis", 4, 12 }, { "normalize", 3, 3 }, { "mag", 3, 1 }, { "cross", 6, 3 }, { "dot", 6, 1 },
         { "lookat", 9, 12 }, { "perspective", 4, 16 }, { "frustum", 6, 16 }, { "ortho", 6, 16 }, { "srt", 13, 12 },
         { "srtquat", 14, 12 }, { "scaledadd", 25, 12 }, { "invconcat", 24, 12 }, { "sqrtf", 1, 1 }, { "sinf", 1, 1 },
-        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 }, { "mkrot", 3, 12 }, { "texmtx", 12, 12 },
+        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 }, { "mkrot", 3, 12 }, { "texmtx", 12, 12 }, { "billboard", 15, 12 },
     };
     int k = -1;
     for (int i = 0; i < (int) (sizeof F / sizeof F[0]); i++) if (!strcmp(F[i].name, fn)) k = i;
@@ -592,6 +677,7 @@ int main(int argc, char** argv)
         case 25: cobjViewingMtx(C, a, a + 3, a[6]); memcpy(r, C, 48); break;
         case 26: HSD_MkRotationMtx(C, a); memcpy(r, C, 48); break;
         case 27: MakeTextureMtx(C, a, a + 3, a + 6, (int) a[9], (int) a[10], (int) a[11]); memcpy(r, C, 48); break;
+        case 28: memcpy(A, a, 48); memset(C, 0, 48); mkBillBoard((int) a[12], (int) a[13], a[14], A, C); memcpy(r, C, 48); break;
         }
         fwrite(r, 4, F[k].nout, out);
     }

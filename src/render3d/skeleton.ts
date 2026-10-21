@@ -9,7 +9,9 @@ import {
   aobjFrame, decodePObj, sample, splineAt,
 } from "./hsd";
 import { Mat, ident, invert, mul, srt } from "./math";
-import { HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
+import {
+  HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, concatGL, madd, mkBillBoardMtx, mtxFromGL, mtxToGL,
+} from "./gxmath";
 
 /** what a texture animation can change, per TObj */
 export interface TexState {
@@ -86,6 +88,11 @@ export interface Drawable {
   group?: DrawGroup;
   /** the renderer's own note of its buffers */
   gpu?: { owner: object; epoch: number; mesh: unknown };
+  /** a billboard's modelview as the game makes it (HSD_JObjMakePositionMtx: the billboard made of the view times
+   *  its joint's matrix), under the billboard view numbered bbMVView; the renderer loads it as it is when it draws
+   *  through that view */
+  bbMV?: Float32Array | null;
+  bbMVView?: number;
 }
 
 let stamps = 0;
@@ -104,6 +111,15 @@ let bbIdentity = true;
 let bbViewId = 0;
 // (?noposeskip: every update poses again, for checking that skipping changes nothing)
 const SKIP_SAME = typeof location === "undefined" || !new URLSearchParams(location.search).has("noposeskip");
+
+const bbV12 = new Float32Array(12), bbW12 = new Float32Array(12), bbP12 = new Float32Array(12);
+
+/** the number of the billboard view when it is this view (the renderer's frame view), else -1 */
+export function billboardViewOf(view: ArrayLike<number>): number {
+  if (bbIdentity) return -1;
+  for (let k = 0; k < 16; k++) if (view[k] !== bbView[k]) return -1;
+  return bbViewId;
+}
 
 /** the view the billboards face from now on (the viewer sets it each frame,
  *  before it poses anything) */
@@ -502,7 +518,18 @@ export class Skeleton {
     if (d.pobj.kind !== "envelope") {
       const bb = this.flags[j] & 0xe00;
       const M = d.mats, o = j * 16;
-      if (bb) billboard(M, W.subarray(o, o + 16), bb, this.rot[j * 3 + 2]);
+      if (bb && !bbIdentity) {
+        // (in view space, as the game makes it: mkBillBoardMtx and kin on PSMTXConcat(vmtx, jobj->mtx), in
+        // float32; the world matrix the rest takes - the lighting, the culling - is the view's inverse times it)
+        mtxFromGL(bbView, bbV12, 0);
+        mtxFromGL(W, bbW12, o);
+        PSMTXConcat(bbV12, bbW12, bbW12);
+        mkBillBoardMtx(bb, (this.flags[j] & 0x2000) !== 0, this.rot[j * 3 + 2], bbW12, bbP12);
+        const mv = (d.bbMV ??= new Float32Array(16));
+        mtxToGL(bbP12, mv);
+        d.bbMVView = bbViewId;
+        mul(M, bbInv, mv);
+      } else if (bb) { billboard(M, W.subarray(o, o + 16), bb, this.rot[j * 3 + 2]); d.bbMV = null; }
       else for (let q = 0; q < 16; q++) M[q] = W[o + q];
       if (d.second >= 0) for (let q = 0, s = d.second * 16; q < 16; q++) M[16 + q] = W[s + q];
       for (let m = d.filled; m < d.nMats; m++) d.mats.copyWithin(m * 16, 0, 16);

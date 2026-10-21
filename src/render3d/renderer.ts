@@ -14,7 +14,7 @@
  * are filtered as the file says, with the file's own mip levels.
  */
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
-import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
+import { DrawGroup, Drawable, MatState, Skeleton, TexState, billboardViewOf } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
 import { concatGL } from "./gxmath";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
@@ -1418,6 +1418,7 @@ void main() {
     this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
     this.culled = 0;
+    this.bbFrame = billboardViewOf(this.view);
     invert(tmpM, view);
     this.eye = [tmpM[12], tmpM[13], tmpM[14]];
     gl.useProgram(this.prog);
@@ -1868,14 +1869,20 @@ void main() {
     if (same) return;
     // only the ones it has: a vertex picks among its own (a rigid part's all
     // pick the first)
-    this.uploadMats(M, d.nMats);
+    this.uploadMats(M, d.nMats, d);
     if (n <= L.length) L.set(M.subarray(0, n));
   }
   /** model matrices (world) and their modelviews under the camera drawn through now, into the shader: each
    *  PSMTXConcat(vmtx, model) in float32, as HSD_JObjDisp and SetupEnvelopeModelMtx make what GX is loaded with */
-  private uploadMats(M: Float32Array, count: number) {
+  private uploadMats(M: Float32Array, count: number, d: Drawable | null = null) {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
-    for (let k = 0; k < count; k++) concatGL(MV, k * 16, V, 0, M, k * 16);
+    // (a billboard drawn through the view it was made under: its modelview as the game made it - every slot but a
+    // shared-vertex skin's second joint's)
+    const bb = d && d.bbMV && d.bbMVView === this.bbFrame && !this.shifted && this.camView === this.view ? d.bbMV : null;
+    for (let k = 0; k < count; k++) {
+      if (bb && !(k === 1 && d!.second >= 0)) MV.set(bb, k * 16);
+      else concatGL(MV, k * 16, V, 0, M, k * 16);
+    }
     this.gl.uniformMatrix4fv(this.loc.uMats, false, M, 0, n);
     this.gl.uniformMatrix4fv(this.loc.uMV, false, MV, 0, n);
     this.lastMatsN = n;
@@ -1884,6 +1891,8 @@ void main() {
   private lastMats = new Float32Array(32);
   private lastMatsN = 0;
   private lastMatsView = -1;
+  /** the billboard view (skeleton.ts) when it is the frame's view, else -1 */
+  private bbFrame = -1;
   /** the modelviews last uploaded (uMV), the drawable's own: view times each of its matrices */
   private mvBuf = new Float32Array(160);
 

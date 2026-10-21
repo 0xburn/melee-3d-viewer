@@ -581,6 +581,89 @@ export function HSD_MtxInverseConcat(inv: Mtx, src: Mtx, out: Mtx): Mtx {
   return out;
 }
 
+// ---------------------------------------------------------------- billboards (displayfunc.c)
+
+/** HSD_MtxColMag: a column's length (its squares as the entries are read: not fused) */
+export function HSD_MtxColMag(m: Mtx, col: number): number {
+  const a = m[col], b = m[4 + col], c = m[8 + col];
+  return sqrtf(f32(f32(f32(a * a) + f32(b * b)) + f32(c * c)));
+}
+
+const bbAx = [0, 0, 0], bbAy = [0, 0, 0], bbAz = [0, 0, 0], bbPos = [0, 0, 0], bbUy = [0, 0, 0];
+const Z_ONE = [0, 0, 1], Y_ONE = [0, 1, 0];
+const bbRot = new Float32Array(12), bbScl = new Float32Array(12);
+const colOf = (m: Mtx, c: number, v: number[]) => { v[0] = m[c]; v[1] = m[4 + c]; v[2] = m[8 + c]; return v; };
+const setCol = (m: Mtx, c: number, v: Vec, k?: number) => {
+  if (k === undefined) { m[c] = v[0]; m[4 + c] = v[1]; m[8 + c] = v[2]; }
+  else { m[c] = f32(k * v[0]); m[4 + c] = f32(k * v[1]); m[8 + c] = f32(k * v[2]); }
+};
+
+/** HSD_JObjMakePositionMtx's billboards on src (the view times the joint's matrix: a modelview) into dst: kind
+ *  JOBJ_BILLBOARD 0x200 (mkBillBoardMtx), VBILLBOARD 0x400 (mkVBillBoardMtx), HBILLBOARD 0x600
+ *  (mkHBillBoardMtx), RBILLBOARD 0x800 (mkRBillBoardMtx: turned by the joint's z rotation `rotZ`); `persp`:
+ *  JOBJ_PBILLBOARD (facing the eye, not the screen) */
+export function mkBillBoardMtx(kind: number, persp: boolean, rotZ: number, src: Mtx, dst: Mtx): Mtx {
+  const ax = bbAx, ay = bbAy, pos = bbPos;
+  if (kind === 0x200) {
+    let sx = HSD_MtxColMag(src, 0), sz = HSD_MtxColMag(src, 2);
+    colOf(src, 1, ay);
+    let sy = PSVECMag(ay);
+    colOf(src, 3, pos);
+    let az: number[];
+    if (persp) {
+      PSVECCrossProduct(pos, ay, ax);
+      PSVECCrossProduct(ax, pos, ay);
+      az = pos;
+      sz = f32(sz / -PSVECMag(az));
+    } else {
+      PSVECCrossProduct(ay, Z_ONE, ax);
+      PSVECCrossProduct(Z_ONE, ax, ay);
+      az = Z_ONE;
+      sz = f32(sz / PSVECMag(Z_ONE));
+    }
+    sx = f32(sx / PSVECMag(ax));
+    sy = f32(sy / PSVECMag(ay));
+    setCol(dst, 0, ax, sx); setCol(dst, 1, ay, sy); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else if (kind === 0x400) {
+    const az = bbAz;
+    colOf(src, 3, pos);
+    colOf(src, 1, ay);
+    let sx = HSD_MtxColMag(src, 0), sz = HSD_MtxColMag(src, 2);
+    if (persp) PSVECCrossProduct(pos, ay, ax);
+    else PSVECCrossProduct(ay, Z_ONE, ax);
+    PSVECCrossProduct(ax, ay, az);
+    sx = f32(sx / PSVECMag(ax));
+    sz = f32(sz / PSVECMag(az));
+    setCol(dst, 0, ax, sx); setCol(dst, 1, ay); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else if (kind === 0x600) {
+    const az = bbAz, uy = bbUy;
+    colOf(src, 3, pos);
+    colOf(src, 0, ax);
+    let sy = HSD_MtxColMag(src, 1), sz = HSD_MtxColMag(src, 2);
+    if (persp) {
+      // (the struct's fields squared as read: not fused)
+      uy[1] = sqrtf(f32(f32(pos[0] * pos[0]) + f32(pos[2] * pos[2])));
+      uy[0] = f32(f32(-pos[1] / uy[1]) * pos[0]);
+      uy[2] = f32(f32(-pos[1] / uy[1]) * pos[2]);
+      PSVECCrossProduct(ax, uy, az);
+    } else PSVECCrossProduct(ax, Y_ONE, az);
+    PSVECCrossProduct(az, ax, ay);
+    sy = f32(sy / PSVECMag(ay));
+    sz = f32(sz / PSVECMag(az));
+    setCol(dst, 0, ax); setCol(dst, 1, ay, sy); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else {
+    const sx = HSD_MtxColMag(src, 0), sy = HSD_MtxColMag(src, 1), sz = HSD_MtxColMag(src, 2);
+    PSMTXScale(bbScl, sx, sy, sz);
+    // (MTXRotRad about z: PSMTXRotTrig with MSL's sinf and cosf)
+    const sn = sinf(rotZ), cs = cosf(rotZ);
+    PSMTXIdentity(bbRot);
+    bbRot[0] = cs; bbRot[1] = -sn; bbRot[4] = sn; bbRot[5] = cs;
+    bbRot[3] = src[3]; bbRot[7] = src[7]; bbRot[11] = src[11];
+    PSMTXConcat(bbRot, bbScl, dst);
+  }
+  return dst;
+}
+
 // ---------------------------------------------------------------- the camera (cobj.c)
 
 /** HSD_CObjGetUpVector of a camera given its roll (roll2upvec): the eye
