@@ -1985,7 +1985,9 @@ void main() {
     const l = this.lighting, K = this.lightVKey;
     if (!l || (K[0] === l.version && K[1] === this.viewVer && K[2] === this.overVer)) return;
     K[0] = l.version; K[1] = this.viewVer; K[2] = this.overVer;
-    const V = mtxFromGL(this.shifted ? this.shiftView : this.camView, this.lightMtx, 0);
+    // (by the camera as it is, a shake or not: the game sets the lights up from the current camera
+    // (ftCo_8009F5AC's HSD_LObjSetupInit) and only the meshes' modelview takes the shake (ftDrawCommon_8008051C))
+    const V = mtxFromGL(this.camView, this.lightMtx, 0);
     const v = lightsInView(l, V, this.overDir, this.lightV);
     const gl = this.gl, loc = this.loc;
     gl.uniform4fv(loc.uLPosV, v.pos);
