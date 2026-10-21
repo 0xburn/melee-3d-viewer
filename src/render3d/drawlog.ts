@@ -41,7 +41,8 @@ import type { Archive, Image, PObj, Tlut } from "./hsd";
 import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
-import type { FogRegs } from "./fog";
+import { type FogRegs, fogDecoded } from "./fog";
+import { PSMTXMultVec, PSMTXMultVecSR, PSVECNormalize, PSVECSubtract, mtxFromGL } from "./gxmath";
 import {
   RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevDescStep, tevStage, textureMatrix,
 } from "./gx";
@@ -178,9 +179,10 @@ export function rnd(x: number, digits = 6): number {
   return Number(x.toPrecision(digits));
 }
 
-/** a number as a float32, every bit of it (the value the renderer holds) */
-export function f32(x: number): number {
-  return Number.isFinite(x) ? Math.fround(x) : 0;
+/** a number as a float32, every bit of it (the value the renderer holds); one that is not finite as null (JSON
+ *  has no NaN), and the record says so (`nonfinite`) */
+export function f32(x: number): number | null {
+  return Number.isFinite(x) ? Math.fround(x) : null;
 }
 
 /** GX's projection numbers from a GL projection (column major): GX keeps
@@ -197,6 +199,8 @@ export function gxProjection(p: ArrayLike<number>, num: (x: number) => number = 
 function rows3(m: ArrayLike<number>, o: number, num: (x: number) => number): number[][] {
   return [0, 1, 2].map((r) => [0, 1, 2, 3].map((c) => num(m[o + c * 4 + r])));
 }
+
+const unit = (v: number[]) => { const n = Math.hypot(v[0], v[1], v[2]) || 1; return [v[0] / n, v[1] / n, v[2] / n]; };
 
 // ---------------------------------------------------------------- the renderer, as the log reads it
 
@@ -237,7 +241,12 @@ export class DrawLog {
   /** numbers written as the float32s they are (else kept to 6 significant digits) */
   exact = true;
   /** a matrix's, projection's, fog's, light's or texture matrix's number, as the log writes it */
-  private num = (x: number): number => (this.exact ? f32(x) : rnd(x));
+  private num = (x: number): number => {
+    if (!Number.isFinite(x)) { this.nonfinite = true; return null as unknown as number; }
+    return this.exact ? Math.fround(x) : rnd(x);
+  };
+  /** a number of the record being made was not finite (NaN or infinite: written as null) */
+  private nonfinite = false;
   private cur: FrameLog | null = null;
   private fog: Fog | null = null;
   /** the fighter's color animation the draws are made with (setTint) */
@@ -379,6 +388,7 @@ export class DrawLog {
 
   private mesh(d: Drawable, ghost: boolean, sk: Skeleton | null) {
     const s = this.inner;
+    this.nonfinite = false;
     const st = s.staticsOf(d.state), p = st.p;
     const { view, proj } = this.camera();
     let prims = this.prims.get(d.pobj);
@@ -417,6 +427,7 @@ export class DrawLog {
                            shade: { channel: 0, vertexBase: false, lit: false, specular: false, bump: -1, stages: [],
                                     diffuse: [gray, gray, gray, 1], alpha: 1, ambient: [0, 0, 0, 1], spec: [0, 0, 0, 1] },
                            probe: this.inputs.map(() => [g, g, g, 255]), shadow: "cast" });
+      if (this.nonfinite) rec.nonfinite = true;
       this.add(rec);
       return;
     }
@@ -441,6 +452,7 @@ export class DrawLog {
                    light: t.light ? { rgb: t.light.rgb.map((v) => rnd(v)), a: rnd(t.light.a), adds: t.light.adds } : null };
     }
     if (sk && (sk as unknown as { pointSize?: number }).pointSize) rec.point = (sk as unknown as { pointSize: number }).pointSize;
+    if (this.nonfinite) rec.nonfinite = true;
     this.add(rec);
   }
 
@@ -450,10 +462,16 @@ export class DrawLog {
     // (and as the hardware takes it: GXSetFog's registers, and A, B and C as they hold them)
     const r = this.inner.fogRegs;
     const hx = (v: number) => v.toString(16).padStart(8, "0");
-    return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1, start: this.num(f.start), end: this.num(f.end),
+    // (start and end as the registers hold them - worked back from A, B and C with the camera's near, as a reader
+    // of the game's registers does - and as they were handed to GXSetFog: set_start, set_end)
+    const dec = r ? fogDecoded(r) : null;
+    return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1,
+             start: dec ? dec.start : this.num(f.start), end: dec ? dec.end : this.num(f.end),
+             set_start: this.num(f.start), set_end: this.num(f.end),
              color: f.color.map((v) => Math.round(v * 255)),
-             ...(r ? { regs: [r.fog0, r.fog1, r.fog2, r.fog3, r.fogclr].map(hx), a: this.num(r.a), b_mag: r.bMag, b_shift: r.bShift,
-                       c: this.num(r.c), fsel: r.fsel, proj: r.proj } : {}) };
+             ...(r && dec ? { regs: [r.fog0, r.fog1, r.fog2, r.fog3, r.fogclr].map(hx), a: dec.a, b: dec.b, c: dec.c,
+                              a_reg: this.num(r.a), b_mag: r.bMag, b_shift: r.bShift, c_reg: this.num(r.c), fsel: r.fsel, proj: r.proj,
+                              near: this.num(r.near), far: this.num(r.far) } : {}) };
   }
 
   /** a see-through material while a color animation adds its light: lit by the set's first light alone (the
@@ -463,21 +481,39 @@ export class DrawLog {
     return !!ol && ol.adds && (d.state.mobj.renderMode & RENDER.XLU) !== 0;
   }
 
+  /** the lights as HSD_LObjSetup loads them into GX, through the view (float32, gxmath): an infinite light's
+   *  position 2^20 times its LObj's, as a point (setup_infinite_lightobj); a point or spot light's position
+   *  (MTXMultVec), a spot's axis toward it (its light vector, interest - position, through PSMTXMultVecSR and
+   *  PSVECNormalize, turned round) */
   private lightsRec(view: Mat, first = false): Record<string, unknown>[] {
     const l = this.inner.lighting;
     if (!l) return [];
     const out: Record<string, unknown>[] = [];
+    const V = mtxFromGL(view, new Float32Array(12));
+    const through = (x: number, y: number, z: number, w: number) => {
+      const v = [Math.fround(x), Math.fround(y), Math.fround(z)];
+      if (w === 0) { v[0] = Math.fround(v[0] * 1048576); v[1] = Math.fround(v[1] * 1048576); v[2] = Math.fround(v[2] * 1048576); }
+      return Array.from(PSMTXMultVec(V, v, [0, 0, 0]));
+    };
     // (a color animation's light, ftCo_8009F5AC's x588: added to the set (white, its alpha the strength), or
     // with the ambient light alone (its color): the renderer's uOverMode 1 and 2)
     const ol = this.tint?.light ?? null;
     for (let k = 0; k < (first ? Math.min(1, l.n) : l.n) && !(ol && !ol.adds); k++) {
-      const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4);
+      const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4), Q = l.place.subarray(k * 4, k * 4 + 4);
       const w = P[3];
-      // (in view space, as the game loads its lights)
-      const at = [0, 1, 2].map((r) => view[r] * P[0] + view[4 + r] * P[1] + view[8 + r] * P[2] + view[12 + r] * w);
-      const ax = [0, 1, 2].map((r) => view[r] * X[0] + view[4 + r] * X[1] + view[8 + r] * X[2]);
+      const at = through(Q[0], Q[1], Q[2], w);
+      let ax = [0, 0, 0];
+      if (w !== 0) {
+        const I = l.interest.subarray(k * 4, k * 4 + 4);
+        const d = I[3] ? PSVECSubtract([I[0], I[1], I[2]], [Q[0], Q[1], Q[2]], [0, 0, 0]) : [-X[0], -X[1], -X[2]];
+        PSVECNormalize(d, d);
+        const v = PSVECNormalize(PSMTXMultVecSR(V, d, [0, 0, 0]), [0, 0, 0]);
+        ax = [-v[0], -v[1], -v[2]];
+      }
       const flags = l.attnA[k * 4 + 3];
-      out.push({ k, at: at.map(this.num), infinite: w === 0, axis: ax.map(this.num),
+      // (an infinite light's `at` its direction - the position GX holds, normalized - and `pos` that position)
+      out.push({ k: out.length, at: (w === 0 ? unit(at) : at).map(this.num), ...(w === 0 ? { pos: at.map(this.num) } : {}),
+                 infinite: w === 0, axis: ax.map(this.num),
                  color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((v) => Math.round(v * 255)),
                  cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map(this.num),
                  distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map(this.num),
@@ -485,16 +521,16 @@ export class DrawLog {
     }
     if (ol && !first) {
       const D = ol.dir;
-      const at = [0, 1, 2].map((r) => view[r] * D[0] + view[4 + r] * D[1] + view[8 + r] * D[2]);
       const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
-      out.push({ k: l.n, at: at.map(this.num), infinite: true, axis: [0, 0, 0], color: [...rgb, Math.round(ol.a * 255)],
-                 cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false, overlay: true });
+      // (the next light the game loads: after the set's, or the first when it is the ambient's alone)
+      const op = through(D[0], D[1], D[2], 0);
+      out.push({ k: out.length, at: unit(op).map(this.num), pos: op.map(this.num), infinite: true, axis: [0, 0, 0],
+                 color: [...rgb, Math.round(ol.a * 255)], cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false,
+                 overlay: true });
     }
     return out;
   }
 
-  /** a sampler's record; its texture matrix as the material's block holds it (F, the sampler n's rows: what
-   *  was uploaded), or made here when the block has none */
   private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0): Record<string, unknown> {
     if (!t) return { id: null };
     const o = t.tobj;
@@ -560,7 +596,8 @@ export class DrawLog {
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
       // (its strength the rasterized alpha: the lit channel's - the light's alpha by the probe's turn - else the
       // vertex alpha or the material's)
-      const rasA = p.channel === 2 && ol ? chanColor(255, Math.round(q.s[0][3] * byteOf(ol.a)))
+      // (the probe's light sum is the lights' term already, color and all, as for the rgb: not the light's alpha again)
+      const rasA = p.channel === 2 && ol ? chanColor(255, byteOf(q.s[0][3]))
         : p.channel === 1 ? byteOf(q.v[0][3]) : byteOf(s.alpha);
       if (addsOn) { const k = B(ol!.rgb); for (let i = 0; i < 3; i++) out[i] = tevStage(0, k[i], rasA, out[i], 0, 0, 0, true); }
       const tc = this.tint?.color;
