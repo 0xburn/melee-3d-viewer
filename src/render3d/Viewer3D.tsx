@@ -1534,6 +1534,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const fs = ready();
     const ek = kit();
     const posed: { f: Fighter; a: Actor }[] = [];
+    // (posed but not drawn - a fighter its move hides: still placed at its captor's hold, as the game animates it)
+    const posedHidden: { f: Fighter; a: Actor }[] = [];
     drawnKirbyHats = [];
 
     // stage and fighters, opaque parts first, then the see-through ones; the
@@ -1652,6 +1654,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // (Sheik's Vanish bursts where she was)
       if (vanished(a.st) || trackHidden(a)) {
         frameActors.push({ key: actorKey(a.player, a.nana), st: a.st, fighter: fi, world: worldByPart(a.st.internalCharacterId, fi.skeleton.world) });
+        if (a.captor) posedHidden.push({ f: fi, a });
         continue;
       }
       const an = fi.animFor(a.st.actionStateId);
@@ -1669,7 +1672,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       skins.push(fi);
       posed.push({ f: fi, a });
     }
-    for (const { f: fi, a } of posed) {
+    for (const { f: fi, a } of [...posed, ...posedHidden]) {
       const c = a.captor ? posed.find((q) => q.a === a.captor) : undefined;
       if (!c || !ek) continue;
       const cc = c.a.st.internalCharacterId, vc = a.st.internalCharacterId;
