@@ -263,6 +263,9 @@ void main() {
   // the light's color times it, ftMaterial_800BF534's stage)
   float rasA = m0.y == 2 ? chanOut(term(max(dot(N, uOverDir), 0.0), vec3(uOverLight.a))).x : m0.y == 1 ? aClr.a : uMatF[0].a;
   vOverA = uOverMode == 1 ? rasA : -1.0;
+  // (and that lit alpha is the rasterized alpha the material's alpha stage takes, lerp(0, alpha, ras.a), as it
+  // is the color's: while the light adds, a lit material's alpha is its alpha times the light's alpha by the turn)
+  if (m0.y == 2 && uOverMode == 1) vRas0.a = rasA;
   vT0 = texGen(0, aUv0, aUv1, nv, w);
   vT1 = texGen(1, aUv0, aUv1, nv, w);
   vT2 = texGen(2, aUv0, aUv1, nv, w);
