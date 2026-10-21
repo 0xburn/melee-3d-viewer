@@ -316,6 +316,9 @@ export class DrawLog {
     const s = this.inner;
     const view = s.shifted ? s.shiftView : s.camView, vp = s.shifted ? s.shiftVP : s.camVP;
     const proj = mul(new Float32Array(16), vp, invert(new Float32Array(16), view));
+    // (a picture the renderer draws upside down - the magnifier's, so its first row is the texture's top - is
+    // the game's picture the right way up: its projection's y turned back)
+    if (s.mirrored) for (const k of [1, 5, 9, 13]) proj[k] = -proj[k];
     return { view, proj: gxProjection(proj) };
   }
 
@@ -345,7 +348,8 @@ export class DrawLog {
     }
     const cull = d.pobj.flags & 0xc000;
     let cullName = cull === 0 ? "none" : cull === 0x8000 ? "back" : cull === 0x4000 ? "front" : "all";
-    if (s.mirrored && (cullName === "back" || cullName === "front")) cullName = cullName === "back" ? "front" : "back";
+    // (in a picture drawn upside down the renderer turns the front face over with it, so the faces culled are
+    // the material's own: the name is the mode as the game sets it)
     const I = st.I, F = st.F;
     const rec: Record<string, unknown> = {
       kind: ghost ? "ghost" : "mesh",
