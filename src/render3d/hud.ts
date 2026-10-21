@@ -180,8 +180,8 @@ export class HudModel {
   }
 
   /** the root placed (and scaled, turned), then the world matrices */
-  finish(x: number, y: number, z = 0, scale = 1, rotZ = 0, scaleY = scale) {
-    srt(this.place, scale, scaleY, scale, 0, 0, rotZ, x, y, z);
+  finish(x: number, y: number, z = 0, scale = 1, rotZ = 0, scaleY = scale, scaleZ = scale) {
+    srt(this.place, scale, scaleY, scaleZ, 0, 0, rotZ, x, y, z);
     this.sk.update(this.place);
   }
 
@@ -656,7 +656,7 @@ export class Hud {
           b.solo(1, 2);
           b.color(1, [0, 0, 0], 2);
           b.alpha(1, PLATE.fill, 2);
-          b.finish(cx, oy, 0, sx, 0, PLATE.sy);
+          b.finish(cx, oy, 0, sx, 0, PLATE.sy, 1);
           r.drawSkeleton(b.sk, "opa");
           r.drawSkeleton(b.sk, "xlu");
         } else {
