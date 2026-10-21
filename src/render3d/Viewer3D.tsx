@@ -4007,6 +4007,10 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   // (it_802B2560: Item_8026AB54 with ftMr_SpecialS's FtPart_RThumbNb), its attach joint tied to the thumb
   // in place and turn (it_802742F4: it_80274F48, lb_8000C2F8's position and orientation constraints)
   0x54: { art: 0, held: heldAll(RTHUMB) },
+  // Mario's cape, the same way (ftMr_SpecialS makes either with it_802B2560 on FtPart_RThumbNb). (Which of
+  // his articles it is comes from the viewer track's "art" when it has one; without, his fireball is 0 and
+  // the cape is taken as the next, not confirmed against his file)
+  0x53: { art: 1, held: heldAll(RTHUMB) },
   0x59: { art: 1 },                // Pikachu's Thunder Jolt (his articles 1 and 2: ftpikachu.c)
   0x5a: { art: 2 },
   0x5b: { art: 1 },                // Pichu's, the same way
