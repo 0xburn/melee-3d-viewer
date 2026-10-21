@@ -553,8 +553,11 @@ const root2Of = (ek: EffectKit | undefined, char: number): number => {
 // Mewtwo's throws - ftCo_Capture*.c, ftCo_Thrown*.c. A thrown state plays the
 // thrower's animation when the thrower has one for it: Fighter.thrownAnim)
 const CAPTURED = new Set([223, 224, 225, 226, 227, 228, 275, 276, 278, 279, 280, 283, 284, 285, 289, 301, 302, 331]);
+// (Kirby's star, ThrownKirbyStar and ThrownCopyStar, 290 and 291: thrown too - inlineB2 enters them with
+// Fighter_ChangeMotionState given the thrower, so the one hidden in it plays Kirby's animation of it, and the
+// star, held to its YRotN by place and turn (lb_8000C2F8), is turned as that animation turns it)
 const THROWN = new Set([239, 240, 241, 242, 243, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 279, 281, 282, 284, 286, 287,
-                        301, 302, 303, 304]);
+                        290, 291, 301, 302, 303, 304]);
 const XROTN = 2, TRANSN2 = 52, TARO_PARTS = 52, TRANSN = 1, THROWN_PART = 51;
 /** Yoshi (internal id), and the state of one laid in his egg */
 const YOSHI_ID = 14, YOSHI_EGG = 277;
@@ -573,6 +576,8 @@ function captorOf(a: Actor, actors: Actor[]): Actor | null {
   let best: Actor | null = null, dist = Infinity;
   for (const o of actors) {
     if (o.player === a.player || gone(o.st)) continue;
+    // (a star's thrower is a Kirby: the nearest, as kirbyHeld takes him)
+    if (KIRBY_STARS.has(s) && o.st.internalCharacterId !== KIRBY) continue;
     const d = Math.hypot(o.st.xPosition - a.st.xPosition, o.st.yPosition - a.st.yPosition);
     if (d < dist) { dist = d; best = o; }
   }
