@@ -403,6 +403,45 @@ static void PSMTXTrans(Mtx m, float x, float y, float z)
     m[0][3] = x; m[1][3] = y; m[2][3] = z;
 }
 
+/* baselib/mtx.c HSD_MkRotationMtx (-fp_contract on: in a * b +- c * d the right product is rounded first) */
+static void HSD_MkRotationMtx(Mtx m, const float* r)
+{
+    float sinX = sinf_msl(r[0]), cosX = cosf_msl(r[0]);
+    float sinY = sinf_msl(r[1]), cosY = cosf_msl(r[1]);
+    float sinZ = sinf_msl(r[2]), cosZ = cosf_msl(r[2]);
+    float t1 = sinX * sinY;
+    m[0][0] = cosY * cosZ;
+    m[1][0] = cosY * sinZ;
+    m[2][0] = -sinY;
+    float t2 = cosX * sinY;
+    m[0][1] = fmaf(cosZ, t1, -(cosX * sinZ));
+    m[1][1] = fmaf(sinZ, t1, cosX * cosZ);
+    m[2][1] = sinX * cosY;
+    m[0][2] = fmaf(cosZ, t2, sinX * sinZ);
+    m[1][2] = fmaf(sinZ, t2, -(sinX * cosZ));
+    m[2][2] = cosX * cosY;
+    m[0][3] = m[1][3] = m[2][3] = 0;
+}
+
+/* tobj.c MakeTextureMtx: translate, scale, rotate (x y z), repeat_s, repeat_t, wrap_t */
+static void MakeTextureMtx(Mtx out, const float* tr, const float* sc, const float* rot, int rs, int rt, int wrapT)
+{
+    float scale[3], r[3], t[3];
+    Mtx m;
+    scale[0] = fabsf(sc[0]) < 1.1920928955078125e-7f ? 0.0f : (float) rs / sc[0];
+    scale[1] = fabsf(sc[1]) < 1.1920928955078125e-7f ? 0.0f : (float) rt / sc[1];
+    scale[2] = sc[2];
+    r[0] = rot[0]; r[1] = rot[1]; r[2] = -rot[2];
+    t[0] = -tr[0];
+    t[1] = -(tr[1] + (wrapT == 2 ? 1.0f / ((float) rt / sc[1]) : 0.0f));
+    t[2] = tr[2];
+    PSMTXTrans(out, t[0], t[1], t[2]);
+    HSD_MkRotationMtx(m, r);
+    PSMTXConcat(m, out, out);
+    PSMTXScale(m, scale[0], scale[1], scale[2]);
+    PSMTXConcat(m, out, out);
+}
+
 static void HSD_MtxSRTQuat(Mtx m, const float* s, const float* q, const float* t, const float* ps)
 {
     Mtx temp;
@@ -515,7 +554,7 @@ int main(int argc, char** argv)
         { "quat", 4, 12 }, { "rotaxis", 4, 12 }, { "normalize", 3, 3 }, { "mag", 3, 1 }, { "cross", 6, 3 }, { "dot", 6, 1 },
         { "lookat", 9, 12 }, { "perspective", 4, 16 }, { "frustum", 6, 16 }, { "ortho", 6, 16 }, { "srt", 13, 12 },
         { "srtquat", 14, 12 }, { "scaledadd", 25, 12 }, { "invconcat", 24, 12 }, { "sqrtf", 1, 1 }, { "sinf", 1, 1 },
-        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 },
+        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 }, { "mkrot", 3, 12 }, { "texmtx", 12, 12 },
     };
     int k = -1;
     for (int i = 0; i < (int) (sizeof F / sizeof F[0]); i++) if (!strcmp(F[i].name, fn)) k = i;
@@ -551,6 +590,8 @@ int main(int argc, char** argv)
                    memcpy(r, w, 8); break; }
         case 24: r[0] = (float) fres(a[0]); break;
         case 25: cobjViewingMtx(C, a, a + 3, a[6]); memcpy(r, C, 48); break;
+        case 26: HSD_MkRotationMtx(C, a); memcpy(r, C, 48); break;
+        case 27: MakeTextureMtx(C, a, a + 3, a + 6, (int) a[9], (int) a[10], (int) a[11]); memcpy(r, C, 48); break;
         }
         fwrite(r, 4, F[k].nout, out);
     }

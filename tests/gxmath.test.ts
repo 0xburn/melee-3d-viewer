@@ -135,6 +135,14 @@ test("HSD_MtxSRT, HSD_MtxSRTQuat, HSD_MtxScaledAdd, HSD_MtxInverseConcat", { ski
        (a) => Array.from(G.HSD_MtxInverseConcat(M(a), M(a, 12), new Float32Array(12))));
 });
 
+test("HSD_MkRotationMtx and MakeTextureMtx (a texture's matrix)", { skip }, () => {
+  same("mkrot", Array.from({ length: N }, () => vec(3, -7, 7)), (a) => Array.from(G.HSD_MkRotationMtx(new Float32Array(12), a)));
+  // (scales near 0 too, repeats 1 to 8, wrap clamp, repeat or mirror)
+  const tex = Array.from({ length: N }, () => [...vec(3, -3, 3), f(-4, 4), rnd() < 0.05 ? 0 : f(-4, 4), f(0.5, 2), ...vec(3, -7, 7),
+                                               1 + Math.floor(rnd() * 8), 1 + Math.floor(rnd() * 8), Math.floor(rnd() * 3)]);
+  same("texmtx", tex, (a) => Array.from(G.MakeTextureMtx(new Float32Array(12), a.slice(0, 3), a.slice(3, 6), a.slice(6, 9), a[9], a[10], a[11])));
+});
+
 test("the matrices move to and from GL's column-major 4 x 4s unchanged", () => {
   const m = Float32Array.from(mtx());
   const gl = G.mtxToGL(m, new Float32Array(16));

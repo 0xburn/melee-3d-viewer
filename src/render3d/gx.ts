@@ -22,6 +22,7 @@
  * emulator is in it.
  */
 import type { MObj, TObj } from "./hsd";
+import { MakeTextureMtx } from "./gxmath";
 
 // ---------------------------------------------------------------- lights
 
@@ -560,28 +561,12 @@ export function minFilter(lodFilter: number | null, mipmap: boolean, format: num
   return f;
 }
 
-/** HSD's texture matrix (MakeTextureMtx: scale by repeat over scale, turn
- *  by the rotation, move by minus the translation) as three rows of four */
-export function textureMatrix(tr: number[], sc: number[], rot: number[], repS: number, repT: number, wrapT: number): number[] {
-  const su = Math.abs(sc[0]) < 1e-10 ? 0 : (repS || 1) / sc[0];
-  const sv = Math.abs(sc[1]) < 1e-10 ? 0 : (repT || 1) / sc[1];
-  const sz = sc[2] ?? 1;
-  const tx = -tr[0], ty = -(tr[1] + (wrapT === 2 && sv ? 1 / sv : 0)), tz = tr[2] ?? 0;
-  // HSD_MkRotationMtx: Rz(-rz) Ry(ry) Rx(rx), from the TObj's rotation
-  const [rx, ry, rz] = [rot[0] ?? 0, rot[1] ?? 0, -(rot[2] ?? 0)];
-  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry), cz = Math.cos(rz), sz_ = Math.sin(rz);
-  const R = [
-    [cy * cz, sx * sy * cz - cx * sz_, cx * sy * cz + sx * sz_],
-    [cy * sz_, sx * sy * sz_ + cx * cz, cx * sy * sz_ - sx * cz],
-    [-sy, sx * cy, cx * cy],
-  ];
-  const S = [su, sv, sz], T = [tx, ty, tz];
-  const out: number[] = [];
-  for (let r = 0; r < 3; r++) {
-    const row = R[r].map((v) => v * S[r]);
-    out.push(row[0], row[1], row[2], row[0] * T[0] + row[1] * T[1] + row[2] * T[2]);
-  }
-  return out;
+/** HSD's texture matrix (MakeTextureMtx: scale by repeat over scale, turn by the rotation - its z negated -
+ *  move by minus the translation; HSD_MkRotationMtx and PSMTXConcat, in float32 as the game makes it) as three
+ *  rows of four. (A repeat of 0, which the game asserts against, is taken as 1.) */
+export function textureMatrix(tr: number[], sc: number[], rot: number[], repS: number, repT: number, wrapT: number): Float32Array {
+  return MakeTextureMtx(new Float32Array(12), [tr[0], tr[1], tr[2] ?? 0], [sc[0], sc[1], sc[2] ?? 1],
+                        [rot[0] ?? 0, rot[1] ?? 0, rot[2] ?? 0], repS || 1, repT || 1, wrapT);
 }
 
 /** GX fog as a stage sets it: its kind (GX_FOG_*), where it starts and ends

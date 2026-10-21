@@ -485,6 +485,48 @@ export function HSD_MtxSRTQuat(m: Mtx, scale: Vec, q: Vec, trans: Vec, parentSca
   return m;
 }
 
+/** HSD_MkRotationMtx: a turn by x, then y, then z (a texture's), no move */
+export function HSD_MkRotationMtx(m: Mtx, rot: Vec): Mtx {
+  const sinX = sinf(rot[0]), cosX = cosf(rot[0]);
+  const sinY = sinf(rot[1]), cosY = cosf(rot[1]);
+  const sinZ = sinf(rot[2]), cosZ = cosf(rot[2]);
+  const t1 = f32(sinX * sinY);
+  m[0] = f32(cosY * cosZ);
+  m[4] = f32(cosY * sinZ);
+  m[8] = -sinY;
+  const t2 = f32(cosX * sinY);
+  m[1] = msub(cosZ, t1, f32(cosX * sinZ));
+  m[5] = madd(sinZ, t1, f32(cosX * cosZ));
+  m[9] = f32(sinX * cosY);
+  m[2] = madd(cosZ, t2, f32(sinX * sinZ));
+  m[6] = msub(sinZ, t2, f32(sinX * cosZ));
+  m[10] = f32(cosX * cosY);
+  m[3] = 0; m[7] = 0; m[11] = 0;
+  return m;
+}
+
+const FLT_EPSILON = 1.1920928955078125e-7;
+const tmR = new Float32Array(12), tmS = new Float32Array(12), tmRot = [0, 0, 0];
+
+/** MakeTextureMtx (tobj.c): a texture's matrix, scale (repeat over scale) times turn (z negated) times move
+ *  (minus the translation, and a mirrored-in-t texture's one repeat more), each step PSMTXConcat's */
+export function MakeTextureMtx(m: Mtx, translate: Vec, scale: Vec, rotate: Vec, repeatS: number, repeatT: number,
+                               wrapT: number): Mtx {
+  const sx = f32(scale[0]), sy = f32(scale[1]);
+  const kx = Math.abs(sx) < FLT_EPSILON ? 0 : f32(repeatS / sx);
+  const ky = Math.abs(sy) < FLT_EPSILON ? 0 : f32(repeatT / sy);
+  tmRot[0] = f32(rotate[0]); tmRot[1] = f32(rotate[1]); tmRot[2] = -f32(rotate[2]);
+  const tx = -f32(translate[0]);
+  // (GX_MIRROR: 1.0F / (repeat_t / scale.y), a float32 quotient each)
+  const ty = -f32(f32(translate[1]) + (wrapT === 2 ? f32(1 / f32(repeatT / sy)) : 0));
+  PSMTXTrans(m, tx, ty, translate[2]);
+  HSD_MkRotationMtx(tmR, tmRot);
+  PSMTXConcat(tmR, m, m);
+  PSMTXScale(tmS, kx, ky, scale[2]);
+  PSMTXConcat(tmS, m, m);
+  return m;
+}
+
 /** HSD_MtxScaledAdd: out = acc + k * m, each one fused multiply-add (an envelope's weighted sum) */
 export function HSD_MtxScaledAdd(m: Mtx, acc: Mtx, out: Mtx, k: number): Mtx {
   for (let i = 0; i < 12; i++) out[i] = madd(k, m[i], acc[i]);
