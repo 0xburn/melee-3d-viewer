@@ -1994,11 +1994,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (!trackChains.has(it.spawnId)) continue;
       const links = trNow!.pose("lm", String(it.spawnId), fno - 123);
       const f = articleFighter(data, fs, it, fno);
-      if (links && f) drawTrackChain(r, f, it, links, trackArticles.get(data)?.get(it.typeId));
+      if (links && f) drawTrackChain(r, f, it, links, trackArticles.get(data)?.get(it.typeId), itemLife(data, fno, it));
     }
     // the hookshots' and grapple beams' chains, where the viewer track has them
     for (const a of actors) {
-      if ((frame.items ?? []).some((it) => it.owner === a.player && trackChains.has(it.spawnId))) continue;
+      // (a chain whose links the track has is drawn above; its glow is still drawn here)
+      const tracked = (frame.items ?? []).some((it) => it.owner === a.player && trackChains.has(it.spawnId));
       const c = CHAINS[a.st.internalCharacterId];
       const v = trNow?.has("hook") ? trNow.exact("hook", `${a.player}:${a.nana ? 1 : 0}`, fno - 123) : null;
       const costume = data.settings.playerSettings[a.player]?.costumeIndex ?? 0;
@@ -2008,7 +2009,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const own = c.itemType === undefined ? undefined
         : (frame.items ?? []).find((it) => it.owner === a.player && c.itemType === it.typeId);
       const item = own ? { state: own.state, age: itemLife(data, fno, own) } : null;
-      if (v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item);
+      if (!tracked && v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item);
       // its glow, held at the arm the whole time, fired or not (Item_8026AB54
       // with ThrowN's number, which ftLib_80086630 takes as the fighter's own
       // part slot, not through the named-part table: Samus's joint 51, her cannon)
@@ -4118,17 +4119,23 @@ function linkMatrix(out: Float32Array, at: [number, number, number], dir: [numbe
 // last, the end with no prev (the hookshot's head, Sheik's handle, the yo-yo, the belay's end), its own
 // model, always drawn. The track's link 0 is that end. By the owner's character: its article, the link
 // models' attribute offsets, the end's.
-const TRACK_CHAINS: Record<number, { art: number; link: (i: number) => number; end: number }> = {
+const TRACK_CHAINS: Record<number, { art: number; link: (i: number) => number; end: number;
+                                      linkAnim?: (i: number) => number; endAnim?: number }> = {
   6: { art: 2, link: (i) => (i % 2 ? 0x54 : 0x58), end: 0x5c },
   20: { art: 2, link: (i) => (i % 2 ? 0x54 : 0x58), end: 0x5c },
   7: { art: -1, link: () => 0x64, end: 0x68 },
   8: { art: 10, link: () => 0x50, end: 0x54 },
+  // (the grapple's links: three models in turn by i, each with its own animation (+0x74, +0x80, +0x8C), and
+  // the claw (+0x70) with its own (+0x98), from when the item is made: itsamusgrapple.c it_802B743C)
+  13: { art: 3, link: (i) => [0x64, 0x68, 0x6c][i % 3], end: 0x70, linkAnim: (i) => [0x74, 0x80, 0x8c][i % 3],
+        endAnim: 0x98 },
   10: { art: -1, link: () => 0x24, end: 0x28 },
   11: { art: -1, link: () => 0x24, end: 0x28 },
 };
 const trackLinkMtx = new Float32Array(16);
 
-function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPose, said: number | undefined) {
+function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPose, said: number | undefined,
+                        age: number) {
   const c = TRACK_CHAINS[f.internalId];
   if (!c) return;
   const art = said ?? c.art;
@@ -4139,13 +4146,16 @@ function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPos
     const i = n - 1 - k;
     if (k !== 0 && !out) continue;
     if (v.some(Number.isNaN)) continue;
-    const p = f.articleModel(art, k === 0 ? c.end : c.link(i));
+    const anim = k === 0 ? c.endAnim : c.linkAnim?.(i);
+    const off = k === 0 ? c.end : c.link(i);
+    const p = anim !== undefined ? f.articleAnimated(art, off, anim) : f.articleModel(art, off);
     if (!p) continue;
     // (rows 0-2 of the 3x4, as the renderer's column-major 4x4)
     for (let row = 0; row < 3; row++) for (let col = 0; col < 4; col++) trackLinkMtx[col * 4 + row] = v[row * 4 + col];
     trackLinkMtx[3] = trackLinkMtx[7] = trackLinkMtx[11] = 0;
     trackLinkMtx[15] = 1;
-    p.poseMatrix(trackLinkMtx);
+    if (anim !== undefined) p.poseMatrix(trackLinkMtx, age);
+    else p.poseMatrix(trackLinkMtx);
     r.drawSkeleton(p.skeleton, "opa");
     r.drawSkeleton(p.skeleton, "xlu");
   }
