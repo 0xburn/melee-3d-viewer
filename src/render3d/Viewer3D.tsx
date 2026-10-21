@@ -2134,24 +2134,36 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
         if (!fi) continue;
         const drawn = posed.some((p) => p.a === a);
+        // (the magnifier goes by ftLib_80086ED0, which leaves out fp->invisible but not x221E_b5 or x2226_b5:
+        // a fighter those two hide still gets its bubble, its picture empty; it was posed all the same)
+        const magnify = drawn || (trackHidden(a) && !(hideBits(a) & 1) && !hidden(a.st));
         // (the camera bone: its place in the fighter's bone list, ftLib_800866DC; the model's joint past its
         // part list's gaps, parts.ts)
         const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
         let bone: [number, number, number] | null = null;
-        if (drawn && joint >= 0 && joint < fi.skeleton.n) {
+        if (magnify && joint >= 0 && joint < fi.skeleton.n) {
           const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
           bone = [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]) as [number, number, number];
-        } else if (drawn) bone = [a.st.xPosition, a.st.yPosition + (fi.cameraBox?.lift ?? 8) * fi.modelScale, 0];
+        } else if (magnify) bone = [a.st.xPosition, a.st.yPosition + (fi.cameraBox?.lift ?? 8) * fi.modelScale, 0];
         hudActors.push({
-          player: a.player, st: a.st, drawn, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
-          nameTagHeight: fi.nameTagHeight, bone, zoom: ((fi.cameraBox?.v[2] ?? 8) * fi.modelScale) / 8,
+          player: a.player, st: a.st, drawn, magnify, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
+          // (the magnifier's size: the camera box's target_ext.v.z, ftData +0x3C's last float times fp->x34_scale.y
+          // - the player's scale, not the model's (ftCamera_80076064, ftLib_80086B80) - over 8)
+          nameTagHeight: fi.nameTagHeight, bone,
+          zoom: ((fi.cameraBox?.v[2] ?? 8) * (playerScales(data.settings.playerSettings)[a.player] ?? 1)) / 8,
+          // (ifMagnify_802FBBDC draws it through ftDrawCommon_80080C28, as the pond's mirror does: its
+          // low-detail model, and nothing while any of the three hide bits is set)
           draw: () => {
+            if (hideBits(a) & 7) return;
             if (skins.filter((s) => s === fi).length > 1) poseActor(fi, a);
             fi.faceTex?.apply(a.face?.tex ?? null);
             r.setLighting(lighting);
             r.setTint((lastTints.find((t) => t.key === actorKey(a.player, false))?.tint ?? null) as ColTint | null);
+            const low = fi.mirrorPassHidden();
+            if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
             r.drawSkeleton(fi.skeleton, "opa");
             r.drawSkeleton(fi.skeleton, "xlu");
+            fi.skeleton.passHidden = null;
             r.setTint(null);
           },
         });
