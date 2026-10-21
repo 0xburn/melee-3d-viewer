@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { formatName, glyphAtlas, nameBytes, pastTheEnd, plateFontFromDol, plateText, rawBytes, type PlateFont } from "../src/render3d/plates.ts";
+import { FORMAT_ARGS, FORMAT_ARGS_FIRST, formatName, glyphAtlas, nameBytes, pastTheEnd, plateFontFromDol, plateText, rawBytes, type PlateFont } from "../src/render3d/plates.ts";
 import { ascii, sisString } from "../src/render3d/sistext.ts";
 import { gameFiles, withGameFiles } from "./game-files.ts";
 
@@ -68,11 +68,11 @@ test("a name's bytes as the replay holds them: up to the first zero, 31 at most"
 });
 
 test("the formatter: the name is a printf format whose first argument is 16", () => {
-  const f = (s: string) => String.fromCharCode(...formatName(ascii(s)));
+  const f = (s: string) => String.fromCharCode(...formatName(ascii(s), [16]));
   assert.equal(f("Mango"), "Mango");
   assert.equal(f("%d"), "16");
   assert.equal(f("%x"), "10");
-  assert.equal(f("%X-%o"), "10-"); // (the second argument is not modeled: nothing)
+  assert.equal(f("%X-%o"), "10-"); // (no second argument given: nothing)
   assert.equal(f("%5d"), "   16");
   assert.equal(f("%-4dA"), "16  A");
   assert.equal(f("%04d"), "0016");
@@ -82,6 +82,12 @@ test("the formatter: the name is a printf format whose first argument is 16", ()
   assert.equal(f("A%"), "A%");
   assert.equal(f("%yz"), "%yz");
   assert.deepEqual([...formatName(ascii("%c"))], [16]);
+  // (the registers the later conversions read, as the game's plates showed them)
+  const g = (s: string, first = false) => String.fromCharCode(...formatName(ascii(s), first ? FORMAT_ARGS_FIRST : FORMAT_ARGS));
+  assert.equal(g("%dA%dA%d"), "16A-2135059648A-2142444672");
+  assert.equal(g("%dA%dA%d", true), "16A-2135060016A-2142444672");
+  assert.equal(g("%XA%u"), "10A2159907648");
+  assert.equal(g("%dA%dA%dA%dA%dA%dA%d").split("A").length, 7);
 });
 
 test("the string routine: a digit narrows like a space, a lone lead byte takes the next byte and, at the end, reads on past it", () => {
@@ -224,6 +230,10 @@ const GAME_PLATES: [string, boolean, number[], number][] = [
   ["25734e", false, [23], 0.876],
   ["353025", true, [5, 0], 0.876],
   ["61257362", false, [36, 37], 0.876],
+  // (later conversions: the registers' leftovers, 16, a pointer a plate, two the same, 1)
+  ["2564412564412564412564", true, [1, 6, 10, 252, 2, 1, 3, 5, 0, 6, 0, 0, 1, 6, 10, 252, 2, 1, 4, 2, 4, 4, 4, 6, 7, 2, 10, 252, 2, 1, 4, 2, 4, 3, 7, 3, 7, 6], 2.1024],
+  ["2564412564412564412564412564412564412564", false, [1, 6, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 4, 8, 10, 252, 2, 1, 4, 2, 4, 4, 4, 6, 7, 2, 10, 252, 2, 1, 4, 2, 4, 3, 7, 3, 7, 6, 10, 1, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 9, 9, 10, 1, 1, 2, 7, 2, 1, 9, 2, 0, 0], 2.1024],
+  ["257541256941256f412558412563", false, [1, 6, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 4, 8, 10, 2, 0, 0, 2, 3, 1, 6, 1, 6, 0, 0, 10, 8, 0, 4, 13, 0, 0, 0, 0, 10], 2.1024],
 ];
 
 test("the game's plates for names short and long, with punctuation, full-width and Japanese characters: the same glyphs and width", withGameFiles, () => {

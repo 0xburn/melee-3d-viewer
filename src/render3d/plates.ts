@@ -136,12 +136,18 @@ export function rawBytes(raw: string): Uint8Array {
   return Uint8Array.from(out);
 }
 
-/** The formatter the name goes through (the string is a printf format: HSD_SisLib_803A6B98 hands it to vsprintf
- *  with the registers the caller left as its arguments). The first argument is 16 in every plate measured
- *  ("%d" draws 16, "%x" 10, "%5d" "   16", "%-4d" "16  ", "%04d" 0016), a "%s" of it is empty, "%c" is the
- *  control byte 16; a percent sign that goes with nothing it knows stays as it is, "%%" is one. The arguments
- *  after the first are whatever was in the registers and not modeled: they draw nothing. */
-export function formatName(b: Uint8Array): Uint8Array {
+/** The registers the formatter's arguments come from (HSD_SisLib_803A6B98 hands the name to vsprintf as its format
+ *  with whatever the caller left in r5 to r10 and above): the same in every game and on every stage measured, the
+ *  second a little different on the first player's plate. A name with more conversions than these gets nothing for
+ *  the rest. */
+export const FORMAT_ARGS_FIRST = [16, -2135060016, -2142444672, -2142437376];
+export const FORMAT_ARGS = [16, -2135059648, -2142444672, -2142437376, 1, -2135059699, 1127219200];
+
+/** The formatter the name goes through (the string is a printf format). "%d" draws 16 on every plate ("%x" 10,
+ *  "%5d" "   16", "%-4d" "16  ", "%04d" 0016), a "%d" after it the next of the arguments above, a "%s" of one is
+ *  empty (the string it points at is not drawn), "%c" is the byte; a percent sign that goes with nothing it knows
+ *  stays as it is, "%%" is one. */
+export function formatName(b: Uint8Array, args: number[] = FORMAT_ARGS): Uint8Array {
   const out: number[] = [];
   let arg = 0;
   const digit = (c: number | undefined) => c !== undefined && c >= 0x30 && c <= 0x39;
@@ -169,17 +175,19 @@ export function formatName(b: Uint8Array): Uint8Array {
       continue;
     }
     i = j;
-    const v = arg++ === 0 ? 16 : null;
+    const v = args[arg++] ?? null;
     let text: number[] = [];
     if (v !== null) {
       const c = String.fromCharCode(conv);
-      if (c === "c") text = [v];
+      if (c === "c") text = [v & 0xff];
       else if (c === "s") text = [];
       else {
-        let digits = c === "x" ? v.toString(16) : c === "X" ? v.toString(16).toUpperCase() : c === "o" ? v.toString(8) : String(v);
+        const u = v >>> 0;
+        let digits = c === "x" ? u.toString(16) : c === "X" ? u.toString(16).toUpperCase() : c === "o" ? u.toString(8)
+          : c === "u" ? String(u) : String(Math.abs(v | 0));
         if (prec >= 0) digits = digits.padStart(prec, "0");
-        const sign = c === "d" || c === "i" ? (plus ? "+" : space ? " " : "") : "";
-        const prefix = alt ? (c === "x" ? "0x" : c === "X" ? "0X" : c === "o" ? "0" : "") : "";
+        const sign = c === "d" || c === "i" ? ((v | 0) < 0 ? "-" : plus ? "+" : space ? " " : "") : "";
+        const prefix = alt && v !== 0 ? (c === "x" ? "0x" : c === "X" ? "0X" : c === "o" ? "0" : "") : "";
         const pad = width - sign.length - prefix.length - digits.length;
         let s: string;
         if (pad <= 0) s = sign + prefix + digits;
@@ -269,7 +277,7 @@ export function plateText(font: PlateFont, name: string, raw?: Uint8Array | null
   const c = font.common;
   // the name's bytes, through the formatter and the string routine's ops, laid out as the plate's text is: at the
   // text's own scale, kerned, dynamic, centered on its middle and squeezed to the box when it runs wider
-  const bytes = formatName(raw ?? nameBytes(name));
+  const bytes = formatName(raw ?? nameBytes(name), first ? FORMAT_ARGS_FIRST : FORMAT_ARGS);
   const ops = Uint8Array.from(sisString(bytes, 0, 0, [255, 255, 255], null, c, pastTheEnd(first)));
   const glyphs = layoutSis(ops, { align: 1, boxW: TEXT_BOX, fit: true, kern: true, dynamic: true, scale: [TEXT_SCALE, TEXT_SCALE] },
                            null, c.font);
