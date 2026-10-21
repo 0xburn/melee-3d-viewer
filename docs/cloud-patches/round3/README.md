@@ -1,6 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light; this session cannot push there). Three commits, one change each. All of it is in the viewer track, so it compiles only with `MSL_VISUAL_TRACK_BUILD=1`.
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Four commits, one change each, as one series:
+
+- 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
+- 0002 to 0004 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -12,13 +15,17 @@ git am /path/to/docs/cloud-patches/round3/*.patch
 No patch contains game data.
 
 **Checked for the whole series (no game data):**
-- The production native build (`make native`) is byte-identical to the base: `cmp` of `melee-core-native` built at `f1eb1a73` and at the series head.
+- The production native build (`make native`) at the series head is byte-identical to the build after 0001 alone (`cmp` of `melee-core-native`, both built with the same `BUILD_ROOT`, which the binary embeds). So 0002 to 0004 change nothing in production. 0001 changes it as the dynamics-counts README says (its 3 visual-state locks need regenerating with game data).
 - The `MSL_VISUAL_TRACK_BUILD=1` native build compiles without warnings.
 - `make source-check` passes.
 - `pytest tests`: the same 63 failures and 51 skips as on the base. All of them need `data/` or the replays' LFS objects, which are not in this session.
 - There are no synthetic C tests for the viewer track in the repo: it runs only inside a match, which needs game data. So the viewer side has the format tests instead (synthetic track text, in the viewer's `tests/`).
 
-## 0001 Viewer track: stage joints ("sp")
+## 0001 Dynamics: chain-joint counts
+
+See `docs/cloud-patches/dynamics-counts/README.md`. Unchanged.
+
+## 0002 Viewer track: stage joints ("sp")
 
 `[frame,"sp",part,(joint,mask,values)...]`
 
@@ -32,7 +39,7 @@ Every stage part with a joint tree in the stage's file writes its joints as the 
 
 **Needs game data:** check the lines against Dolphin's draws on Fountain of Dreams, Yoshi's Story and Pokemon Stadium. Also measure how much an animated background adds to a track's size. Every joint an animation moves is written on every frame it moves.
 
-## 0002 Viewer track: fighter joints as the game left them ("fj")
+## 0003 Viewer track: fighter joints as the game left them ("fj")
 
 `[frame,"fj",port,sub,character,(part,mask,values)...]`
 
@@ -54,7 +61,7 @@ A fighter's joints at the frame's end, by part, with the same nine values. This 
 
 `fj` is unlocked.
 
-## 0003 Viewer track: the yo-yo's string by the links' out bit
+## 0004 Viewer track: the yo-yo's string by the links' out bit
 
 `lm` already writes each link's `x2C_b0` as its out. That was checked against itnessyoyo.c:
 - set as the string pays out from the ball (`it_802BF28C`, `it_802BF4A0`), and for the ball itself (`it_802BE65C`, `it_802C0010`)

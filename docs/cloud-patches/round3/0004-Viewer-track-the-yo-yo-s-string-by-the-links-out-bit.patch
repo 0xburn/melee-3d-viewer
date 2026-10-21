@@ -1,7 +1,7 @@
-From 68357586288fdb2fd67997fb1960573cf27acec1 Mon Sep 17 00:00:00 2001
+From 31ba251b59ea4f931f0000a3b1b0a0d2364962d6 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 08:33:16 +0000
-Subject: [PATCH 3/3] Viewer track: the yo-yo's string by the links' out bit
+Subject: [PATCH 4/4] Viewer track: the yo-yo's string by the links' out bit
 
 The "hook" line left out a link still at the origin, the hookshot's and the
 grapple's sign of a link not yet out. A yo-yo link that is not out keeps its

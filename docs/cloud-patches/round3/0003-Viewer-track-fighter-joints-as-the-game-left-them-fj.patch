@@ -1,7 +1,7 @@
-From 42eb9acfc20a795ae684a78dec51e3fa930599c5 Mon Sep 17 00:00:00 2001
+From 9d6413579e6142602dc34faf231e294a9984f5cd Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 08:32:40 +0000
-Subject: [PATCH 2/3] Viewer track: fighter joints as the game left them ("fj")
+Subject: [PATCH 3/4] Viewer track: fighter joints as the game left them ("fj")
 
 Every live part's joint at the frame's end, by part, the nine values of
 "jp", each only as it changes: the animation, the blend into it and what
