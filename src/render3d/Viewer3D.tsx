@@ -1540,11 +1540,23 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (st) {
         // (the back layers whole, first: the game draws them before the rest)
         r.setLighting(stageLit);
-        for (const sk of st.skeletons) {
+        const sks = st.skeletons;
+        for (const sk of sks) {
           if (layersOff[st.layerOf(sk) > 0 ? "back" : "stage"]) continue;
           r.setTint(st.tintOf(sk));
-          r.drawSkeleton(sk, "opa");
-          if (st.layerOf(sk) > 0) r.drawSkeleton(sk, "xlu");
+          if (st.layerOf(sk) > 0) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
+          else r.drawSkeletonTrsp(sk, 1);
+        }
+        // (then the rest of the stage's cut-out meshes, all its parts' opaque ones first: fn_800301D0 draws
+        // layer 0's link 3 with HSD_GObj_80390ED0(gobj, 3), each pass over all its GObjs - HSD_GObj_804085F0
+        // takes pass 0 to HSD_TRSP_OPA, 1 to TEXEDGE - before the fighters' and items' (Camera_800311EC); its
+        // see-through ones (XLU) only after those, in the pass with mask 4, below)
+        if (!layersOff.stage) {
+          for (const sk of sks) {
+            if (st.layerOf(sk) > 0) continue;
+            r.setTint(st.tintOf(sk));
+            r.drawSkeletonTrsp(sk, 4);
+          }
         }
         r.setTint(null);
       }
@@ -2075,7 +2087,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       for (const sk of st.skeletons) {
         if (st.layerOf(sk) || layersOff.stage) continue;
         r.setTint(st.tintOf(sk));
-        r.drawSkeleton(sk, "xlu");
+        r.drawSkeletonTrsp(sk, 2);
       }
       r.setTint(null);
     }
