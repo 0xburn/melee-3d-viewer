@@ -99,7 +99,7 @@ function standIn() {
   const r = {
     gl: { FUNC_REVERSE_SUBTRACT: 0x800b },
     draws: 0, cs: { cull: 0, blend: 1, src: 0x302, dst: 1, eq: 0x8006, dmask: 0, dfunc: 0x203, cmask: 1 },
-    camView: view, camVP: vp, camProj: proj, shiftView: view, shiftVP: vp, shifted: false, mirrored: false, lighting: null,
+    camView: view, camVP: vp, camProj: proj, camGx: null, shiftView: view, shiftVP: vp, shifted: false, mirrored: false, lighting: null,
     overlayVP: null, viewProj: vp,
     // (what the renderer uploads for a draw: view times each of its matrices)
     mvBuf: new Float32Array(160),

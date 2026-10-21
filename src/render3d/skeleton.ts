@@ -8,7 +8,8 @@ import {
   AObj, Archive, DObj, Image, JObj, JOBJ, MatAnim, Mesh, MObj, PObj, TObj, Tlut, Track,
   aobjFrame, decodePObj, sample, splineAt,
 } from "./hsd";
-import { Mat, ident, invert, mul, mulAt, srt } from "./math";
+import { Mat, ident, invert, mul, srt } from "./math";
+import { HSD_MtxSRT, PSMTXConcat, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
 
 /** what a texture animation can change, per TObj */
 export interface TexState {
@@ -90,6 +91,8 @@ export interface Drawable {
 let stamps = 0;
 
 const tmpA = new Float32Array(16), tmpB = new Float32Array(16), tmpC = new Float32Array(16);
+const tmpL = new Float32Array(12), tmpP12 = new Float32Array(12), tmpRS = new Float32Array(3);
+const tmpS3 = new Float32Array(3), tmpR3 = new Float32Array(3), tmpT3 = new Float32Array(3);
 const tmpP = [0, 0, 0];
 
 // the camera the billboards face: its view matrix and that inverted (HSD
@@ -174,7 +177,9 @@ export class Skeleton {
   /** where each joint's subtree ends in the (preorder) joint list */
   private readonly subEnd: Int32Array;
   private readonly rest: Float32Array; // rot, scale, trans per joint (9 each)
+  /** each joint's accumulated scale (jobj->scl), and whether it has one */
   private readonly accScale: Float32Array;
+  private readonly hasScl: Uint8Array;
   readonly world: Float32Array; // 16 per joint
   private readonly skin: Float32Array; // world * invBind, 16 per joint
   private readonly invBind: (Mat | null)[];
@@ -200,6 +205,7 @@ export class Skeleton {
     }
     this.rest = new Float32Array(n * 9);
     this.accScale = new Float32Array(n * 3);
+    this.hasScl = new Uint8Array(n);
     this.world = new Float32Array(n * 16);
     this.skin = new Float32Array(n * 16);
     this.invBind = joints.map((j) => j.invBind);
@@ -284,7 +290,9 @@ export class Skeleton {
     d.nodeJoint = s;
     if (s === j) {
       d.node = 1;
-      d.nodeConst = invert(new Float32Array(16), this.invBind[j] ?? ident(new Float32Array(16)));
+      // (MTXInverse of the joint's envelope matrix: _HSD_mkEnvelopeModelNodeMtx)
+      const ib = mtxFromGL(this.invBind[j] ?? ident(new Float32Array(16)), new Float32Array(12)), inv = new Float32Array(12);
+      d.nodeConst = PSMTXInverse(ib, inv) ? mtxToGL(inv, new Float32Array(16)) : ident(new Float32Array(16));
     } else d.node = this.flags[s] & JOBJ.SKELETON_ROOT ? 2 : 3;
   }
 
@@ -398,30 +406,30 @@ export class Skeleton {
     this.remember(parentWorld);
     this.updates++;
     const W = this.world;
+    // HSD_JObjMakeMatrix: each joint's HSD_MtxSRT, given its parent's accumulated scale (jobj->scl) when it has
+    // one, then PSMTXConcat(parent->mtx, jobj->mtx); in float32, as the game does
+    const L = tmpL, P = tmpP12, R = this.rot, Sc = this.scale, T = this.trans, A = this.accScale;
+    const rs = this.rootScale;
     for (let i = 0; i < this.n; i++) {
       const p = this.parent[i];
       const r = i * 3;
-      const rs = this.rootScale;
-      const ps0 = p < 0 ? (rs ? rs[0] : 1) : this.accScale[p * 3], ps1 = p < 0 ? (rs ? rs[1] : 1) : this.accScale[p * 3 + 1],
-            ps2 = p < 0 ? (rs ? rs[2] : 1) : this.accScale[p * 3 + 2];
-      const sx = this.scale[r], sy = this.scale[r + 1], sz = this.scale[r + 2];
-      srt(tmpA, sx, sy, sz, this.rot[r], this.rot[r + 1], this.rot[r + 2], this.trans[r], this.trans[r + 1], this.trans[r + 2]);
-      // Maya's segment scale compensation: a parent's non-uniform scale does
-      // not shear its children
-      if (ps0 !== ps1 || ps0 !== ps2) {
-        tmpA[1] *= ps0 / ps1; tmpA[2] *= ps0 / ps2;
-        tmpA[4] *= ps1 / ps0; tmpA[6] *= ps1 / ps2;
-        tmpA[8] *= ps2 / ps0; tmpA[9] *= ps2 / ps1;
-      }
+      let ps: Float32Array | null = null;
+      if (p >= 0) { if (this.hasScl[p]) { tmpRS[0] = A[p * 3]; tmpRS[1] = A[p * 3 + 1]; tmpRS[2] = A[p * 3 + 2]; ps = tmpRS; } }
+      else if (rs) { tmpRS[0] = rs[0]; tmpRS[1] = rs[1]; tmpRS[2] = rs[2]; ps = tmpRS; }
       if (this.flags[i] & JOBJ.CLASSICAL_SCALE) {
-        this.accScale[r] = ps0; this.accScale[r + 1] = ps1; this.accScale[r + 2] = ps2;
+        if (ps) { A[r] = ps[0]; A[r + 1] = ps[1]; A[r + 2] = ps[2]; }
+        this.hasScl[i] = ps ? 1 : 0;
       } else {
-        this.accScale[r] = sx * ps0; this.accScale[r + 1] = sy * ps1; this.accScale[r + 2] = sz * ps2;
+        if (ps) { A[r] = Sc[r] * ps[0]; A[r + 1] = Sc[r + 1] * ps[1]; A[r + 2] = Sc[r + 2] * ps[2]; }
+        else { A[r] = Sc[r]; A[r + 1] = Sc[r + 1]; A[r + 2] = Sc[r + 2]; }
+        this.hasScl[i] = 1;
       }
+      for (let k = 0; k < 3; k++) { tmpS3[k] = Sc[r + k]; tmpR3[k] = R[r + k]; tmpT3[k] = T[r + k]; }
+      HSD_MtxSRT(L, tmpS3, tmpR3, tmpT3, ps);
       const o = i * 16;
-      if (p >= 0) mulAt(W, o, W, p * 16, tmpA, 0);
-      else if (parentWorld) mulAt(W, o, parentWorld, 0, tmpA, 0);
-      else W.set(tmpA, o);
+      if (p >= 0) { mtxFromGL(W, P, p * 16); PSMTXConcat(P, L, L); }
+      else if (parentWorld) { mtxFromGL(parentWorld, P, 0); PSMTXConcat(P, L, L); }
+      mtxToGL(L, W, o);
       // (a joint held somewhere else, its children with it)
       if (this.shift && this.shift.joint === i) { W[o + 12] += this.shift.d[0]; W[o + 13] += this.shift.d[1]; W[o + 14] += this.shift.d[2]; }
     }
@@ -430,7 +438,8 @@ export class Skeleton {
     for (let k = 0; k < this.skinUsed.length; k++) {
       const j = this.skinUsed[k], o = j * 16;
       const ib = this.invBind[j];
-      if (ib) mulAt(S, o, W, o, ib, 0);
+      // (MTXConcat(jobj->mtx, jobj->envelopemtx): SetupEnvelopeModelMtx)
+      if (ib) concatGL(S, o, W, o, ib, 0);
       else for (let q = 0; q < 16; q++) S[o + q] = W[o + q];
     }
     for (const d of this.drawables) {
@@ -498,17 +507,21 @@ export class Skeleton {
       } else {
         const u = d.env[m].u!, B = this.blendMats, b = u * 16;
         if (this.blendAt[u] !== this.updates) {
+          // the weighted sum, from zero, each joint's matrix added by HSD_MtxScaledAdd (a fused multiply-add an
+          // entry); a 3 x 4 to GX, so the last row stays 0 0 0 1
           for (let q = 0; q < 16; q++) B[b + q] = 0;
           for (let k = 0; k < joints.length; k++) {
-            const e = joints[k] * 16, w = weights[k];
-            for (let q = 0; q < 16; q++) B[b + q] += S[e + q] * w;
+            const e = joints[k] * 16, w = Math.fround(weights[k]);
+            for (let c = 0; c < 4; c++) for (let q = 0; q < 3; q++) B[b + c * 4 + q] = madd(w, S[e + c * 4 + q], B[b + c * 4 + q]);
           }
+          B[b + 15] = 1;
           this.blendAt[u] = this.updates;
         }
         for (let q = 0; q < 16; q++) M[o + q] = B[b + q];
       }
       if (d.node === 0) continue;
-      mulAt(M, o, M, o, d.node === 1 ? d.nodeConst! : tmpC, 0);
+      // (MTXConcat(mtxp, right))
+      concatGL(M, o, M, o, d.node === 1 ? d.nodeConst! : tmpC, 0);
     }
     for (let m = d.filled; m < d.nMats; m++) d.mats.copyWithin(m * 16, 0, 16);
   }

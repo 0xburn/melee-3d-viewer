@@ -202,7 +202,7 @@ interface Inner {
   gl: WebGL2RenderingContext;
   draws: number;
   cs: { cull: number; blend: number; src: number; dst: number; eq: number; dmask: number; dfunc: number; cmask: number };
-  camView: Mat; camVP: Mat; camProj: Mat; shiftView: Mat; shiftVP: Mat; shifted: boolean;
+  camView: Mat; camVP: Mat; camProj: Mat; camGx: Float32Array | null; shiftView: Mat; shiftVP: Mat; shifted: boolean;
   /** the modelviews the last draw uploaded */
   mvBuf: Float32Array;
   mirrored: boolean;
@@ -215,7 +215,7 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "mvBuf", "shiftView", "shiftVP", "shifted", "mirrored",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "shiftView", "shiftVP", "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
                                "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
@@ -345,6 +345,13 @@ export class DrawLog {
   private camera(): { view: Mat; proj: (number | string)[] } {
     const s = this.inner;
     const view = s.shifted ? s.shiftView : s.camView;
+    // (GX's own numbers when the renderer has them - the game camera's C_MTXPerspective - else GL's taken back)
+    const g = s.camGx;
+    if (g && !s.mirrored) {
+      const persp = g[14] === -1;
+      const nums = persp ? [g[0], g[2], g[5], g[6], g[10], g[11]] : [g[0], g[3], g[5], g[7], g[10], g[11]];
+      return { view, proj: [...nums.map(this.num), persp ? "persp" : "ortho"] };
+    }
     const proj = Float32Array.from(s.camProj);
     // (a picture the renderer draws upside down - the magnifier's, so its first row is the texture's top - is
     // the game's picture the right way up: its projection's y turned back)

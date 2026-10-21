@@ -30,6 +30,7 @@
  */
 
 import { Key, sample } from "./hsd";
+import { C_MTXPerspective, cobjViewingMtx, mtxToGL, projectionToGL } from "./gxmath";
 
 /** the stage's camera settings (in world units, the stage's scale applied) */
 export interface StageCamera {
@@ -310,3 +311,28 @@ const rotY = (v: number[], a: number) => {
   const s = Math.sin(a), c = Math.cos(a);
   return [v[0] * c + v[2] * s, v[1], v[2] * c - v[0] * s];
 };
+
+// ---------------------------------------------------------------- the camera's matrices, as the game makes them
+
+/** the near and far planes the match camera's CObj is given (Camera_8002A4AC: game_camera.nearz, farz) */
+export const CAM_NEAR = 0.1, CAM_FAR = 16384;
+/** the match camera's aspect (cm_803BCB64.aspect) */
+export const CAM_ASPECT = ASPECT;
+
+const viewScratch = new Float32Array(12), eyeScratch = [0, 0, 0], atScratch = [0, 0, 0];
+
+/** the view matrix of the camera at `eye` looking at `interest` (column major, for the renderer), made as
+ *  HSD_CObjSetupViewingMtx makes it: its up from its roll (0: the match camera's), C_MTXLookAt, in float32 */
+export function gameView(out: Float32Array, eye: ArrayLike<number>, interest: ArrayLike<number>, roll = 0): Float32Array {
+  for (let i = 0; i < 3; i++) { eyeScratch[i] = eye[i]; atScratch[i] = interest[i]; }
+  cobjViewingMtx(viewScratch, eyeScratch, atScratch, roll);
+  return mtxToGL(viewScratch, out);
+}
+
+/** the projection of a camera with this vertical field of view (degrees): GX's, as makeProjectionMtx makes it
+ *  (C_MTXPerspective), into `gx` (row major, as GX is loaded with it) and as GL takes it into `out` */
+export function gameProjection(out: Float32Array, gx: Float32Array, fovDeg: number, aspect = CAM_ASPECT,
+                               near = CAM_NEAR, far = CAM_FAR): Float32Array {
+  C_MTXPerspective(gx, fovDeg, aspect, near, far);
+  return projectionToGL(gx, out);
+}

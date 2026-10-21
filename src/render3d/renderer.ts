@@ -15,7 +15,8 @@
  */
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
 import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
-import { Mat, invert, lookAt, mul, mulAt } from "./math";
+import { Mat, invert, lookAt, mul } from "./math";
+import { concatGL } from "./gxmath";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
 import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar, textureMatrix } from "./gx";
@@ -1234,8 +1235,12 @@ void main() {
   /** the camera draws go through now (the frame's, an overlay's, the mirror's) */
   private camVP: Mat = new Float32Array(16);
   private camView: Mat = new Float32Array(16);
-  /** the projection uploaded for it (uProj) */
+  /** the projection uploaded for it (uProj), and the GX projection it was made from when there is one */
   private camProj: Mat = new Float32Array(16);
+  private camGx: Float32Array | null = null;
+  /** the frame camera's GX projection (row major, as C_MTXPerspective makes it), or null */
+  private gxFrame: Float32Array | null = null;
+  private gxFrameBuf = new Float32Array(16);
   private shiftVP: Mat = new Float32Array(16);
   private shiftView: Mat = new Float32Array(16);
   private shifted = false;
@@ -1245,6 +1250,7 @@ void main() {
     this.camVP = vp;
     this.camView = view;
     this.camProj = proj;
+    this.camGx = proj === this.proj ? this.gxFrame : null;
     this.shifted = false;
     this.viewVer++;
   }
@@ -1339,7 +1345,7 @@ void main() {
    *  canvas takes exactly those, so the grille's stripes land on the screen's
    *  own pixels (the scene is drawn at 640 x 480 then, whatever the canvas) */
   begin(proj: Mat, view: Mat, clear: [number, number, number], cssW: number, cssH: number,
-        device?: [number, number]) {
+        device?: [number, number], gxProj: Float32Array | null = null) {
     const gl = this.gl;
     // (its size follows the element, the screen's pixel ratio counted, within a cap: drawsize.ts)
     if (this.maxDim === 0) {
@@ -1367,6 +1373,7 @@ void main() {
     gl.disable(gl.BLEND);
     this.proj.set(proj);
     this.view.set(view);
+    this.gxFrame = gxProj ? (this.gxFrameBuf.set(gxProj), this.gxFrameBuf) : null;
     mul(this.viewProj, this.proj, this.view);
     this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
@@ -1808,10 +1815,11 @@ void main() {
     this.uploadMats(M, d.nMats);
     if (n <= L.length) L.set(M.subarray(0, n));
   }
-  /** model matrices (world) and their modelviews under the camera drawn through now, into the shader */
+  /** model matrices (world) and their modelviews under the camera drawn through now, into the shader: each
+   *  PSMTXConcat(vmtx, model) in float32, as HSD_JObjDisp and SetupEnvelopeModelMtx make what GX is loaded with */
   private uploadMats(M: Float32Array, count: number) {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
-    for (let k = 0; k < count; k++) mulAt(MV, k * 16, V, 0, M, k * 16);
+    for (let k = 0; k < count; k++) concatGL(MV, k * 16, V, 0, M, k * 16);
     this.gl.uniformMatrix4fv(this.loc.uMats, false, M, 0, n);
     this.gl.uniformMatrix4fv(this.loc.uMV, false, MV, 0, n);
     this.lastMatsN = n;
