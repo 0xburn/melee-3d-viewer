@@ -221,7 +221,18 @@ anything, and leaves the renderer's files as they are:
   function from a file's name on the disc (`PlFxNr.dat`, `Start.dol`) to its
   bytes; `folderUrlSource(url)` and `fileListSource(files)` are the two kinds
   here. A source set before anything was read drops nothing, so several
-  players on one page keep sharing what they read.
+  players on one page keep sharing what they read. A source may also have an
+  `identity(name)`: a string that changes when that file does (a size and an
+  ETag or modification time; `folderUrlSource` asks with a HEAD request, a
+  picked folder uses the File's size and time), or null. With it the browser
+  keeps the action table made from the executable (IndexedDB), so a later open
+  does not read the 4 MB file again; without one, nothing is kept.
+- `prefetchReplay(bytes)`: call it with the first 2 KB of a replay as soon as
+  they are in, before the replay is read, to start fetching the stage's and
+  fighters' files at once (the public `embed.tsx` does). `precompilePrograms()`
+  (`renderer.ts`) compiles the shaders at page start the same way.
+- `?timing=1` on the page records start-up marks and spans in `window.__startup`
+  (`startup.ts`); off, nothing is kept.
 - `setTrackUrl(replayUrl, trackUrl)`: the viewer track for a replay. The URL
   may answer with the track (JSON or the compact form, `trackcodec.ts`) or,
   while a server is still making it, with `{"state": "pending"}` (asked again

@@ -75,7 +75,13 @@ function gameFolder(): Plugin {
     if (!m) return next();
     const p = join(dir, basename(m[1]));
     if (!existsSync(p) || !statSync(p).isFile()) { res.statusCode = 404; res.end("not found"); return; }
+    const st = statSync(p);
     res.setHeader("Content-Type", "application/octet-stream");
+    // (a size and a version stamp, so the viewer can tell a changed file without reading it: files.ts identity)
+    res.setHeader("Content-Length", String(st.size));
+    res.setHeader("Last-Modified", st.mtime.toUTCString());
+    res.setHeader("ETag", `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`);
+    if ((req as { method?: string }).method === "HEAD") { res.end(); return; }
     createReadStream(p).pipe(res);
   };
   return {

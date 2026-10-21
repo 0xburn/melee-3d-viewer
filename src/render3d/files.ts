@@ -24,9 +24,12 @@ import { HudKit, stageMagnifierColors } from "./hud";
 import { pageCache, sharedPromise, trim } from "../state/pageCache";
 import { decodeTrack } from "./trackcodec";
 import { motionTableFromDol, textFontFromDol } from "./dol";
-import { plateFontFromDol } from "./plates";
+import { plateFontFromText } from "./plates";
 import type { ViewerTrack } from "./track";
 import type { GameFilesFrom } from "../sim/protocol";
+import { fileRead, mark, timed, timing } from "./startup";
+import { cacheGet, cachePut, sha256 } from "./gamecache";
+import { replayHead } from "./prefetch";
 
 export interface Status {
   available: boolean; // the files and the action table are there
@@ -41,7 +44,14 @@ export interface Status {
 
 /** a game file's bytes by its name on the disc ("PlFxNr.dat"); `from` says
  *  where they are, for the simulator's worker (src/sim), which reads them itself */
-export type FileSource = ((name: string) => Promise<ArrayBuffer>) & { from?: GameFilesFrom };
+export type FileSource = ((name: string) => Promise<ArrayBuffer>) & {
+  from?: GameFilesFrom;
+  /** a string that changes whenever the named file does (its size and a version
+   *  or modification stamp), asked without reading the file; null when the
+   *  source cannot tell. Only what the browser may keep (gamecache.ts) is
+   *  keyed by it, so a source without one is never cached */
+  identity?: (name: string) => Promise<string | null>;
+};
 
 /** files fetched from a folder at this URL (relative to the page) */
 export function folderUrlSource(base: string): FileSource {
@@ -52,6 +62,16 @@ export function folderUrlSource(base: string): FileSource {
     return r.arrayBuffer();
   };
   s.from = { kind: "url", base: dir.href };
+  s.identity = async (name) => {
+    try {
+      const r = await fetch(new URL(encodeURIComponent(name), dir), { method: "HEAD", cache: "no-store" });
+      const len = r.headers.get("content-length"), stamp = r.headers.get("etag") ?? r.headers.get("last-modified");
+      // (a size alone says too little)
+      return r.ok && len && stamp ? `${dir.href}${name}|${len}|${stamp}` : null;
+    } catch {
+      return null;
+    }
+  };
   return s;
 }
 
@@ -65,6 +85,10 @@ export function fileListSource(list: File[]): FileSource {
     return f.arrayBuffer();
   };
   s.from = { kind: "files", list };
+  s.identity = async (name) => {
+    const f = byName.get(name);
+    return f ? `file:${f.name}|${f.size}|${f.lastModified}` : null;
+  };
   return s;
 }
 
@@ -85,7 +109,8 @@ export function setFileSource(s: FileSource) {
   sourceUsed = false;
   files.clear();
   pageCache<Promise<MotionTable>>("motion").clear();
-  dol = undefined;
+  pageCache<Promise<ExecutableInfo>>("executable").clear();
+  dol = undefined; foxEffectsP = undefined;
   fighters.clear(); kirbyHats.clear(); kirbyCopies.clear(); stages.clear(); fighterFx.clear();
   commonItemsP = undefined; effectKit = undefined; hudKit = undefined;
 }
@@ -105,7 +130,9 @@ const files = pageCache<Promise<ArrayBuffer>>("gameFiles");
 export function file(name: string): Promise<ArrayBuffer> {
   sourceUsed = true;
   const p = sharedPromise(files, name, () => {
+    const t0 = timing ? performance.now() : 0;
     const made = currentSource()(name);
+    if (timing) made.then((b) => fileRead(name, b.byteLength, "source", t0), () => {});
     // a failure is not kept, so a folder fixed while the page is open works next time
     made.catch(() => { if (files.get(name) === made) files.delete(name); });
     return made;
@@ -210,8 +237,54 @@ export function tellWarming() {
 export function motionTable(): Promise<MotionTable> {
   const shared = pageCache<Promise<MotionTable>>("motion");
   return sharedPromise(shared, "table", () => {
-    const made = executable().then((b) => motionTableFromDol(b));
+    const made = executableInfo().then((i) => i.table);
     made.catch(() => { if (shared.get("table") === made) shared.delete("table"); });
+    return made;
+  });
+}
+
+/** what is made from the executable: the action table, and the text font
+ *  Pokemon Stadium's screen writes with (null when it cannot be made) */
+interface ExecutableInfo { table: MotionTable; font: ArrayBuffer | null }
+interface ExecutableRecord extends ExecutableInfo { v: 1; key: string }
+
+/** the executable's identity in the source and a SHA-256 of PlCo.dat (read by every
+ *  replay), which together name one disc's executable; null when the source cannot
+ *  tell, and then nothing is kept */
+async function executableKey(): Promise<string | null> {
+  const src = currentSource();
+  if (!src.identity) return null;
+  const [id, plco] = await Promise.all([
+    src.identity("Start.dol").then((x) => x ?? src.identity!("main.dol")),
+    file("PlCo.dat"),
+  ]);
+  const hash = await sha256(plco);
+  return id && hash ? `${id}|${hash}` : null;
+}
+
+/** The action table and the font, once per page. The browser keeps them (gamecache.ts)
+ *  after the first time, so a later open does not read the executable's 4 MB again;
+ *  an entry made from another disc, folder or version of the file is not used. */
+function executableInfo(): Promise<ExecutableInfo> {
+  const shared = pageCache<Promise<ExecutableInfo>>("executable");
+  return sharedPromise(shared, "info", () => {
+    const made = (async (): Promise<ExecutableInfo> => {
+      const key = await executableKey().catch(() => null);
+      if (key) {
+        const kept = await cacheGet<ExecutableRecord>("executable");
+        if (kept && kept.v === 1 && kept.key === key && kept.table && Array.isArray(kept.table.common)) {
+          mark("executableFromCache");
+          return { table: kept.table, font: kept.font ?? null };
+        }
+      }
+      const buf = await executable();
+      const table = timed("dol", "action table", () => motionTableFromDol(buf));
+      let font: ArrayBuffer | null = null;
+      try { font = timed("dol", "text font", () => textFontFromDol(buf)); } catch { /* the stage's own pages alone */ }
+      if (key) void cachePut("executable", { v: 1, key, table, font } satisfies ExecutableRecord);
+      return { table, font };
+    })();
+    made.catch(() => { if (shared.get("info") === made) shared.delete("info"); });
     return made;
   });
 }
@@ -232,7 +305,7 @@ export function fighter(internalId: number, costume: number): Promise<Fighter> {
       ? Promise.all([file(shares[0]), file(shares[1])]).then(([pl, aj]) => ({ pl, aj }))
       : Promise.resolve(undefined);
     p = Promise.all([file(names[0]), file(names[1]), file(names[2]), motionTable(), shared])
-      .then(([pl, aj, md, mt, sh]) => new Fighter(internalId, pl, aj, md, costume, mt, `f${key}`, sh));
+      .then(([pl, aj, md, mt, sh]) => timed("fighter", key, () => new Fighter(internalId, pl, aj, md, costume, mt, `f${key}`, sh)));
     p.catch(() => fighters.delete(key));
     fighters.set(key, p);
   }
@@ -305,11 +378,10 @@ export function effects(): Promise<EffectKit> {
   effectKit ??= (async () => {
     const kit = new EffectKit();
     const read = async (name: string, use: (b: ArrayBuffer) => void) => {
-      try { use(await file(name)); } catch (e) { console.warn(`3D replay viewer: no ${name} effects:`, e); }
+      try { const b = await file(name); timed("effects", name, () => use(b)); } catch (e) { console.warn(`3D replay viewer: no ${name} effects:`, e); }
     };
     await Promise.all([
       read("EfCoData.dat", (b) => kit.common(b)),
-      read("EfFxData.dat", (b) => kit.fox(b)),
       read("PlCo.dat", (b) => kit.shared(b)),
     ]);
     return kit;
@@ -324,8 +396,22 @@ const fighterFx = new Map<number, Promise<boolean>>();
  *  it has none or they cannot be read: its special moves then just show no
  *  effects of their own). */
 export async function fighterEffects(kit: EffectKit, internalId: number): Promise<number[]> {
+  // (Fox's and Falco's reflector models are in EfFxData: read for a replay that has one of them)
+  const reflector = internalId === FOX || internalId === FALCO ? foxEffects(kit) : undefined;
   const got = await Promise.all(effectFilesOf(internalId).map((n) => effectFile(kit, n).then((ok) => (ok ? n : -1))));
+  await reflector;
   return got.filter((n) => n >= 0);
+}
+
+const FOX = 1, FALCO = 22;
+let foxEffectsP: Promise<void> | undefined;
+/** EfFxData's reflector models into the kit, once per page */
+function foxEffects(kit: EffectKit): Promise<void> {
+  foxEffectsP ??= (async () => {
+    try { const b = await file("EfFxData.dat"); timed("effects", "EfFxData reflector", () => kit.fox(b)); }
+    catch (e) { console.warn("3D replay viewer: no EfFxData.dat effects:", e); }
+  })();
+  return foxEffectsP;
 }
 
 /** One of the game's effect files by its number (EFFECT_FILES), into the
@@ -337,11 +423,33 @@ export function effectFile(kit: EffectKit, n: number): Promise<boolean> {
   if (kit.banks.has(n)) return Promise.resolve(true);
   let p = fighterFx.get(n);
   if (!p) {
-    p = file(f.name).then((b) => { kit.fighter(n, f.table, b); return true; })
+    p = file(f.name).then((b) => { timed("effects", f.name, () => kit.fighter(n, f.table, b)); return true; })
       .catch((e) => { console.warn(`3D replay viewer: no ${f.name} effects:`, e); fighterFx.delete(n); return false; });
     fighterFx.set(n, p);
   }
   return p;
+}
+
+/** Ask for the files a replay needs now, from the first bytes of the .slp (its
+ *  Game Start event): the stage, each player's fighter in their costume, the
+ *  HUD and the effects, all at once and in the background. The loaders below
+ *  share these reads, so the player finds them under way when the rest of the
+ *  replay has been read (a replay's own read takes as long as the files'
+ *  first wave, and nothing was asked for before it was done). Anything that
+ *  cannot be read is left to the player, which says why when it needs it. */
+export function prefetchReplay(head: ArrayBuffer) {
+  let h: ReturnType<typeof replayHead>;
+  try { h = replayHead(head); } catch { return; }
+  if (!h) return;
+  const ids = h.players.flatMap((p) => p.internal);
+  const quiet = (p: Promise<unknown>) => { p.catch(() => {}); };
+  mark("prefetchAsked");
+  quiet(stage(h.stageId));
+  for (const p of h.players) for (const id of p.internal) quiet(fighter(id, p.costume));
+  quiet(hud());
+  // (each fighter's own effect file: its bytes now, built once the common ones are)
+  for (const id of ids) for (const n of effectFilesOf(id)) { const f = EFFECT_FILES[n]; if (f) quiet(file(f.name)); }
+  quiet(effects().then((kit) => Promise.all(ids.map((id) => fighterEffects(kit, id)))));
 }
 
 let hudKit: Promise<HudKit> | undefined;
@@ -352,10 +460,11 @@ let hudKit: Promise<HudKit> | undefined;
  *  by (PlCo.dat, optional). */
 export function hud(): Promise<HudKit> {
   hudKit ??= file("IfAll.usd").catch(() => file("IfAll.dat")).then(async (b) => {
-    const kit = new HudKit(b);
-    try { kit.common(await file("PlCo.dat")); } catch { /* the game's usual counts */ }
+    const kit = timed("hud", "IfAll", () => new HudKit(b));
+    try { const pl = await file("PlCo.dat"); timed("hud", "PlCo", () => kit.common(pl)); } catch { /* the game's usual counts */ }
     // the plates' letters: the game's own font, from its executable (the canvas letters without it)
-    try { kit.plates = plateFontFromDol(await executable()); } catch { /* the canvas letters */ }
+    // (from the executable's information, kept in the browser: the executable is read once for the table, the font and this)
+    try { const text = (await executableInfo()).font; if (text) kit.plates = plateFontFromText(text); } catch { /* the canvas letters */ }
     return kit;
   });
   hudKit.catch(() => { hudKit = undefined; });
@@ -377,11 +486,17 @@ export function stage(stageId: number): Promise<Stage> {
     const info = STAGES[stageId];
     if (!info) return Promise.reject(new Error(`no 3D model for this stage (${stageId})`));
     p = file(`${info.file}.dat`).then(async (b) => {
-      const st = new Stage(b, stageId);
+      const st = timed("stage", info.file, () => new Stage(b, stageId));
       // Pokemon Stadium: its four forms too, when the files can be read
       if (info.file === "GrPs") {
-        for (const [type, name] of Object.entries(STADIUM_FORMS)) {
-          try { st.addForm(Number(type), await file(`${name}.dat`)); } catch { /* the base stage stands */ }
+        // (all four asked for at once, added in order)
+        const forms = Object.entries(STADIUM_FORMS).map(([type, name]) => {
+          const bytes = file(`${name}.dat`);
+          bytes.catch(() => {});
+          return { type, name, bytes };
+        });
+        for (const { type, name, bytes } of forms) {
+          try { const fb = await bytes; timed("stage", name, () => st.addForm(Number(type), fb)); } catch { /* the base stage stands */ }
         }
         // its big screen's text (sistext.ts)
         try { st.lettering = await stadiumLettering(b); } catch { /* the browser's lettering */ }
@@ -407,7 +522,8 @@ async function stadiumLettering(base: ArrayBuffer): Promise<Lettering | null> {
   if (!sis) return null;
   let common: SisCommon | null = null;
   try {
-    common = parseSisCommon(textFontFromDol(await executable()));
+    const font = (await executableInfo()).font;
+    if (font) common = parseSisCommon(font);
   } catch { /* the stage's own pages alone */ }
   return { file: sis, common };
 }

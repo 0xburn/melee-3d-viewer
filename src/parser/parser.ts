@@ -1101,7 +1101,21 @@ function readShiftJisString(
   return "";
 }
 
+// (asked for every field of every event: the answers by the two version strings, which there are few of)
+const versionAnswers = new Map<string, Map<string, boolean>>();
+
 export function isInVersion(
+  replayVersion: string,
+  firstVersionPresent: string
+): boolean {
+  let byFirst = versionAnswers.get(replayVersion);
+  if (!byFirst) versionAnswers.set(replayVersion, (byFirst = new Map()));
+  let answer = byFirst.get(firstVersionPresent);
+  if (answer === undefined) byFirst.set(firstVersionPresent, (answer = compareVersions(replayVersion, firstVersionPresent)));
+  return answer;
+}
+
+function compareVersions(
   replayVersion: string,
   firstVersionPresent: string
 ): boolean {
