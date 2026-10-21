@@ -34,7 +34,7 @@ import type { Archive, Image, PObj, Tlut } from "./hsd";
 import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
-import { RENDER, blockOf, evalMaterial, tevDescStep, textureMatrix } from "./gx";
+import { RENDER, blockOf, evalMaterial, tevDescStep, tevScalar, textureMatrix } from "./gx";
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
@@ -508,7 +508,7 @@ export class DrawLog {
       const dif = s.override ?? s.diffuse;
       const out = evalMaterial(p, {
         diffuse: [dif[0], dif[1], dif[2]], alpha: s.alpha, specular: [s.specular[0], s.specular[1], s.specular[2]],
-        ras0, ras1, texels, blend: p.textures.map((ti) => s.tex[ti].blending),
+        ras0, ras1, texels, blend: p.textures.map((ti) => tevScalar(s.tex[ti].blending)),
       });
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
       // (its strength the rasterized alpha: the lit channel's, else the vertex alpha or the material's)

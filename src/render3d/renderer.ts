@@ -18,7 +18,7 @@ import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
-import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, textureMatrix } from "./gx";
+import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar, textureMatrix } from "./gx";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
 import { LOOK_H, LOOK_W, Look480 } from "./look480";
 import { GamePicture, type PictureOptions } from "./picture";
@@ -2020,7 +2020,7 @@ void main() {
         gl.bindTexture(gl.TEXTURE_2D, tx);
         this.bound[n] = tx;
       }
-      const bl = Math.fround(t.blending);
+      const bl = Math.fround(tevScalar(t.blending));
       if (F[12 + n] !== bl) { F[12 + n] = bl; ch = true; }
       if (c.tcs[n] !== tc || c.tcVers[n] !== tc.ver) {
         F.set(tc.m, 24 + n * 12);

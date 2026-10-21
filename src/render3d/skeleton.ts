@@ -606,7 +606,7 @@ function resetState(s: MatState) {
   d[0] = md[0]; d[1] = md[1]; d[2] = md[2]; d[3] = md[3];
   a[0] = ma[0]; a[1] = ma[1]; a[2] = ma[2]; a[3] = ma[3];
   p[0] = mp[0]; p[1] = mp[1]; p[2] = mp[2]; p[3] = mp[3];
-  s.alpha = mo.alpha;
+  s.alpha = byte255(Math.min(Math.max(mo.alpha, 0), 1));
   for (let i = 0; i < s.tex.length; i++) {
     const t = s.tex[i], o = t.tobj;
     t.image = o.image;
@@ -622,6 +622,10 @@ function resetState(s: MatState) {
   }
 }
 
+/** a color as the game's files and animations keep it: a byte, 255 times the
+ *  value cut to a whole number */
+const byte255 = (v: number) => Math.floor(255 * Math.fround(v)) / 255;
+
 /** one material animation onto one material, at a frame (the HUD sets each
  *  digit's and icon's texture this way, each at a frame of its own) */
 export function applyMatAnim(s: MatState, ma: MatAnim, frame: number, loop: boolean) {
@@ -632,10 +636,13 @@ export function applyMatAnim(s: MatState, ma: MatAnim, frame: number, loop: bool
       const v = sample(tr.keys, t);
       if (v === null) continue;
       const c = Math.min(Math.max(v, 0), 1);
-      if (tr.type >= 1 && tr.type <= 3) s.ambient[tr.type - 1] = c;
-      else if (tr.type >= 4 && tr.type <= 6) s.diffuse[tr.type - 4] = c;
-      else if (tr.type >= 7 && tr.type <= 9) s.specular[tr.type - 7] = c;
-      else if (tr.type === 10) s.alpha = 1 - c; // the track holds transparency
+      // (MObjUpdateFunc keeps the colors as bytes, 255.0 times the value cut
+      // to a whole number; the alpha as 1 - the value, which
+      // HSD_SetMaterialColor takes to a byte the same way)
+      if (tr.type >= 1 && tr.type <= 3) s.ambient[tr.type - 1] = byte255(c);
+      else if (tr.type >= 4 && tr.type <= 6) s.diffuse[tr.type - 4] = byte255(c);
+      else if (tr.type >= 7 && tr.type <= 9) s.specular[tr.type - 7] = byte255(c);
+      else if (tr.type === 10) s.alpha = byte255(1 - c); // the track holds transparency
     }
   }
   for (const ta of ma.tex) {
@@ -660,7 +667,7 @@ export function applyMatAnim(s: MatState, ma: MatAnim, frame: number, loop: bool
         case 9: case 24: ts.blending = v; break; // BLEND, TS_BLEND
         default:
           // KONST_R..TEV1_A (12..23): the TEV stage's colors
-          if (tr.type >= 12 && tr.type <= 23 && ts.tevColors) ts.tevColors[tr.type - 12] = Math.min(Math.max(v, 0), 1);
+          if (tr.type >= 12 && tr.type <= 23 && ts.tevColors) ts.tevColors[tr.type - 12] = byte255(Math.min(Math.max(v, 0), 1));
       }
     }
   }
