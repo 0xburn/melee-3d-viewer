@@ -2124,7 +2124,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         } else if (drawn) bone = [a.st.xPosition, a.st.yPosition + (fi.cameraBox?.lift ?? 8) * fi.modelScale, 0];
         hudActors.push({
           player: a.player, st: a.st, drawn, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
-          nameTagHeight: fi.nameTagHeight, bone, zoom: ((fi.cameraBox?.v[2] ?? 8) * fi.modelScale) / 8,
+          // (the magnifier's size: the camera box's target_ext.v.z, ftData +0x3C's last float times fp->x34_scale.y
+          // - the player's scale, not the model's (ftCamera_80076064, ftLib_80086B80) - over 8)
+          nameTagHeight: fi.nameTagHeight, bone,
+          zoom: ((fi.cameraBox?.v[2] ?? 8) * (playerScales(data.settings.playerSettings)[a.player] ?? 1)) / 8,
           // (ifMagnify_802FBBDC draws it through ftDrawCommon_80080C28, as the pond's mirror does: its
           // low-detail model, and nothing while any of the three hide bits is set)
           draw: () => {
