@@ -1682,31 +1682,65 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       return look;
     };
     prof.mark("fxStep");
+    // one Kirby spat out, or let out of his mouth as he copies it: hidden, his star in its place - his own article
+    // 4 (ftKb_SpecialN_800F5898), its size the one in it's common attributes' +0xDC, held to that one's YRotN
+    // where it is and as it turns (ftCommon_SetAccessory, lb_8000C2F8: ftCo_ThrownKirby.c inlineB2); posed
+    // once a frame, for its shadow and its draw
+    const kirbyStars = new Map<Actor, { fi: Fighter; star: Prop } | null>();
+    const kirbyStarOf = (a: Actor) => {
+      if (kirbyStars.has(a)) return kirbyStars.get(a)!;
+      let out: { fi: Fighter; star: Prop } | null = null;
+      if (KIRBY_STARS.has(a.st.actionStateId) && ek) {
+        const kb = actors.find((o) => o !== a && o.st.internalCharacterId === KIRBY);
+        const star = kb ? fs.get(`${KIRBY}:${kb.costume}`)?.accessory(4) ?? null : null;
+        const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
+        const fa = frameActors.find((x) => x.key === actorKey(a.player, a.nana));
+        const j = ek.partToJoint(a.st.internalCharacterId, 3);
+        const on = fi && star && fa && j >= 0 && (j + 1) * 16 <= fa.world.length ? fa.world.subarray(j * 16, j * 16 + 16) : null;
+        if (star && fi && on) {
+          star.poseUnder(stateAge(data, fno, a.player, a.nana), on, fi.commonAttr(0xdc) || 1, true, 0);
+          out = { fi, star };
+        }
+      }
+      kirbyStars.set(a, out);
+      return out;
+    };
     // the fighters' shadows (shadow.ts): each drawn flat into its own picture
     // through its shadow camera, before the stage, which takes them
     const shadowMaps: { tex: WebGLTexture; mtx: Float32Array; y: number }[] = [];
     const sl = st && !layersOff.fighters ? st.playerLighting.shadowLight(fno) : null;
     if (st && sl) {
       const scales = playerScales(data.settings.playerSettings);
-      for (const { f: fi, a } of posed) {
-        if (shared.has(fi)) poseActor(fi, a);
-        const look = lookOf(fi, a, actorKey(a.player, a.nana));
-        // (the camera bone, ftLib_800866DC: attributes +0x16C name it by its place in the fighter's bone list,
-        // fp->parts, not by a common part's name)
+      // (the shadow's camera on the fighter's camera bone, ftLib_800866DC: attributes +0x16C name it by its
+      // place in the fighter's bone list, fp->parts, not by a common part's name)
+      const cameraOf = (fi: Fighter, a: Actor) => {
         const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
-        if (joint < 0 || joint >= fi.skeleton.n) continue;
+        if (joint < 0 || joint >= fi.skeleton.n) return null;
         const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
         const bone = [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]);
-        const cam = shadowCamera(sl.pos, sl.interest, bone, (fi.cameraBox?.v[2] ?? 0) * (scales[a.player] ?? 1));
+        return shadowCamera(sl.pos, sl.interest, bone, (fi.cameraBox?.v[2] ?? 0) * (scales[a.player] ?? 1));
+      };
+      for (const a of actors) {
+        const p = posed.find((q) => q.a === a);
+        // (one hidden in Kirby's star: its draw, which its shadow is made with, leaves its model out and
+        // draws its accessory, the star, all the same - ftDrawCommon_800805C8 - so its shadow is the star's)
+        const star = p ? null : kirbyStarOf(a);
+        if (!p && !star) continue;
+        const fi = p?.f ?? star!.fi;
+        if (p && shared.has(fi)) poseActor(fi, a);
+        const cam = cameraOf(fi, a);
         if (!cam) continue;
         const t = r.shadowTarget(shadowMaps.length);
         r.beginShadow(t, cam.viewProj, cam.view, st.shadowIntensity);
-        // (its low-detail model, as in a mirror: ftDrawCommon_80081200 switches every fighter to it first)
-        const low = look.kh?.skin ? null : fi.mirrorPassHidden();
-        if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
-        else if (look.kh?.skin) fi.skeleton.passHidden = fi.hiddenUnderHat();
-        r.drawSkeleton(fi.skeleton, "opa");
-        fi.skeleton.passHidden = null;
+        if (p) {
+          const look = lookOf(fi, a, actorKey(a.player, a.nana));
+          // (its low-detail model, as in a mirror: ftDrawCommon_80081200 switches every fighter to it first)
+          const low = look.kh?.skin ? null : fi.mirrorPassHidden();
+          if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
+          else if (look.kh?.skin) fi.skeleton.passHidden = fi.hiddenUnderHat();
+          r.drawSkeleton(fi.skeleton, "opa");
+          fi.skeleton.passHidden = null;
+        } else r.drawSkeleton(star!.star.skeleton, "opa");
         r.endShadow();
         shadowMaps.push({ tex: t.tex, mtx: cam.tex, y: a.st.yPosition });
       }
@@ -1972,17 +2006,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       r.drawSkeleton(prop.skeleton, "xlu");
       r.endPass();
     }
-    // one Kirby spat out, or let out of his mouth as he copies it: hidden, his star in its place - his own article
-    // 4 (ftKb_SpecialN_800F5898), its size the one in it's common attributes' +0xDC, held to that one's YRotN
-    // where it is and as it turns (ftCommon_SetAccessory, lb_8000C2F8: ftCo_ThrownKirby.c inlineB2)
+    // the stars of the ones in Kirby's (kirbyStarOf)
     for (const a of actors) {
-      if (!KIRBY_STARS.has(a.st.actionStateId) || !ek) continue;
-      const kb = actors.find((o) => o !== a && o.st.internalCharacterId === KIRBY);
-      const star = kb ? fs.get(`${KIRBY}:${kb.costume}`)?.accessory(4) ?? null : null;
-      const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
-      const on = fi && star ? jointOf(a.player, ek.partToJoint(a.st.internalCharacterId, 3)) : null;
-      if (!star || !fi || !on) continue;
-      star.poseUnder(stateAge(data, fno, a.player, a.nana), on, fi.commonAttr(0xdc) || 1, true, 0);
+      const star = kirbyStarOf(a)?.star;
+      if (!star) continue;
       r.drawSkeleton(star.skeleton, "opa");
       r.drawSkeleton(star.skeleton, "xlu");
       r.endPass();
