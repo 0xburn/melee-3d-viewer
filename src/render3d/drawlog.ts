@@ -228,7 +228,7 @@ export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "ca
                                "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
-                               "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
+                               "setTint", "setOutline", "beginShadow", "beginMirror", "endMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
@@ -290,7 +290,10 @@ export class DrawLog {
     // (each picture's erase: the game's HSD_CObjEraseScreen and the shadow's start draw it as one flat quad, the
     // renderer clears; logged as a "clear" of the picture's size)
     wrap("begin", () => { this.newFrame(); this.clear(640, 480); });
-    wrap("beginMirror", () => this.clear(80, 60));
+    // (the stage's mirror image, Fountain of Dreams' pond: what is drawn into it - particles too - is logged in
+    // that 80 x 60 picture's pixels, as the game's draws into it are)
+    wrap("beginMirror", () => { this.clear(80, 60); this.target = [80, 60]; });
+    wrap("endMirror", () => { this.target = null; });
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
     wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
     wrap("setOutline", (a) => { this.outline = (a[0] as number[] | null) ?? null; });
