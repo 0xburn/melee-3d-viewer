@@ -918,6 +918,9 @@ export class Stage {
       place[0] = place[5] = place[10] = this.scale;
       sk.update(place);
       this.stars = sk;
+      // (on the background's layer: grIzumi_801CCB18 sets its x11 b012 to 2, so fn_800301D0 draws it whole
+      // with that camera, before the rest of the stage)
+      this.layer.set(sk, 2);
     }
   }
   /** Fountain of Dreams' stars (setupFountain), or null */
