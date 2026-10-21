@@ -308,7 +308,7 @@ export class Stage {
   mirror = false;
   private archive: Archive;
   /** Yoshi's Story: the Shy Guy's model (a stage item), and its scale */
-  shyGuy: { prop: Prop; scale: number } | null = null;
+  shyGuy: { prop: Prop; prop2: Prop | null; scale: number } | null = null;
   /** how far the camera goes (the game's camera range: general points 0x95
    *  and 0x96, at the stage's scale), or null without them */
   camBounds: { left: number; right: number; top: number; bottom: number } | null = null;
@@ -1141,7 +1141,7 @@ function quakesOf(a: Archive): StageCamera["quakes"] {
  *  stage's items as {kind, article}; the Shy Guy is kind 0xD2). Its model is a
  *  card whose texture animation is the Shy Guy flying; its scale is the
  *  item's own (the article's attributes, +0x60). */
-function shyGuyOf(a: Archive, stageId: number): { prop: Prop; scale: number } | null {
+function shyGuyOf(a: Archive, stageId: number): { prop: Prop; prop2: Prop | null; scale: number } | null {
   const list = a.publics.get("itemdata");
   if (list === undefined) return null;
   for (let i = 0; i < 16; i++) {
@@ -1158,8 +1158,11 @@ function shyGuyOf(a: Archive, stageId: number): { prop: Prop; scale: number } | 
     // the root's own offset are left out: the replay says where the Shy Guy
     // is, frame by frame, and it is drawn there.
     const mj = states === null ? null : ptr(a, states + 4);
+    // (its state 4 plays animation 2's instead: itheiho.c's it_803F83F0)
+    const mj2 = states === null ? null : ptr(a, states + 2 * 0x10 + 4);
     try {
       return { prop: new Prop(a, joint, null, mj, `stage${stageId}:shyguy`, true),
+               prop2: mj2 === null || mj2 === mj ? null : new Prop(a, joint, null, mj2, `stage${stageId}:shyguy`, true),
                scale: attr === null ? 1 : a.data.getFloat32(attr + 0x60) || 1 };
     } catch {
       return null;

@@ -1059,7 +1059,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (!data || !mayLoad()) return;
     files.stage(data.settings.stageId).then((s) => {
       if (renderer) for (const sk of s.allSkeletons) renderer.warm(sk);
-      if (renderer && s.shyGuy) renderer.warm(s.shyGuy.prop.skeleton);
+      if (renderer && s.shyGuy) { renderer.warm(s.shyGuy.prop.skeleton); if (s.shyGuy.prop2) renderer.warm(s.shyGuy.prop2.skeleton); }
       // Stadium's forms, ahead of the first transformation
       if (renderer) for (const parts of s.forms.values()) for (const p of parts) renderer.warm(p.skeleton);
       setStage(s);
@@ -4007,12 +4007,16 @@ function drawPlatform(r: Renderer, ek: EffectKit | undefined, a: Actor, frame: n
 // Yoshi's Story's Shy Guys: the stage file's own Shy Guy (a card whose
 // texture animation is it flying) where the replay says each one is, facing
 // the way it flies
-function drawShyGuys(r: Renderer, sg: { prop: Prop; scale: number }, data: ReplayData, items: ReplayItem[], frame: number) {
+function drawShyGuys(r: Renderer, sg: { prop: Prop; prop2: Prop | null; scale: number }, data: ReplayData, items: ReplayItem[],
+                     frame: number) {
   for (const it of items) {
     if (it.typeId !== SHY_GUY) continue;
-    sg.prop.pose(shyGuyClock(data, frame, it), it.xPosition, it.yPosition, 2, sg.scale, it.facingDirection < 0 ? Math.PI : 0, true);
-    r.drawSkeleton(sg.prop.skeleton, "opa");
-    r.drawSkeleton(sg.prop.skeleton, "xlu");
+    const t = shyGuyClock(data, frame, it);
+    // (animation 2's in state 4, and on through the states that keep the animation playing: it_803F83F0's -1)
+    const prop = shyClocks.get(data)?.get(it.spawnId)?.anim === 2 && sg.prop2 ? sg.prop2 : sg.prop;
+    prop.pose(t, it.xPosition, it.yPosition, 2, sg.scale, it.facingDirection < 0 ? Math.PI : 0, true);
+    r.drawSkeleton(prop.skeleton, "opa");
+    r.drawSkeleton(prop.skeleton, "xlu");
     r.endPass();
   }
 }
@@ -4166,7 +4170,7 @@ type ReplayItem = NonNullable<ReplayData["frames"][number]["items"]>[number];
 // from the last one it was asked for (a seek walks it again from the item's
 // first frame).
 const SHY_FLY = new Set([1, 4]);
-const shyClocks = new WeakMap<ReplayData, Map<number, { at: number; state: number; t: number }>>();
+const shyClocks = new WeakMap<ReplayData, Map<number, { at: number; state: number; t: number; anim: number }>>();
 function shyGuyClock(data: ReplayData, frame: number, it: ReplayItem): number {
   let clocks = shyClocks.get(data);
   if (!clocks) shyClocks.set(data, (clocks = new Map()));
@@ -4174,14 +4178,19 @@ function shyGuyClock(data: ReplayData, frame: number, it: ReplayItem): number {
   if (!c || c.at > frame || frame - c.at > 1) {
     let f = frame;
     while (f > 0 && data.frames[f - 1]?.items?.some((q) => q.spawnId === it.spawnId)) f--;
-    c = { at: f - 1, state: -1, t: 0 };
+    c = { at: f - 1, state: -1, t: 0, anim: 0 };
     clocks.set(it.spawnId, c);
   }
   for (let f = c.at + 1; f <= frame; f++) {
     const q = f === frame ? it : data.frames[f]?.items?.find((x) => x.spawnId === it.spawnId);
     if (!q) continue;
     const rate = q.state === 4 ? 2 : 1;
-    if (q.state !== c.state) { if (SHY_FLY.has(q.state)) c.t = 0; }
+    if (q.state !== c.state) {
+      if (SHY_FLY.has(q.state)) c.t = 0;
+      // (states 1 and 4 start their animations, 0 and 2; the others keep the one playing)
+      if (q.state === 1) c.anim = 0;
+      else if (q.state === 4) c.anim = 2;
+    }
     else if (SHY_FLY.has(q.state)) {
       if (Math.abs(q.xVelocity) < 1e-6) c.t = 0;
       else { c.t += rate; if (c.t >= 256) c.t = 0; }
