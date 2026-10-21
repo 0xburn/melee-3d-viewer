@@ -925,7 +925,9 @@ function loadAObj(a: Archive, aobj: number): AObj {
     const type = d.getUint8(f + 0x0c);
     const fv = d.getUint8(f + 0x0d), fs = d.getUint8(f + 0x0e);
     const dat = d.getUint32(f + 0x10);
-    tracks.push({ type, keys: decodeKeys(a.u8.subarray(dat, dat + len), fv, fs, start) });
+    // (an FObj's start frame is where its clock starts, HSD_FObjReqAnim: time = startframe + the request;
+    // a positive one is that far into its keys at the animation's frame 0, a negative one waits)
+    tracks.push({ type, keys: decodeKeys(a.u8.subarray(dat, dat + len), fv, fs, -start) });
   }
   return { tracks, end: d.getFloat32(aobj + 0x04), loop: (flags & (1 << 29)) !== 0, obj: ptr(a, aobj + 0x0c) };
 }
