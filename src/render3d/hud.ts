@@ -37,9 +37,9 @@ import { hudSlot, hudSlotsMode, outerSlots, type HudSlots } from "../common/huds
 // middle 16.5 pixels right of the percent's place and 1 unit below it, black at
 // a third (in the HUD camera's units)
 const PLATE = { dx: 0.76, dy: -1.02, w: 11.68, h: 1.425, fill: 0.34 };
-// where the name's glyphs sit on it: the top of their quads below the plate's middle (HUD units; measured
-// against the game's quads), the name centered on the plate's middle
-const PLATE_TEXT_TOP = 0;
+// where the name's glyphs sit, from the percent's place (HUD units, measured against the game's quads): the
+// line centered 0.8 right of it, the tops of the quads 0.525 below it
+const PLATE_TEXT = { dx: 0.8, top: -0.525 };
 
 // what it asks of the renderer (renderer.ts), by shape: that is a browser
 // module, which the checks, run outside a browser, cannot type
@@ -338,7 +338,7 @@ export class Hud {
     quad(this.quads, x0, top - pic.h, x0 + pic.w, top, 0, null);
     this.textBatches.push({ sprite: pic.sprite, additive: false, near: false, zwrite: false, nozcomp: true, first, count: 1 });
   }
-  /** the plates' names this frame (plates.ts), each with where its plate's middle is: x, y after x, y */
+  /** the plates' names this frame (plates.ts), each with where its line's middle and its quads' tops are: x, y after x, y */
   private lettered: PlateText[] = [];
   private letteredAt: number[] = [];
   /** the names' glyphs as quads over the plates, all in one batch of the font's picture */
@@ -348,10 +348,10 @@ export class Hud {
     const first = this.quads.length / 68;
     let count = 0;
     for (let n = 0; n < this.lettered.length; n++) {
-      const t = this.lettered[n], cx = this.letteredAt[n * 2], cy = this.letteredAt[n * 2 + 1], q = t.quads;
+      const t = this.lettered[n], cx = this.letteredAt[n * 2], top = this.letteredAt[n * 2 + 1], q = t.quads;
       for (let k = 0; k < t.count; k++) {
         const o = k * 8;
-        texQuad(this.quads, cx + q[o], cy + PLATE_TEXT_TOP + q[o + 3], cx + q[o + 2], cy + PLATE_TEXT_TOP + q[o + 1], 0,
+        texQuad(this.quads, cx + q[o], top + q[o + 3], cx + q[o + 2], top + q[o + 1], 0,
                 q[o + 4], q[o + 5], q[o + 6], q[o + 7]);
       }
       count += t.count;
@@ -623,7 +623,7 @@ export class Hud {
         this.box(cx - half, cy - PLATE.h / 2, cx + half, cy + PLATE.h / 2, [0, 0, 0, PLATE.fill]);
         if (text) {
           this.lettered.push(text);
-          this.letteredAt.push(cx, cy);
+          this.letteredAt.push(px + PLATE_TEXT.dx, py + PLATE_TEXT.top);
         } else {
           this.word(name, "plate", hudPpu, (w, _h, ref) => [cx - w / 2, cy - 0.36 * PLATE_FONT + ref]);
         }
