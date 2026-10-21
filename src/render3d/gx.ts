@@ -23,6 +23,7 @@
  */
 import type { MObj, TObj } from "./hsd";
 import { MakeTextureMtx } from "./gxmath";
+import { CNST_ALPHA, CNST_BLEND, CNST_DIFFUSE, CNST_SPECULAR, CNST_TEXREG, type TevProgram, compileTExp, runTev } from "./texp";
 
 // ---------------------------------------------------------------- lights
 
@@ -190,6 +191,9 @@ export interface MatProgram {
   /** how each sampled texture's coordinates are made */
   texGen: TexGen[];
   stages: MatStage[];
+  /** its TEV as HSD_TExpCompile makes it: the stages the hardware runs (texp.ts), the one table the fragment
+   *  shader and `evalMaterial` both run */
+  tev: TevProgram;
   /** the sampler of its emboss bump map (HSD's volatile emboss stages: the
    *  color plus the map, minus the map shifted toward the first diffuse
    *  light, both times the lit color), or -1 */
@@ -208,7 +212,7 @@ export function compileMaterial(mo: MObj, tobjs: TObj[], skip?: (t: TObj) => boo
     vertexBase: (mode & RENDER.VERTEX) !== 0,
     lit: (mode & RENDER.DIFFUSE) !== 0,
     specular: (mode & RENDER.SPECULAR) !== 0,
-    textures: [], texGen: [], stages: [], bump: -1,
+    textures: [], texGen: [], stages: [], tev: { stages: [], out: 0 }, bump: -1,
   };
   // the textures that get a sampler: shadow and toon textures are the
   // game's own additions, a bump map's emboss is left out
@@ -249,6 +253,8 @@ export function compileMaterial(mo: MObj, tobjs: TObj[], skip?: (t: TObj) => boo
     done |= TEX.LIGHTMAP_SPECULAR;
   }
   pass(TEX.LIGHTMAP_EXT, 2);
+  // (the same textures, in the same samplers, through MObjMakeTExp and HSD_TExpCompile)
+  prog.tev = compileTExp(mo, tobjs, (i) => (usable(tobjs[i]) ? sampler.get(i) ?? -1 : -1));
   // a bump map's emboss (one at most)
   const bi = tobjs.findIndex((t) => (t.flags & TEX.BUMP) !== 0 && usable(t));
   if (bi >= 0) prog.bump = use(bi);
@@ -295,7 +301,8 @@ export const byteOf = (v: number): number => Math.min(255, Math.max(0, Math.roun
 /** a scalar the TEV takes as a constant (HSD_TExpSetReg's HSD_TE_F32): 255
  *  times the value, cut to a whole number, kept to 0..255 */
 export function tevByte(v: number): number {
-  return Math.min(255, Math.max(0, Math.trunc(255 * Math.fround(v))));
+  // ((int)(0xFF * f): the product a float's)
+  return Math.min(255, Math.max(0, Math.trunc(Math.fround(255 * Math.fround(v)))));
 }
 
 /** the same, as the 0..1 value the byte stands for */
@@ -377,50 +384,46 @@ export function alphaMap(op: number, a: number, t: number, blend: number): numbe
 }
 
 /** what a material's TEV makes of its inputs (the fragment shader, in its
- *  integers): its colors, each stage's texel (after its own TEV step) and
- *  blend, the two lighting channels; every input a byte (0..255; a texel
- *  through its own TEV step may be past them), the result four bytes.
- *  The stages are MObjMakeTExp's: the diffuse color (the material's, or the
- *  vertex color), the diffuse textures, times the lit color, plus the
- *  specular color with its textures times the specular channel, the textures
- *  after lighting; then HSD_TObjSetupVolatileTev's emboss and shadows. */
+ *  integers): its colors, each sampler's texel and blend and own TEV colors
+ *  (konst, tev0, tev1), the two lighting channels; every input a byte
+ *  (0..255), the result four bytes. The stages are HSD_TExpCompile's
+ *  (`p.tev`: MObjMakeTExp's graph, simplified); then
+ *  HSD_TObjSetupVolatileTev's emboss and shadows, each reading the last
+ *  stage's 10-bit result, and the pixel its low 8 bits. */
 export function evalMaterial(p: MatProgram, inp: {
   diffuse: number[]; alpha: number; specular: number[]; ras0: number[]; ras1: number[];
   texels: number[][]; blend: number[];
+  /** each sampler's own TEV colors, konst, tev0, tev1 (bytes, rgba) */
+  tevColors?: number[][][];
   /** the bump map's texel at its shifted coordinates */
   bumpShifted?: number[];
   /** the shadows' texels, each laid on after everything (TObjSetupTevModulateShadow) */
   shadows?: number[][];
 }): number[] {
-  let c = p.vertexBase ? inp.ras0.slice(0, 3) : inp.diffuse.slice(0, 3);
-  let a = p.vertexBase ? inp.ras0[3] : inp.alpha;
-  const run = (phase: number, col: number[]): number[] => {
-    for (const s of p.stages) {
-      if (s.phase !== phase) continue;
-      const t = inp.texels[s.tex], b = inp.blend[s.tex] ?? 255;
-      col = colorMap(s.colorMap, col, t, b);
-      if (s.alphaMap >= 0) a = alphaMap(s.alphaMap, a, t[3], b);
-    }
-    return col;
-  };
-  c = run(0, c);
-  // (the lit color: lerp(0, color, channel))
-  if (p.lit) { c = c.map((v, i) => tevStage(0, v, inp.ras0[i], 0, 0, 0, 0, true)); a = tevStage(0, a, inp.ras0[3], 0, 0, 0, 0, true); }
-  if (p.specular) {
-    let s = run(1, inp.specular.slice(0, 3));
-    s = s.map((v, i) => tevStage(0, v, inp.ras1[i], 0, 0, 0, 0, true));
-    c = c.map((v, i) => tevStage(s[i], 0, 0, v, 0, 0, 0, true));
-  }
-  c = run(2, c);
+  const zero = [0, 0, 0, 0];
+  const out = runTev(p.tev, {
+    texel: (s) => inp.texels[s] ?? zero,
+    ras: (ch) => (ch === 1 ? inp.ras1 : inp.ras0),
+    cnst: (id) => {
+      if (id === CNST_DIFFUSE) return [...inp.diffuse.slice(0, 3), 255];
+      if (id === CNST_ALPHA) return [inp.alpha, inp.alpha, inp.alpha, inp.alpha];
+      if (id === CNST_SPECULAR) return [...inp.specular.slice(0, 3), 255];
+      if (id < CNST_TEXREG) { const b = inp.blend[id - CNST_BLEND] ?? 255; return [b, b, b, b]; }
+      const k = id - CNST_TEXREG;
+      return inp.tevColors?.[Math.floor(k / 3)]?.[k % 3] ?? zero;
+    },
+  }, { stage: tevStage, compare: tevCompare });
+  let c = out.slice(0, 3);
   if (p.bump >= 0 && inp.bumpShifted) {
     // (SetupEmbossBumpTev: plus the map times the lit color, unclamped, then minus the shifted map's, clamped)
     const t = inp.texels[p.bump], u = inp.bumpShifted;
     c = c.map((v, i) => tevStage(0, t[i], inp.ras0[i], v, 0, 0, 0, false));
     c = c.map((v, i) => tevStage(0, u[i], inp.ras0[i], v, 1, 0, 0, true));
   }
-  for (const s of p.stages) if (s.phase === 3) c = colorMap(s.colorMap, c, inp.texels[s.tex], 255);
+  for (const s of p.stages) if (s.phase === 3) c = c.map((v, i) => tevStage(0, v, inp.texels[s.tex][i], 0, 0, 0, 0, true));
   for (const sh of inp.shadows ?? []) c = c.map((v, i) => tevStage(0, v, sh[i], 0, 0, 0, 0, true));
-  return [...c, a];
+  // (what leaves the last stage for the pixel engine: the register's low 8 bits)
+  return [c[0] & 255, c[1] & 255, c[2] & 255, out[3] & 255];
 }
 
 /** a texture's own TEV step (HSD_TObjTevDesc, MakeColorGenTExp) on its texel,
