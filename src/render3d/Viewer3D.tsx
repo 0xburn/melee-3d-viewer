@@ -29,6 +29,7 @@ import { CAM_STRIDE, CamActor, playerScales, runCamera } from "./camera";
 import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf } from "./hitlag";
 import { setBillboardView } from "./skeleton";
 import { DEFAULT_LIGHTING, Renderer } from "./renderer";
+import type { Lighting } from "./lightset";
 import { Stall, idle } from "./idle";
 import { Stage } from "./stage";
 import { StageScene } from "./gr";
@@ -1715,7 +1716,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     drawStage();
     // (a fighter's hats are posed on it once a frame, or for each pass when it is shared)
     const hatsPosed = new Set<string>();
-    const drawFighters = (pass: "opa" | "xlu", mirror = false) => {
+    // (`under`: the lights current while they are drawn, when not their own -
+    // the pond's first draw, under the stage's)
+    const drawFighters = (pass: "opa" | "xlu", mirror = false, under: Lighting | null = null) => {
       if (layersOff.fighters) return;
       for (const { f: fi, a } of posed) {
         if (mirror && hideBits(a) & 4) continue;
@@ -1727,6 +1730,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const look = lookOf(fi, a, akey);
         const kh = look.kh;
         r.setTint(look.tint);
+        // (a color animation's light sets the fighter's lights whatever is
+        // current: ftCo_8009F5AC makes the fighters' own set current (light
+        // enable) or their set's ambient light (lobj1), then adds its own -
+        // so in the pond's first draw too, under the stage's lights)
+        const ownLights = under !== null && !!look.tint?.light;
+        if (ownLights) r.setLighting(lighting);
         // (its shake moves its model, its hats and outline with it, not its trail)
         const sh = shakes.get(akey);
         if (sh) r.shiftDraws(sh[0], sh[1]);
@@ -1817,6 +1826,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           r.drawSkeleton(hat.prop.skeleton, pass);
         }
         if (sh) r.shiftDraws(0, 0);
+        if (ownLights) r.setLighting(under!);
       }
       r.setTint(null);
     };
@@ -1863,7 +1873,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // joint whose material is see-through, so it is in the mirror's passes)
       if (!layersOff.stage) for (const sk of st.mirrorSkeletons) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
       r.endPass();
-      drawFighters("opa", true);
+      drawFighters("opa", true, stageLit);
       r.endPass();
       r.setLighting(lighting);
       drawFighters("opa", true);
