@@ -2125,13 +2125,19 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         hudActors.push({
           player: a.player, st: a.st, drawn, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
           nameTagHeight: fi.nameTagHeight, bone, zoom: ((fi.cameraBox?.v[2] ?? 8) * fi.modelScale) / 8,
+          // (ifMagnify_802FBBDC draws it through ftDrawCommon_80080C28, as the pond's mirror does: its
+          // low-detail model, and nothing while any of the three hide bits is set)
           draw: () => {
+            if (hideBits(a) & 7) return;
             if (skins.filter((s) => s === fi).length > 1) poseActor(fi, a);
             fi.faceTex?.apply(a.face?.tex ?? null);
             r.setLighting(lighting);
             r.setTint((lastTints.find((t) => t.key === actorKey(a.player, false))?.tint ?? null) as ColTint | null);
+            const low = fi.mirrorPassHidden();
+            if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
             r.drawSkeleton(fi.skeleton, "opa");
             r.drawSkeleton(fi.skeleton, "xlu");
+            fi.skeleton.passHidden = null;
             r.setTint(null);
           },
         });
