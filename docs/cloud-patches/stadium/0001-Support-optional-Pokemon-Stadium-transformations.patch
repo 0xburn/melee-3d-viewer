@@ -1,7 +1,7 @@
 From 80fcb6a291ec534ece25910c18a1fc939a7790a3 Mon Sep 17 00:00:00 2001
 From: Kyle Havlovitz <kylehav@gmail.com>
 Date: Mon, 28 Sep 2026 18:46:17 -0700
-Subject: [PATCH 1/4] Support optional Pokemon Stadium transformations
+Subject: [PATCH 1/6] Support optional Pokemon Stadium transformations
 
 Run the source-owned transformation scheduler and collision actors when the
 match config enables stadium_transformations; preserve frozen defaults.
