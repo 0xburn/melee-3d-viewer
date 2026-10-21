@@ -501,6 +501,7 @@ static void cobjViewingMtx(Mtx m, const float* eye, const float* interest, float
 
 /* ---------------------------------------------------------------- the driver */
 
+#ifndef GXMATH_REF_NO_MAIN
 int main(int argc, char** argv)
 {
     if (argc != 4) return 2;
@@ -556,3 +557,4 @@ int main(int argc, char** argv)
     fclose(out);
     return 0;
 }
+#endif
