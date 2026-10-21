@@ -2034,6 +2034,13 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       drawChains("xlu");
       drawnArticles = [];
       r.setFog(null);
+      // (the effects' pass has the stage's own particles too - Fountain's sparkles - behind the rest, as the
+      // picture's has them, when they are not the effect world's already)
+      const stagePsM = scene?.st === st && !layersOff.stage ? scene.particles.particles : [];
+      if (stagePsM.length) {
+        const built = buildParticles(stagePsM, axesM);
+        r.drawParticles(built.data, built.batches);
+      }
       if (ek?.bank && fxw && !layersOff.effects) {
         drawFxModels(r, fxw);
         const mine = fxw.particlesOf(false);
