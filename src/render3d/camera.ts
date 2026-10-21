@@ -314,8 +314,20 @@ const rotY = (v: number[], a: number) => {
 
 // ---------------------------------------------------------------- the camera's matrices, as the game makes them
 
-/** the near and far planes the match camera's CObj is given (Camera_8002A4AC: game_camera.nearz, farz) */
+/** the near and far planes the match camera's CObj is given (Camera_8002A4AC: game_camera.nearz, farz, 0.1 and
+ *  16384 from the camera's start) */
 export const CAM_NEAR = 0.1, CAM_FAR = 16384;
+
+/** the stages whose code gives the camera planes of its own (Camera_800311DC near, Camera_800311CC far), by the
+ *  replay's stage id: Mushroom Kingdom (grinishie1.c) and Mushroom Kingdom II (grinishie2.c) 1 and 4000, Flat Zone
+ *  (grflatzone.c) 1 and 1000, Final Destination (grlast.c) 1 and 30000 */
+const STAGE_PLANES: Record<number, [number, number]> = { 19: [1, 4000], 20: [1, 4000], 27: [1, 1000], 32: [1, 30000] };
+
+/** the match camera's near and far planes on this stage */
+export function cameraPlanes(stageId: number | null | undefined): [number, number] {
+  return (stageId != null && STAGE_PLANES[stageId]) || DEFAULT_PLANES;
+}
+const DEFAULT_PLANES: [number, number] = [CAM_NEAR, CAM_FAR];
 /** the match camera's aspect (cm_803BCB64.aspect) */
 export const CAM_ASPECT = ASPECT;
 

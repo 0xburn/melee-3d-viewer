@@ -4,7 +4,7 @@
 
 import test from "node:test";
 import assertNode from "node:assert/strict";
-import { FOG_GLSL, NO_FOG, fogAmount8, fogBlend8, gxSetFog, nearFar } from "../src/render3d/fog.ts";
+import { FOG_GLSL, NO_FOG, fogAmount8, fogBlend8, gxSetFog, nearFar, fogDecoded } from "../src/render3d/fog.ts";
 import { perspective } from "../src/render3d/math.ts";
 import { cSkip, runC } from "./cref.ts";
 import { browser, runPage } from "./webgl.ts";
@@ -170,4 +170,15 @@ done(res);`);
     if (g.fsel === 2) assertEquals(off, 0);
     else assert(off <= W * H / 100, `fog ${k}: ${off} pixels off`);
   });
+});
+
+test("the registers read back: A, B, C and the start and end they hold, near the ones handed in", () => {
+  for (const [s, e, n, f] of [[5000, 10000, 0.1, 16384], [200, 800, 1, 10000], [5000, 15000, 3, 30000]]) {
+    const r = gxSetFog(2, s, e, n, f, [0, 0, 0]);
+    const d = fogDecoded(r);
+    // (B = far / (far - near) to 24 bits; A and C to 11 bits of mantissa: within a part in 2^11)
+    assertNode.ok(Math.abs(d.b - f / (f - n)) < 1e-6, `b ${d.b}`);
+    assertNode.ok(Math.abs(d.start - s) <= s * 2 ** -10 + 1e-9 && Math.abs(d.end - e) <= e * 2 ** -10, `${s} ${e}: ${d.start} ${d.end}`);
+    assertNode.equal(d.c, r.c);
+  }
 });

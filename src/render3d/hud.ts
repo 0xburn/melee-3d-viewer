@@ -509,7 +509,9 @@ export class Hud {
        aspect = this.kit.cam.aspect, tracked: TrackedBursts | null = null) {
     const gameFrame = f + FIRST_FRAME;
     // the picture's width over the game's
-    const k = (this.k = aspect / this.kit.cam.aspect);
+    // (a picture of the game's own shape takes the game's cameras as they are: within a part in a hundred, 1)
+    const k0 = aspect / this.kit.cam.aspect;
+    const k = (this.k = Math.abs(k0 - 1) < 0.01 ? 1 : k0);
     const out: Hud["last"] = { percents: [], timer: null, tags: [], magnified: [], arrows: [], stocks: [] };
     const slots = hudSlotsMode();
     for (const p of this.players) p.place = p.places[slots];

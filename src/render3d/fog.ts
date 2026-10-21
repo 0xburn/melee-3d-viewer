@@ -46,6 +46,8 @@ export interface FogRegs {
   proj: number; fsel: number;
   /** the fog color, 0..255 */
   color: [number, number, number];
+  /** the camera's near and far it was packed with (float32) */
+  near: number; far: number;
 }
 
 const bits = new DataView(new ArrayBuffer(4));
@@ -107,7 +109,17 @@ export function gxSetFog(type: number, startz: number, endz: number, nearz: numb
     a: regFloat(fog0), c: regFloat(fog3), bMag: fog1 & 0xffffff, bShift: fog2 & 0x1f,
     proj: (fog3 >>> 20) & 1, fsel: (fog3 >>> 21) & 7,
     color: [(fogclr >>> 16) & 0xff, (fogclr >>> 8) & 0xff, fogclr & 0xff],
+    near: nearz, far: farz,
   };
+}
+
+/** A, B and C as the registers hold them (A: fog0's value times 2^B's shift; B: its magnitude over 8388638, times
+ *  2^(shift - 1)), and the start and end they stand for with the camera's near: the range is near B / A, the start
+ *  C times it (in double precision: what a reader of the registers works out, not what the hardware computes) */
+export function fogDecoded(r: FogRegs): { a: number; b: number; c: number; start: number; end: number } {
+  const a = r.a * 2 ** r.bShift, b = (r.bMag / 8388638) * 2 ** (r.bShift - 1), c = r.c;
+  const range = a !== 0 ? (r.near * b) / a : 0;
+  return { a, b, c, start: c * range, end: c * range + range };
 }
 
 /** no fog (HSD_FogSet with none: GXSetFog(GX_FOG_NONE, 0, 0, 0, 0, black)) */
