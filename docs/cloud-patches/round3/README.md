@@ -1,9 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Eight commits, one change each, as one series:
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Nine commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0008 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0009 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -115,3 +115,13 @@ With 0007, Zelda went to 5,559 draws (from 7,781 before `fj`), but Peach is stil
 - **Production.** `.text`, `.rodata` and `.data` are identical.
 
 **Check:** Peach (Jigglypuff vs Peach, Battlefield, fsmash, frame 319: f9:0:32:0, f9:0:50:0), Zelda (Sheik vs Zelda, Dream Land, KO, frame 4480: f19:1:31:0, f19:1:32:0) and Donkey Kong.
+
+## 0009 Viewer track: fj writes the fighter's root turn and size
+
+Ganondorf (KO, frame 3743, f25:0:45:0), Marth (FD, frame 1295, f18:0:39:0) and Game & Watch (FD, frame 1855, f24:2:23:0) are all off on joint 0, which is part 0 (TopN).
+
+- **Cause.** `fj` left part 0 out, as the place and facing that `pos` and the replay give. But the root's rotation also carries what the state's code sets beyond the facing (a tumble's spin, a lean), and its scale is the model's size. The viewer built that rotation from the facing alone.
+- **Change.** `fj` writes part 0's rotation and scale (values 0 to 5) and never its translation. The viewer already lays any part `fj` sends onto model joint 0, which is where it builds the root's turn and size itself. A value never sent stays the viewer's, so the root keeps its place from `pos`. No viewer change is needed.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+
+**Check:** Ganondorf f25, Marth f18 and Game & Watch f24. Also check that no fighter's place moves, and that star and screen KOs still draw where they did.
