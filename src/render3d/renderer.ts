@@ -1413,6 +1413,9 @@ void main() {
   /** what is drawn next writes no depth (an outline drawn behind its body) */
   setNoDepthWrite(on: boolean) { this.noDepthWrite = on; }
   private noDepthWrite = false;
+  /** what is drawn next writes depth only: no color, no blend, compared less-or-equal (an outline's second draw) */
+  setDepthOnly(on: boolean) { this.depthOnly = on; }
+  private depthOnly = false;
 
   /** one pass over a skeleton: its opaque parts, or its see-through ones;
    *  flash (0..1) turns it toward white (an L-cancel) */
@@ -1987,6 +1990,7 @@ void main() {
     else if (c.blend === 3) this.setBlend(true, gl.ONE, gl.ONE, gl.FUNC_REVERSE_SUBTRACT);
     else this.setBlend(false);
     this.setDepth(c.zWrite && !this.noDepthWrite, c.zFunc);
+    if (this.depthOnly) { this.setColorWrite(false); this.setBlend(false); this.setDepth(true, gl.LEQUAL); }
     return true;
   }
 

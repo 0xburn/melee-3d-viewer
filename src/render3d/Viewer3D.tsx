@@ -1740,6 +1740,17 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         fi.faceTex?.apply(a.face?.tex ?? null);
         r.drawSkeleton(fi.skeleton, pass);
         fi.skeleton.passHidden = null;
+        // then the outline's shells again, in depth only (ftDrawCommon_80080E18's second draw: x2223_b3,
+        // whose pixel engine ftMaterial_800BF2B8 sets to compare and update depth and write no color)
+        if (fi.outlineColor && pass === "opa" && !mirror) {
+          fi.skeleton.passHidden = fi.outlinePassHidden();
+          r.setTint(null);
+          r.setDepthOnly(true);
+          r.drawSkeleton(fi.skeleton, "opa");
+          r.setDepthOnly(false);
+          r.setTint(look.tint);
+          fi.skeleton.passHidden = null;
+        }
         // its sword's swing strip, drawn with its see-through parts
         // (ftafterimage.c; not in a mirror, whose draw leaves it out)
         if (pass === "xlu" && fxw && !mirror && !layersOff.effects) {
@@ -1775,6 +1786,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
             kh.skin.passHidden = null;
           }
           r.drawSkeleton(kh.skin, pass);
+          if (kh.outline && pass === "opa") {
+            kh.skin.passHidden = kh.outline.hidden;
+            r.setTint(null);
+            r.setDepthOnly(true);
+            r.drawSkeleton(kh.skin, "opa");
+            r.setDepthOnly(false);
+            r.setTint(look.tint);
+            kh.skin.passHidden = null;
+          }
         }
         // a costume's hat, on its joint as posed now, in the fighter's tint
         const hat = fi.hat, hj = hat?.joint ?? -1;
