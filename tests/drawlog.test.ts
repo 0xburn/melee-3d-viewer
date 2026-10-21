@@ -103,6 +103,7 @@ function standIn() {
     overlayVP: null, viewProj: vp,
     // (what the renderer uploads for a draw: view times each of its matrices)
     mvBuf: new Float32Array(160),
+    cullOn: true,
     staticsOf(s: { mobj: MObj }) {
       const I = new Int32Array(32), F = new Float32Array(128);
       I[3] = 4 | (7 << 3);
@@ -223,4 +224,15 @@ test("numbers are written as the float32s uploaded, or to 6 digits when asked", 
   // the projection as uploaded: GL's -1 / (near - far) halves, kept as float32s
   const proj = frames[0].draws[1].proj as number[];
   assert(proj.slice(0, 6).every((v) => Math.fround(v) === v), `projection as float32s: ${proj}`);
+});
+
+test("while the log is on nothing is culled (GX culls no mesh), and the renderer's culling comes back after", () => {
+  const r = standIn();
+  // deno-lint-ignore no-explicit-any
+  const any = r as any;
+  const log = new DrawLog(any);
+  log.attach();
+  assertEquals(any.cullOn, false);
+  log.detach();
+  assertEquals(any.cullOn, true);
 });

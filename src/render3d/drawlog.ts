@@ -224,7 +224,7 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "shiftView", "shiftVP",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "cullOn", "shiftView", "shiftVP",
                                "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
@@ -270,6 +270,11 @@ export class DrawLog {
     if (this.restore) return;
     const r = this.r as unknown as Record<string, (...a: unknown[]) => unknown>;
     const saved: [string, unknown][] = [];
+    // (GX culls no mesh - only its triangles, at the picture's edge - so while the log is on the renderer culls
+    // none either: every mesh the game would send is drawn and logged, its matrices with it)
+    const inner = this.r as unknown as { cullOn: boolean };
+    const cullWas = inner.cullOn;
+    inner.cullOn = false;
     const wrap = (name: string, after: (args: unknown[], drew: boolean) => void) => {
       const own = Object.prototype.hasOwnProperty.call(r, name) ? r[name] : undefined;
       const orig = r[name];
@@ -310,6 +315,7 @@ export class DrawLog {
     wrap("drawSphere", (a) => this.add({ kind: "sphere", center: (a[0] as number[]).map((v) => rnd(v)), radius: rnd(a[1] as number),
                                           color: (a[2] as number[]).map((v) => rnd(v)), alpha: rnd(a[3] as number) }));
     this.restore = () => {
+      inner.cullOn = cullWas;
       for (const [name, own] of saved) {
         if (own === undefined) delete r[name];
         else r[name] = own as (...a: unknown[]) => unknown;
@@ -389,6 +395,11 @@ export class DrawLog {
   private mesh(d: Drawable, ghost: boolean, sk: Skeleton | null) {
     const s = this.inner;
     this.nonfinite = false;
+    // (a part of the record that fails is left out and says why, the rest - the matrices first - is still written)
+    const errors: string[] = [];
+    const safe = <T>(what: string, f: () => T, none: T): T => {
+      try { return f(); } catch (e) { errors.push(`${what}: ${String(e)}`); return none; }
+    };
     const st = s.staticsOf(d.state), p = st.p;
     const { view, proj } = this.camera();
     let prims = this.prims.get(d.pobj);
@@ -408,16 +419,17 @@ export class DrawLog {
       verts: prims.reduce((n, x) => n + x[1], 0),
       mtx, proj, cull: cullName, ...this.pe(),
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
-      fog: this.fogRec(),
-      lights: this.lightsRec(view, this.firstOnly(d)),
-      tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)),
+      fog: safe("fog", () => this.fogRec(), null),
+      lights: safe("lights", () => this.lightsRec(view, this.firstOnly(d)), []),
+      tex: safe("tex", () => p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)), []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
                                               alphaMap: x.alphaMap, phase: x.phase })),
                diffuse: Array.from(d.state.override ?? d.state.diffuse).map((v) => rnd(v)), alpha: rnd(d.state.alpha),
                ambient: Array.from(d.state.ambient).map((v) => rnd(v)), spec: Array.from(d.state.specular).map((v) => rnd(v)) },
-      probe: this.probe(d, p),
+      probe: safe("probe", () => this.probe(d, p), null),
     };
+    if (errors.length) rec.errors = errors;
     // (a shadow being made: the mesh in one flat gray, no texture, no depth, color only: HSD_ShadowStartRender)
     if (this.cast !== null) {
       const g = this.cast, gray = g / 255;
