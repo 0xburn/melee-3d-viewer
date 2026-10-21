@@ -88,6 +88,9 @@ export interface AppSRT {
    *  no transform here, so a generator under it (its own, or one a particle
    *  under it made) has none when the game asks */
   player?: boolean;
+  /** a generator's own that only follows (its kind's 0x20000, the game's xA2): the particles' places are in
+   *  the camera's axes from its place (psDispSubAppSRT) */
+  view?: boolean;
 }
 
 export interface Col { r: number; g: number; b: number; a: number }
@@ -257,7 +260,7 @@ export class ParticleSystem {
     // (one whose particles go under a transform of its own)
     if (g.kind & 0x20000) {
       g.type |= 0x800;
-      g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true, used: 1, owner: g };
+      g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true, used: 1, owner: g, view: true };
     }
     // (the game's hsd_8039D9C8)
     const at = this.last ? this.gens.indexOf(this.last) : -1;
