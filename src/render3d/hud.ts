@@ -299,6 +299,8 @@ export interface HudActor {
   st: PlayerState;
   /** drawn (not dead, asleep or vanished) */
   drawn: boolean;
+  /** the magnifier may show it (ftLib_80086ED0: hidden by its move but not invisible still counts); drawn if unset */
+  magnify?: boolean;
   /** where it is drawn, when not where the replay says (a star KO) */
   at?: [number, number, number];
   nameTagHeight: number;
@@ -515,7 +517,7 @@ export class Hud {
       for (const p of this.players) {
         const a = actors.find((x) => x.player === p.slot);
         // (not for one KO'd, asleep or coming back on the angel platform: ftLib_80086ED0)
-        if (!a || !a.drawn || !a.bone || !p.lupe || a.st.actionStateId <= 13) continue;
+        if (!a || !(a.magnify ?? a.drawn) || !a.bone || !p.lupe || a.st.actionStateId <= 13) continue;
         const [sx, sy, w] = toScreen(viewProj, a.bone, k);
         if (w > 0 && sx >= 320 - 320 * k && sx < 320 + 320 * k && sy >= 0 && sy < 480) continue;
         if (w <= 0) continue;
