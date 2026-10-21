@@ -62,6 +62,7 @@ import { kirbyStoneAt } from "./kirbystone";
 import { ROLLOUT_ATTRS, ROLLOUT_FIRST, rolloutAngle, rolloutAttrs } from "./rollout";
 import { Hud, HudActor, HudKit } from "./hud";
 import { drawLogCommand } from "./drawlog";
+import { PoseLog, poseLogCommand } from "./poselog";
 import type { Tint as ColTint } from "./fx/colanim";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
@@ -108,6 +109,11 @@ const NO_HUD = new URLSearchParams(location.search).get("debug") === "nohud";
 // Nothing sets them but such a tool; empty, every draw is the player's own.
 type Layer = "back" | "stage" | "fighters" | "items" | "effects" | "hud";
 let layersOff: Partial<Record<Layer, boolean>> = {};
+// ?poselog: the pose log (poselog.ts) on from the first frame drawn, as { start: true } through the debug handle
+// starts it (__viewer3d.poseLog); off, nothing of it runs but a test of a null at each hook
+const POSE_LOG = new URLSearchParams(location.search).has("poselog");
+// (the log of the frame being drawn, when it is logged: for the items, drawn outside the viewer's own closure)
+let itemPoseLog: PoseLog | null = null;
 
 // A fighter the game does not draw: dead, or waiting to come back (action
 // states 0-11: the Dead* states and Sleep), or in the middle of a move that
@@ -723,6 +729,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
                                   retrying?: boolean; source?: string | null; corner?: JSX.Element }) {
   let canvas!: HTMLCanvasElement;
   let renderer: Renderer | undefined;
+  // the pose log (poselog.ts): debug only, null unless asked for
+  let poseLog: PoseLog | null = POSE_LOG ? new PoseLog() : null;
   // what the replay does not record, from the simulator, when a track was given
   // it for this replay (track.ts); asked for again while it is being made
   const [viewerTrack, setViewerTrack] = createSignal<ViewerTrack | null>(null);
@@ -1411,7 +1419,11 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (!inSight() && !SNAP && benchFrame === null) return;
     if (!drawEvery && replayStore.running && (drawTick++ & 1)) return;
     const frame = data.frames[fno];
+    itemPoseLog = null;
     if (!frame) return;
+    // (the pose log, when on: this frame's joints, if it is one it logs)
+    const plog = poseLog && poseLog.begin(fno - 123, data) ? poseLog : null;
+    itemPoseLog = plog;
     const t0 = performance.now();
     prof.start();
     let mirrorMs = 0;
@@ -1814,6 +1826,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     r.setShadows(shadowMaps.reverse());
     prof.mark("shadows");
     drawStage();
+    // (the pose log: the stage's parts drawn this frame, by the numbers the track gives them - TrackJoints's)
+    if (plog && st) logStage(plog, st);
     // (a fighter's hats are posed on it once a frame, or for each pass when it is shared)
     const hatsPosed = new Set<string>();
     // (`under`: the lights current while they are drawn, when not their own -
@@ -1862,6 +1876,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         }
         // its face's textures on their frames (face.ts)
         fi.faceTex?.apply(a.face?.tex ?? null);
+        // (the pose log: its joints as its main pass draws them)
+        if (plog && pass === "opa" && !mirror) plog.fighter(a.player, a.nana ? 1 : 0, a.st.internalCharacterId, fi.skeleton.world);
         r.drawSkeleton(fi.skeleton, pass);
         fi.skeleton.passHidden = null;
         // then the outline's shells again, in depth only (ftDrawCommon_80080E18's second draw: x2223_b3,
@@ -3731,6 +3747,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     mirror: () => renderer?.mirrorDebug() ?? null,
     /** the draw log (drawlog.ts): debug only, attached by { start: true } and never otherwise */
     drawLog: (cmd: Parameters<typeof drawLogCommand>[1]) => drawLogCommand(renderer, cmd),
+    /** the pose log (poselog.ts): debug only, made by { start: true } (or ?poselog) and never otherwise; { take:
+     *  true } hands over its lines since the last take (string[], JSON text lines: <game>.poselog.jsonl for
+     *  tools/pose_check.py), { stop: true } drops it */
+    poseLog: (cmd: Parameters<typeof poseLogCommand>[2]) => poseLogCommand(() => poseLog, (l) => { poseLog = l; }, cmd),
     /** a pixel comparison: leave these groups out of the draws from now on (null:
      *  draw everything again), and draw now */
     setLayers: (off: Partial<Record<Layer, boolean>> | null) => { layersOff = { ...(off ?? {}) }; draw(); return true; },
@@ -4420,6 +4440,19 @@ function lastFlight(data: ReplayData, frame: number, it: ReplayItem): [number, n
 }
 
 const PLAIN_ARTICLE: (typeof ARTICLES)[number] = { art: 0 };
+
+/** the pose log's stage parts: each drawn this frame (or in the mirror), by the number the track names it by - the
+ *  part of that index, or the copy `named` has for it, as TrackJoints asks for them (gr/joints.ts) */
+function logStage(log: PoseLog, st: Stage) {
+  const drawn = new Set([...st.skeletons, ...st.mirrorSkeletons]);
+  const numbers = new Set<number>(st.parts.map((p) => p.index));
+  for (const parts of st.forms.values()) for (const p of parts) numbers.add(p.index);
+  for (const n of st.named.keys()) numbers.add(n);
+  for (const n of numbers) {
+    const part = st.named.get(n) ?? st.partOf(n);
+    if (part && drawn.has(part.skeleton)) log.stagePart(n, part.place, part.skeleton);
+  }
+}
 // the items whose look is a rope of links their code moves (the hookshots,
 // the grapple beam, the yo-yo, Sheik's chain, the Ice Climbers' rope: drawn
 // as chains from the track's "lm" where it has them): never drawn plainly as
@@ -4438,7 +4471,13 @@ function drawArticleTracked(r: Renderer, data: ReplayData, fs: Map<string, Fight
   const art = joints ? articleOf(data, fs, it, frame) : null;
   if (art) art.prop.trackPose = joints;
   try {
-    return drawArticle(r, data, fs, it, frame, jointOf, partJoint, turnOf, shakeOf);
+    const drew = drawArticle(r, data, fs, it, frame, jointOf, partJoint, turnOf, shakeOf);
+    // (the pose log: its joints as drawn - the last of its draws this frame, its main pass's)
+    if (drew && itemPoseLog) {
+      const posed = articleOf(data, fs, it, frame);
+      if (posed) itemPoseLog.item(it.spawnId, it.typeId, posed.prop.skeleton);
+    }
+    return drew;
   } finally {
     if (art) art.prop.trackPose = null;
   }
