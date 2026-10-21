@@ -1787,9 +1787,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         // (a color animation's light sets the fighter's lights whatever is
         // current: ftCo_8009F5AC makes the fighters' own set current (light
         // enable) or their set's ambient light (lobj1), then adds its own -
-        // so in the pond's first draw too, under the stage's lights)
-        const ownLights = under !== null && !!look.tint?.light;
-        if (ownLights) r.setLighting(lighting);
+        // so in the pond's first draw too, under the stage's lights - and
+        // ftCo_8009F7F8 leaves the fighters' own set current after it, so the
+        // fighters drawn after it in that pass are lit by their own set too)
+        if (under !== null && look.tint?.light) { r.setLighting(lighting); under = null; }
         // (its shake moves its model, its hats and outline with it, not its trail)
         const sh = shakes.get(akey);
         if (sh) r.shiftDraws(sh[0], sh[1]);
@@ -1880,7 +1881,6 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           r.drawSkeleton(hat.prop.skeleton, pass);
         }
         if (sh) r.shiftDraws(0, 0);
-        if (ownLights) r.setLighting(under!);
       }
       r.setTint(null);
     };
