@@ -68,3 +68,14 @@ $(WASM_VIEWER_MODULE): $(WASM_CORE_OBJS)
 		-sEXPORTED_FUNCTIONS='$(WASM_VIEWER_EXPORTS)' \
 		-sEXPORTED_RUNTIME_METHODS='["HEAPU8","FS"]' \
 		-o "$@" 2> "$(WASM_VIEWER_DIR)/link-warnings.log" || { cat "$(WASM_VIEWER_DIR)/link-warnings.log" >&2; exit 1; }
+
+# No local path in the module: the tree's own path, with either slash, is "."
+# in debug info, __FILE__ and assertion texts (WASM_TREE: the tree the build
+# runs in).
+WASM_TREE ?= $(CURDIR)
+WASM_PREFIX_MAP := -ffile-prefix-map=$(WASM_TREE)=. -fmacro-prefix-map=$(WASM_TREE)=. \
+	-ffile-prefix-map=$(subst /,\,$(WASM_TREE))=. -fmacro-prefix-map=$(subst /,\,$(WASM_TREE))=.
+WASM_CPPFLAGS += $(WASM_PREFIX_MAP)
+
+# (a build of its own may add flags to every object, after all others: WASM_EXTRA_CFLAGS)
+WASM_CFLAGS += $(WASM_EXTRA_CFLAGS)
