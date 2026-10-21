@@ -368,7 +368,10 @@ export class PlayerHud {
   /** whether the digits shake at frame i (and so draw eight random numbers there: ifStatus_802F4B84) */
   shakingAt(i: number): boolean {
     const l = this.lifeAt(i);
-    const at = l.ko !== null && i >= l.ko ? Math.max(l.from, l.ko - 1) : i;
+    // (a percent going off takes no shake's draws: the HUD's proc runs ifStatus_PercentOnDeathAnimationThink and
+    // returns before ifStatus_802F4B84)
+    if (l.ko !== null && i >= l.ko) return false;
+    const at = i;
     const hit = this.hitAt[at];
     return hit >= 0 && at - hit >= 0 && at - hit <= SHAKE_FRAMES - 2;
   }
