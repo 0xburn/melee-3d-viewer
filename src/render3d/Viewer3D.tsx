@@ -1743,7 +1743,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     };
     // the fighters' shadows (shadow.ts): each drawn flat into its own picture
     // through its shadow camera, before the stage, which takes them
-    const shadowMaps: { tex: WebGLTexture; mtx: Float32Array; y: number }[] = [];
+    const shadowMaps: { tex: WebGLTexture; mtx: Float32Array; y: number; laid: boolean }[] = [];
     const sl = st && !layersOff.fighters ? st.playerLighting.shadowLight(fno) : null;
     if (st && sl) {
       const scales = playerScales(data.settings.playerSettings);
@@ -1778,7 +1778,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           fi.skeleton.passHidden = null;
         } else r.drawSkeleton(star!.star.skeleton, "opa");
         r.endShadow();
-        shadowMaps.push({ tex: t.tex, mtx: cam.tex, y: a.st.yPosition });
+        // (made for every fighter, laid by none of Nana's materials: ftLib_800872BC keeps a sub fighter's inactive)
+        shadowMaps.push({ tex: t.tex, mtx: cam.tex, y: a.st.yPosition, laid: !a.nana });
       }
     }
     r.setShadows(shadowMaps.reverse());
@@ -1920,6 +1921,48 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const v = trNow?.at("irot", String(spawnId), fno - 123);
       return v && v.length >= 3 ? v.map(Number) : null;
     };
+    // The hookshots', grapple beams' and yo-yo's chains, where the viewer track has them, and the grapple's glow.
+    // Each link (the head too) and the beam itself are drawn by HSD_GObj_JObjCallback (it_802A24A0 asks only
+    // whether the link is up), which does not look at which of the main camera's two passes it is in: so the
+    // game draws their opaque parts twice, in Camera_800311EC's first pass under the stage's lights and in its
+    // second under the fighters', and their see-through parts once (Camera_80031328); the items' own
+    // it_8026EECC draws in one of the two only. `note`: the glow's place for the checks, once a frame
+    const drawChains = (pass: "opa" | "xlu", note = false) => {
+      for (const a of actors) {
+        const c = CHAINS[a.st.internalCharacterId];
+        const v = trNow?.has("hook") ? trNow.exact("hook", `${a.player}:${a.nana ? 1 : 0}`, fno - 123) : null;
+        const costume = data.settings.playerSettings[a.player]?.costumeIndex ?? 0;
+        const f = c ? fs.get(`${a.st.internalCharacterId}:${costume}`) : undefined;
+        if (!c || !f) continue;
+        // (the chain's own item, for its glow: its animations run from when it is made)
+        const own = c.itemType === undefined ? undefined
+          : (frame.items ?? []).find((it) => it.owner === a.player && c.itemType === it.typeId);
+        const item = own ? { state: own.state, age: itemLife(data, fno, own) } : null;
+        if (v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item, pass);
+        // its glow, held at the arm the whole time, fired or not (Item_8026AB54
+        // with ThrowN's number, which ftLib_80086630 takes as the fighter's own
+        // part slot, not through the named-part table: Samus's joint 51, her cannon)
+        if (item && c.glowAnim !== undefined) {
+          const on = jointOf(a.player, THROWN_PART);
+          const glow = f.articleAnimated(c.art, null, c.glowAnim), art = f.article(c.art, 0);
+          if (on && glow) {
+            glow.poseUnder(item.age, on, (art?.scale ?? 1) * f.modelScale, false, 0);
+            const w = glow.skeleton.world;
+            if (note) {
+              drawnArticles.push({ type: own!.typeId, state: item.state, x: w[12], y: w[13], z: w[14], scale: Math.hypot(w[0], w[1], w[2]),
+                                   shown: Array.from(glow.skeleton.shown), age: item.age });
+            }
+            r.drawSkeletonTrsp(glow.skeleton, TRSP[pass]);
+            r.endPass();
+          }
+        }
+      }
+    };
+    // (their first opaque copy, under the stage's lights, then the second, under the fighters')
+    if (st) r.setLighting(stageLit);
+    drawChains("opa");
+    r.setLighting(lighting);
+    drawChains("opa");
     // Fountain of Dreams' pond: what the game draws after the stage - the
     // fighters, the items, the effects - seen from below the floor into the
     // stage's mirror image, before the pond is drawn with it (grizumi.c)
@@ -1949,6 +1992,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       drawFighters("opa", true);
       drawFighters("xlu", true);
       if (!layersOff.items) for (const it of frame.items ?? []) drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake);
+      // (and the chains: grIzumi_801CCEA0's links 4 to 6 in all three passes, once)
+      drawChains("opa");
+      drawChains("xlu");
       drawnArticles = [];
       r.setFog(null);
       if (ek?.bank && fxw && !layersOff.effects) {
@@ -2050,35 +2096,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       r.drawSkeleton(star.skeleton, "xlu");
       r.endPass();
     }
-    // the hookshots' and grapple beams' chains, where the viewer track has them
-    for (const a of actors) {
-      const c = CHAINS[a.st.internalCharacterId];
-      const v = trNow?.has("hook") ? trNow.exact("hook", `${a.player}:${a.nana ? 1 : 0}`, fno - 123) : null;
-      const costume = data.settings.playerSettings[a.player]?.costumeIndex ?? 0;
-      const f = c ? fs.get(`${a.st.internalCharacterId}:${costume}`) : undefined;
-      if (!c || !f) continue;
-      // (the chain's own item, for its glow: its animations run from when it is made)
-      const own = c.itemType === undefined ? undefined
-        : (frame.items ?? []).find((it) => it.owner === a.player && c.itemType === it.typeId);
-      const item = own ? { state: own.state, age: itemLife(data, fno, own) } : null;
-      if (v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item);
-      // its glow, held at the arm the whole time, fired or not (Item_8026AB54
-      // with ThrowN's number, which ftLib_80086630 takes as the fighter's own
-      // part slot, not through the named-part table: Samus's joint 51, her cannon)
-      if (item && c.glowAnim !== undefined) {
-        const on = jointOf(a.player, THROWN_PART);
-        const glow = f.articleAnimated(c.art, null, c.glowAnim), art = f.article(c.art, 0);
-        if (on && glow) {
-          glow.poseUnder(item.age, on, (art?.scale ?? 1) * f.modelScale, false, 0);
-          const w = glow.skeleton.world;
-          drawnArticles.push({ type: own!.typeId, state: item.state, x: w[12], y: w[13], z: w[14], scale: Math.hypot(w[0], w[1], w[2]),
-                               shown: Array.from(glow.skeleton.shown), age: item.age });
-          r.drawSkeleton(glow.skeleton, "opa");
-          r.drawSkeleton(glow.skeleton, "xlu");
-          r.endPass();
-        }
-      }
-    }
+    // the chains' see-through parts: once, in the see-through pass, under the fighters' lights (drawChains)
+    drawChains("xlu", true);
     let shines = 0;
     // (the game's effects are drawn without fog: HSD_FogSet(NULL))
     r.setFog(null);
@@ -4158,13 +4177,16 @@ function useTrackArticles(data: ReplayData, tr: ViewerTrack | null) {
 // is turned as the game turns them (it_802A6DC8): its z along the chain, back
 // toward the hand, its x level; the head as the link behind it.
 const CHAINS: Record<number, { art: number; links: number[]; head: number; headFirst: boolean; linkSize?: number; itemType?: number;
-                                headAnim?: number; glowAnim?: number }> = {
+                                headAnim?: number; glowAnim?: number; linkAnims?: number[] }> = {
   6: { art: 2, links: [0x58, 0x54], head: 0x5c, headFirst: true },
   20: { art: 2, links: [0x58, 0x54], head: 0x5c, headFirst: true },
   // (the grapple beam's item's own model is its glow, at the hand until it is
   // fired and then at the head; it and the claw pulse, their animations at
-  // the special attributes' +0xA4 and +0x98: itsamusgrapple.c)
-  13: { art: 3, links: [0x64, 0x68, 0x6c], head: 0x70, headFirst: true, itemType: 0x60, headAnim: 0x98, glowAnim: 0xa4 },
+  // the special attributes' +0xA4 and +0x98: itsamusgrapple.c). Each kind of link has its own animations too,
+  // +0x74, +0x80 and +0x8C (it_802B743C: the first link the first kind, the others by their place, i % 3), made
+  // with the beam and stepped with it every frame (its palettes in turn)
+  13: { art: 3, links: [0x64, 0x68, 0x6c], head: 0x70, headFirst: true, itemType: 0x60, headAnim: 0x98, glowAnim: 0xa4,
+        linkAnims: [0x74, 0x80, 0x8c] },
   8: { art: 10, links: [0x50], head: 0x54, headFirst: false, linkSize: 0xc },
 };
 const chainMtx = new Float32Array(16);
@@ -4183,7 +4205,12 @@ function linkMatrix(out: Float32Array, at: [number, number, number], dir: [numbe
            dx * scale, dy * scale, dz * scale, 0, at[0], at[1], at[2], 1]);
 }
 
-function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { state: number; age: number } | null = null) {
+/** the game's passes a chain's two kinds of draw take: Camera_800311EC's two calls draw its opaque and cut-out
+ *  meshes (HSD_TRSP_OPA, TEXEDGE), Camera_80031328 its see-through ones (XLU) */
+const TRSP = { opa: 1 | 4, xlu: 2 } as const;
+
+function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { state: number; age: number } | null = null,
+                   pass: "opa" | "xlu" = "opa") {
   const c = CHAINS[char];
   if (!c) return;
   const pts: [number, number, number][] = [];
@@ -4194,17 +4221,18 @@ function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { s
   const head = pts[pts.length - 1];
   const scale = f.modelScale;
   const linkScale = scale * (c.linkSize !== undefined ? f.article(c.art, 0)?.special?.(c.linkSize) || 1 : 1);
-  const draw = (off: number, at: [number, number, number], dir: [number, number, number], s: number) => {
-    const p = f.articleModel(c.art, off);
+  const draw = (off: number, at: [number, number, number], dir: [number, number, number], s: number, anim?: number) => {
+    const p = anim !== undefined && item ? f.articleAnimated(c.art, off, anim) : f.articleModel(c.art, off);
     if (!p) return;
     linkMatrix(chainMtx, at, dir, s);
-    p.poseMatrix(chainMtx);
-    r.drawSkeleton(p.skeleton, "opa");
-    r.drawSkeleton(p.skeleton, "xlu");
+    if (anim !== undefined && item) p.poseMatrix(chainMtx, item.age);
+    else p.poseMatrix(chainMtx);
+    r.drawSkeletonTrsp(p.skeleton, TRSP[pass]);
   };
   for (let k = 0; k + 1 < pts.length; k++) {
     const prev = k > 0 ? pts[k - 1] : pts[k], next = pts[k + 1];
-    draw(c.links[k % c.links.length], pts[k], [prev[0] - next[0], prev[1] - next[1], prev[2] - next[2]], linkScale);
+    draw(c.links[k % c.links.length], pts[k], [prev[0] - next[0], prev[1] - next[1], prev[2] - next[2]], linkScale,
+         c.linkAnims?.[k % c.links.length]);
   }
   const back = pts.length > 1 ? pts[pts.length - 2] : [head[0] - 1, head[1], 0];
   const toBack: [number, number, number] = [back[0] - head[0], back[1] - head[1], back[2] - head[2]];
@@ -4212,8 +4240,7 @@ function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { s
   if (claw) {
     linkMatrix(chainMtx, head, toBack, scale);
     claw.poseMatrix(chainMtx, item!.age);
-    r.drawSkeleton(claw.skeleton, "opa");
-    r.drawSkeleton(claw.skeleton, "xlu");
+    r.drawSkeletonTrsp(claw.skeleton, TRSP[pass]);
   } else draw(c.head, head, toBack, scale);
   r.endPass();
 }
@@ -4495,7 +4522,9 @@ function drawShield(r: Renderer, ek: EffectKit | undefined, a: Actor, data: Repl
     radius = f.modelScale * f.shieldSize * ((1 - least) * (Math.max(0, st.shieldSize) / full) * press + least);
   }
   const port = ek!.shieldColors[a.player] ?? color;
-  pr.pose(age, c[0], c[1], c[2], radius / SHIELD_MODEL_RADIUS, 0, which.loop);
+  // (its tracks as their own flags have them: none of the three models' loops - the game's animation stops at
+  // its end and holds there, the bubble's turning layer at its last turn, however long the shield is held)
+  pr.pose(age, c[0], c[1], c[2], radius / SHIELD_MODEL_RADIUS, 0, false);
   // how far the bubble's picture reaches: its card's own size in the model
   const W = pr.skeleton.world, k = pr.skeleton.n - 1;
   const drawn = Math.hypot(W[k * 16], W[k * 16 + 1], W[k * 16 + 2]);
@@ -4504,9 +4533,14 @@ function drawShield(r: Renderer, ek: EffectKit | undefined, a: Actor, data: Repl
   // (tev0) toward white (konst) by the texture, and its konst alpha is the
   // shield's: 64, up to 255 the harder it is held (ftCommonData 0x2F4)
   const alpha = (64 + Math.trunc(pressed(a.inputs) * 191)) / 255;
-  for (const s of pr.skeleton.states) {
-    const tc = s.tex[which.tex]?.tevColors;
-    if (!tc) continue;
+  // (on the first DObj of the root's first child only - and for GuardSetOff's, 0x419, of it and the next six
+  // joints beside it: efLib_SetTevKonstColor and efLib_Cb_ApplyStoredAlpha take HSD_JObjGetDObj's)
+  const sk = pr.skeleton, colored: number[] = [];
+  for (let j = 1; j < sk.n && colored.length < (which.m === SHIELD_MODEL + 2 ? 7 : 1); j++) if (sk.parent[j] === 0) colored.push(j);
+  for (const j of colored) {
+    const s = pr.firstState(j);
+    const tc = s?.tex[which.tex]?.tevColors;
+    if (!s || !tc) continue;
     s.dirty = true;
     tc[0] = tc[1] = tc[2] = 1; tc[3] = alpha;
     tc[4] = port[0]; tc[5] = port[1]; tc[6] = port[2];
