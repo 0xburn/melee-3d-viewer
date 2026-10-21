@@ -1,9 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Nine commits, one change each, as one series:
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Ten commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0009 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0010 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -125,3 +125,24 @@ Ganondorf (KO, frame 3743, f25:0:45:0), Marth (FD, frame 1295, f18:0:39:0) and G
 - **Production.** `.text`, `.rodata` and `.data` are identical.
 
 **Check:** Ganondorf f25, Marth f18 and Game & Watch f24. Also check that no fighter's place moves, and that star and screen KOs still draw where they did.
+
+## 0010 Viewer track: world matrices for the pose check (`wf`, `wi`, `ws`), behind `MSL_VIEWER_TRACK_WORLD`
+
+For the pose check (`tools/pose_check.py` in the viewer repo). Off by default. Set `MSL_VIEWER_TRACK_WORLD=1` in the environment of the process that makes the track; the validation runner passes its environment to the simulator it starts. When it is off, nothing is written and nothing is allocated.
+
+```
+[frame,"wf",port,sub,character,(part,mask,values)...]  fighter parts, numbered as fj numbers them
+[frame,"wi",item,(joint,mask,values)...]                item joints, numbered as jp numbers them, root 0 too
+[frame,"ws",part,(joint,mask,values)...]                stage joints, numbered as sp numbers them (0 = the scale root)
+```
+
+- **Values.** Twelve values: rows 0 to 2 of the 3 x 4 world matrix, row by row, as float32 bits in hex. Mask bit k means value k follows. A value is written when it changes, and an owner's first line has them all.
+- **How each matrix is made.** The simulator computes a joint's matrix only when something reads it, so most joints have no world matrix of their own at a frame's end. This writer therefore makes the matrix `HSD_JObjMakeMatrix` would make from the joint's values at the frame's end: its scale compensation, then `HSD_MtxSRT` / `HSD_MtxSRTQuat` and the concat with the parent (`HSD_MtxSRTConcat` in this build). It makes them in the track's own storage, so no joint, flag or scale vector of the match is touched.
+- **Left out, with everything under them:**
+  - joints the game places another way: an RObj (constraints and limits), IK joints (`JOBJ_JOINT1`, `JOBJ_JOINT2`, `JOBJ_EFFECTOR`), `JOBJ_USER_DEF_MTX`, `JOBJ_MTX_INDEP_PARENT`, `JOBJ_MTX_INDEP_SRT`, and path animations;
+  - fighter parts the hosted build leaves cold (not animated there);
+  - every joint of a stage part whose animation the hosted build stops (on Fountain of Dreams, all parts but the water columns).
+  
+  So the check covers what the simulator does pose; a joint left out here is not checked.
+- `wf`, `wi` and `ws` are added to `UNLOCKED_KINDS`.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
