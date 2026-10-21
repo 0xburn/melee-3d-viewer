@@ -1538,14 +1538,27 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // the game makes them before it draws the stage (lbShadow_8000F38C)
     const drawStage = () => {
       if (st) {
-        // (the back layers whole, first: the game draws them before the rest)
+        // (the back layers whole, first: the game draws them before the rest - fn_800301D0 draws layer 2,
+        // then 1, each with HSD_GObj_80390ED0(gobj, 7): OPA, TEXEDGE, then XLU, each pass over all its parts)
         r.setLighting(stageLit);
         const sks = st.skeletons;
-        for (const sk of sks) {
-          if (layersOff[st.layerOf(sk) > 0 ? "back" : "stage"]) continue;
-          r.setTint(st.tintOf(sk));
-          if (st.layerOf(sk) > 0) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
-          else r.drawSkeletonTrsp(sk, 1);
+        if (!layersOff.back) {
+          for (let layer = 2; layer > 0; layer--) {
+            for (const trsp of PASSES) {
+              for (const sk of sks) {
+                if (st.layerOf(sk) !== layer) continue;
+                r.setTint(st.tintOf(sk));
+                r.drawSkeletonTrsp(sk, trsp);
+              }
+            }
+          }
+        }
+        if (!layersOff.stage) {
+          for (const sk of sks) {
+            if (st.layerOf(sk) > 0) continue;
+            r.setTint(st.tintOf(sk));
+            r.drawSkeletonTrsp(sk, 1);
+          }
         }
         // (then the rest of the stage's cut-out meshes, all its parts' opaque ones first: fn_800301D0 draws
         // layer 0's link 3 with HSD_GObj_80390ED0(gobj, 3), each pass over all its GObjs - HSD_GObj_804085F0
@@ -4439,6 +4452,8 @@ function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPos
 /** the game's passes a chain's two kinds of draw take: Camera_800311EC's two calls draw its opaque and cut-out
  *  meshes (HSD_TRSP_OPA, TEXEDGE), Camera_80031328 its see-through ones (XLU) */
 const TRSP = { opa: 1 | 4, xlu: 2 } as const;
+/** HSD_GObj_80390ED0's passes in its order (HSD_GObj_804085F0): HSD_TRSP_OPA, TEXEDGE, XLU */
+const PASSES = [1, 4, 2] as const;
 
 /** the way an item last flew, back through its frames while it was the same
  *  item (an arrow stuck where it hit keeps its angle), or null */
