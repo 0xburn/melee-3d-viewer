@@ -48,6 +48,37 @@ endif
 # bounds. Its definition is renamed in this one object for the viewer's build.
 $(WASM_OBJ_DIR)/gameplay/MSL/math_1.o: WASM_CPPFLAGS += -Dfrexp=msl_math_1_frexp
 
+# Fused multiply-adds in src/runtime/math.c, as native computes them.
+# - Native (GCC, the Makefile's -O2 -ffp-contract=fast -mfma for trigf.c and
+#   math.c) fuses every a*b+c whose product feeds only additions: 23 sites,
+#   all in math.c (acosf 4, asinf 1, atanf 6, each msl_dynamics_angle_* 4);
+#   none in trigf.c. The GameCube's fmadds rounds once too.
+# - Wasm has no fused multiply-add: the backend splits them into a rounded
+#   multiply and an add, a few ULP off in cam, jp, fp, irot, ij and fxp.
+# - So math.o is built in two steps: clang with -ffp-contract=on marks the
+#   products that feed an addition within one expression as llvm.fmuladd
+#   (here exactly GCC's 23), before any optimization; each becomes llvm.fma,
+#   which wasm32 lowers to libc's fmaf (musl's: correctly rounded); then the
+#   IR is optimized and compiled as before. trigf.c needs nothing.
+# - The build stops if the count is not WASM_FMA_SITES (math.c changed: list
+#   GCC's sites again, BUILD.md "Fused multiply-adds").
+# WASM_FMA=0 builds math.o the Makefile's way.
+WASM_FMA ?= 1
+WASM_FMA_SITES ?= 23
+ifeq ($(WASM_FMA),1)
+WASM_FMA_OBJS := $(WASM_OBJ_DIR)/src/runtime/math.o
+$(WASM_FMA_OBJS): $(WASM_OBJ_DIR)/%.o: $(ROOT)/%.c
+	@mkdir -p "$(@D)"
+	@"$(EMCC)" $(WASM_CPPFLAGS) $(WASM_CFLAGS) -ffp-contract=on -Xclang -disable-llvm-passes \
+		-MMD -MP -MT "$@" -MF "$(@:.o=.d)" -S -emit-llvm -c "$<" -o "$(@:.o=.fmuladd.ll)"
+	@n=$$(grep -v '^declare' "$(@:.o=.fmuladd.ll)" | grep -c '@llvm\.fmuladd\.f'); \
+		[ "$$n" = "$(WASM_FMA_SITES)" ] || { echo "$<: $$n fused sites, not $(WASM_FMA_SITES)" >&2; exit 1; }
+	@awk '{ gsub(/@llvm\.fmuladd\.f/, "@llvm.fma.f") } \
+		/^declare / { match($$0, /@[-A-Za-z0-9_.]+/); n = substr($$0, RSTART, RLENGTH); if (n in seen) next; seen[n] = 1 } \
+		{ print }' "$(@:.o=.fmuladd.ll)" > "$(@:.o=.fma.ll)"
+	@"$(EMCC)" -O2 -ffunction-sections -fdata-sections -w -c "$(@:.o=.fma.ll)" -o "$@"
+endif
+
 WASM_VIEWER_EXPORTS := ["_malloc","_free","_msl_viewer_create","_msl_viewer_destroy","_msl_viewer_step","_msl_viewer_track","_msl_viewer_output"]
 
 .PHONY: wasm-viewer wasm-objects
@@ -68,3 +99,14 @@ $(WASM_VIEWER_MODULE): $(WASM_CORE_OBJS)
 		-sEXPORTED_FUNCTIONS='$(WASM_VIEWER_EXPORTS)' \
 		-sEXPORTED_RUNTIME_METHODS='["HEAPU8","FS"]' \
 		-o "$@" 2> "$(WASM_VIEWER_DIR)/link-warnings.log" || { cat "$(WASM_VIEWER_DIR)/link-warnings.log" >&2; exit 1; }
+
+# No local path in the module: the tree's own path, with either slash, is "."
+# in debug info, __FILE__ and assertion texts (WASM_TREE: the tree the build
+# runs in).
+WASM_TREE ?= $(CURDIR)
+WASM_PREFIX_MAP := -ffile-prefix-map=$(WASM_TREE)=. -fmacro-prefix-map=$(WASM_TREE)=. \
+	-ffile-prefix-map=$(subst /,\,$(WASM_TREE))=. -fmacro-prefix-map=$(subst /,\,$(WASM_TREE))=.
+WASM_CPPFLAGS += $(WASM_PREFIX_MAP)
+
+# (a build of its own may add flags to every object, after all others: WASM_EXTRA_CFLAGS)
+WASM_CFLAGS += $(WASM_EXTRA_CFLAGS)

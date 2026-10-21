@@ -32,8 +32,23 @@
  *       a fighter's animation as the game plays it: its index in the
  *       subaction table of the fighter `kind` (its own, or a thrower's), the
  *       frame, the rate, and the blend into it (frames, and how far in)
+ *   ["jp", f, spawn_id, (joint, mask, values)...]
+ *       an item's joints below its root as the game posed them, each only
+ *       as it changes (mask bit k: value k follows, of rot x, y, z, scale x,
+ *       y, z, translate x, y, z); a joint not yet sent is at its file's rest
+ *   ["fp", f, port, sub, character, (part, mask, values)...]
+ *       a fighter's swinging joints the simulator runs (its tail...), the
+ *       same nine values, by part
+ *   ["lm", f, spawn_id, links, (link, out, mask, values)...]
+ *       a chain's links as the item's code turned them: each link's matrix
+ *       (rows 0-2 of the 3x4), link 0 the chain's end, out whether it is drawn
  * and the ones for later (effects, part switches, stage animations): kept,
  * asked for by type.
+ *
+ * A float may come as the exact bits of its IEEE single, a string "0x" and
+ * eight hex digits (a newer simulator writes every float so, so two hosts'
+ * C libraries cannot round it apart): read back as the number it is, once,
+ * where a track comes in (decodeTrackFloats).
  *
  * A replay the simulator does not play exactly still has a track, good up to
  * the frame its game and the replay's part (diverged_at): everything asked of
@@ -42,6 +57,7 @@
  */
 import type { Tint } from "./fx/colanim";
 import { hasTrack, liveTrack, trackAnswer } from "./files";
+import { decodeTrackFloats } from "./trackcodec";
 import { pageCache, trim } from "../state/pageCache";
 
 export type TrackEvent = [number, string, ...(number | string)[]];
@@ -50,7 +66,25 @@ export interface TrackData {
   /** whether the simulator played the replay exactly, and if not the first
    *  game frame its game was not the replay's */
   exact?: boolean; diverged_at?: number | null;
+  /** its floats are numbers already (decodeTrackFloats has been through its events) */
+  decoded?: boolean;
 }
+
+/** one owner's pose lines ("jp", "fp", "lm"), each with the joints as of it */
+interface PoseSnap { frame: number; joints: Map<number, Float32Array>; out: Map<number, number> | null; links: number }
+
+/** a pose as of a frame: by joint (an item's preorder joint, a fighter's part, a chain's link) its values -
+ *  nine (rot, scale, translate; NaN for one not sent, which is the file's rest) or a link's twelve (its
+ *  matrix's rows 0-2) - and for a chain whether each link is out and how many it has */
+export interface TrackPose { joints: Map<number, Float32Array>; out: Map<number, number> | null; links: number }
+
+/** how a pose line reads: values before its joints that name the owner, values of a joint, whether a joint
+ *  has "out" before its mask, and whether the owner's header has a link count */
+const POSES: Record<string, { key: number; width: number; out: boolean; links: boolean }> = {
+  jp: { key: 1, width: 9, out: false, links: false },
+  fp: { key: 3, width: 9, out: false, links: false },
+  lm: { key: 1, width: 12, out: true, links: true },
+};
 
 /** how many values after the type name an event's thing is (its key): the
  *  rest is its new state. Types not here are instants (an effect started). */
@@ -82,6 +116,8 @@ export class ViewerTrack {
   readonly until: number;
 
   constructor(data: TrackData) {
+    // (a track handed over with its floats still as words: read them now)
+    if (!data.decoded) { decodeTrackFloats(data.events); data.decoded = true; }
     this.seconds = data.seconds ?? 0;
     // (a track that says it is not exact without saying where holds for none of it)
     this.until = typeof data.diverged_at === "number" ? data.diverged_at : data.exact === false ? -Infinity : Infinity;
@@ -269,6 +305,56 @@ export class ViewerTrack {
     if (!v || !v[0]) v = this.at("tint", second, frame);
     if (!v || !v[0]) return null;
     return tintOf(v.slice(1) as number[], facing);
+  }
+
+  /** the poses of one type ("jp", "fp", "lm"), by owner, made the first time they are asked for */
+  private poseSnaps = new Map<string, Map<string, PoseSnap[]>>();
+
+  private posesOf(type: string): Map<string, PoseSnap[]> {
+    let byKey = this.poseSnaps.get(type);
+    if (byKey) return byKey;
+    byKey = new Map();
+    this.poseSnaps.set(type, byKey);
+    const how = POSES[type];
+    if (!how) return byKey;
+    for (const e of this.instants.get(type) ?? []) {
+      const key = e.slice(2, 2 + how.key).join(":");
+      let list = byKey.get(key);
+      if (!list) byKey.set(key, (list = []));
+      const prev = list.length ? list[list.length - 1] : null;
+      const joints = new Map(prev?.joints);
+      const out = how.out ? new Map(prev?.out) : null;
+      let i = 2 + how.key;
+      const links = how.links ? Number(e[i++]) : 0;
+      while (i < e.length) {
+        const j = Number(e[i++]);
+        if (out) out.set(j, Number(e[i++]));
+        const mask = Number(e[i++]);
+        const had = joints.get(j);
+        const v = had ? Float32Array.from(had) : new Float32Array(how.width).fill(NaN);
+        for (let k = 0; k < how.width; k++) if (mask & (1 << k)) v[k] = Number(e[i++]);
+        joints.set(j, v);
+      }
+      // (two lines of one owner on a frame: the second holds both)
+      if (prev && prev.frame === e[0]) list.pop();
+      list.push({ frame: e[0], joints, out, links });
+    }
+    return byKey;
+  }
+
+  /** an owner's pose as of game frame `frame` (its last line at or before it), or null: "jp" and "lm" by
+   *  item spawn id, "fp" by `port:sub:character` */
+  pose(type: string, key: string, frame: number): TrackPose | null {
+    if (frame >= this.until || !this.instants.has(type)) return null;
+    const list = this.posesOf(type).get(key);
+    if (!list || !list.length || list[0].frame > frame) return null;
+    let lo = 0, hi = list.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (list[mid].frame <= frame) lo = mid;
+      else hi = mid - 1;
+    }
+    return list[lo];
   }
 
   /** a fighter's stored charge (the fighter's own field: "dk", "ss", ...), or undefined */

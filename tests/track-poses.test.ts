@@ -1,0 +1,113 @@
+// The viewer track's exact floats and poses: a float written as its IEEE
+// single's word ("0x3f800000") reads back as that float, from JSON and from
+// the compact form (VTB1's column kind 4); the pose lines ("jp", "fp", "lm")
+// add up, owner by owner, to each joint's values as of a frame.
+//
+//   deno test --no-check --sloppy-imports tests/
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { decodeTrackFloats, readTrack } from "../src/render3d/trackcodec.ts";
+import { ViewerTrack, type TrackEvent } from "../src/render3d/track.ts";
+
+const word = (x: number) => {
+  const f = new Float32Array([x]);
+  return "0x" + new Uint32Array(f.buffer)[0].toString(16).padStart(8, "0");
+};
+
+test("a float's word reads back as the float, bit for bit", () => {
+  const values = [1, -0, 0.1, 1e-38, 3.4e38, -123.456, Math.fround(Math.PI), 6e-7];
+  const e: TrackEvent = [5, "x", ...values.map(word), "s", "0x12", 7];
+  decodeTrackFloats([e]);
+  values.forEach((v, i) => assert.ok(Object.is(e[2 + i], Math.fround(v)), `value ${i}`));
+  // (other strings and numbers are left as they are)
+  assert.deepEqual(e.slice(2 + values.length), ["s", "0x12", 7]);
+});
+
+/** a VTB1 buffer (uncompressed) of one type whose rows are a frame and one column of float words */
+function vtb1(type: string, rows: [number, number][]): Uint8Array {
+  const out: number[] = [];
+  const varint = (x: number) => { while (x >= 0x80) { out.push((x % 128) | 0x80); x = Math.floor(x / 128); } out.push(x); };
+  const zigzag = (x: number) => varint(x >= 0 ? x * 2 : -x * 2 - 1);
+  const text = (s: string) => { const b = new TextEncoder().encode(s); varint(b.length); out.push(...b); };
+  out.push(...new TextEncoder().encode("VTB1"));
+  text(JSON.stringify({ version: 2 }));
+  varint(1); text(type);
+  varint(rows.length); for (let i = 0; i < rows.length; i++) varint(0);
+  out.push(0); varint(1);
+  let last = 0;
+  for (const [f] of rows) { zigzag(f - last); last = f; }
+  out.push(4);
+  let w = 0;
+  for (const [, x] of rows) {
+    const u = new Uint32Array(new Float32Array([x]).buffer)[0];
+    zigzag(u - w); w = u;
+  }
+  return new Uint8Array(out);
+}
+
+test("the compact form's float column (kind 4) gives the floats themselves", () => {
+  const xs = [1.5, -2.25, Math.fround(0.3), 0, -0];
+  const t = readTrack(vtb1("cam", xs.map((x, i) => [-123 + i, x])));
+  assert.equal(t.decoded, true);
+  t.events.forEach((e, i) => { assert.equal(e[0], -123 + i); assert.ok(Object.is(e[2], Math.fround(xs[i]))); });
+});
+
+test("a track handed over undecoded is read the same", () => {
+  const t = new ViewerTrack({ version: 2, events: [[-123, "fod", word(10.5), word(20.25)]] });
+  assert.deepEqual(t.at("fod", "", -100), [10.5, 20.25]);
+});
+
+test("pose lines add up per owner: a joint's last values, a value never sent at the rest (NaN)", () => {
+  const t = new ViewerTrack({
+    version: 2, decoded: true,
+    events: [
+      // item 7: joint 2's rot y and translate x; then only its rot y; joint 3 at frame 12
+      [10, "jp", 7, 2, (1 << 1) | (1 << 6), 0.5, 3],
+      [11, "jp", 7, 2, 1 << 1, 0.75],
+      [12, "jp", 7, 3, 1 << 8, -1],
+      // two lines of one owner on a frame: both count
+      [12, "jp", 7, 2, 1 << 0, 0.25],
+      // a fighter's tail: port 1, Nana no, Fox (1)
+      [10, "fp", 1, 0, 1, 18, 0x1ff, 1, 2, 3, 1, 1, 1, 0, 0, 0],
+      [11, "fp", 1, 0, 1, 18, 1 << 2, 4],
+    ],
+  });
+  assert.equal(t.pose("jp", "7", 9), null);
+  const p10 = t.pose("jp", "7", 10)!;
+  assert.deepEqual([...p10.joints.get(2)!].map((v) => (Number.isNaN(v) ? null : v)), [null, 0.5, null, null, null, null, 3, null, null]);
+  const p11 = t.pose("jp", "7", 11)!.joints.get(2)!;
+  assert.equal(p11[1], 0.75);
+  assert.equal(p11[6], 3);
+  // (an earlier frame's pose is as it was then)
+  assert.equal(t.pose("jp", "7", 10)!.joints.get(2)![1], 0.5);
+  const p12 = t.pose("jp", "7", 99)!;
+  assert.equal(p12.joints.get(2)![0], 0.25);
+  assert.equal(p12.joints.get(2)![1], 0.75);
+  assert.equal(p12.joints.get(3)![8], -1);
+  const fp = t.pose("fp", "1:0:1", 20)!.joints.get(18)!;
+  assert.deepEqual([...fp], [1, 2, 4, 1, 1, 1, 0, 0, 0]);
+  assert.equal(t.pose("fp", "1:0:2", 20), null);
+});
+
+test("a chain's links: each link's matrix and whether it is out, and the chain's length", () => {
+  const m = (base: number) => Array.from({ length: 12 }, (_, k) => base + k);
+  const t = new ViewerTrack({
+    version: 2, decoded: true,
+    events: [
+      [20, "lm", 9, 3, 0, 0, 0xfff, ...m(0), 1, 1, 0xfff, ...m(100), 2, 0, 0xfff, ...m(200)],
+      // link 1 moves its place (row 0's last value) only; link 2 comes out (written whole)
+      [21, "lm", 9, 3, 1, 1, 1 << 3, 50, 2, 1, 0xfff, ...m(300)],
+    ],
+  });
+  const a = t.pose("lm", "9", 20)!;
+  assert.equal(a.links, 3);
+  assert.equal(a.out!.get(1), 1);
+  assert.equal(a.out!.get(2), 0);
+  const b = t.pose("lm", "9", 21)!;
+  assert.equal(b.joints.get(1)![3], 50);
+  assert.equal(b.joints.get(1)![4], 104);
+  assert.equal(b.out!.get(2), 1);
+  assert.equal(b.joints.get(2)![0], 300);
+  assert.equal(b.joints.get(0)![11], 11);
+});

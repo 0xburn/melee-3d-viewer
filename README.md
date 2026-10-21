@@ -108,6 +108,14 @@ Frames are numbered as the game numbers them (-123 is the first). When the
 simulator does not reproduce the replay exactly, `diverged_at` is the first
 frame that differs and the viewer uses the track only before it.
 
+A newer simulator writes every float as its IEEE single's bits, a string
+`"0x"` and eight hex digits (`"0x3f800000"` is 1.0), so the value is exact and
+does not depend on the C library that printed it; the viewer reads both forms.
+Its track also has the poses the game's own code sets: an item's joints
+(`jp`), a fighter's swinging joints the simulator runs (`fp`) and a chain's
+link matrices (`lm`). The viewer uses them where the track has them and works
+the poses out itself where it does not.
+
 Load the replay and its track on the dev page, or pass `trackUrl` to the
 embed page (below).
 
@@ -157,9 +165,13 @@ To build it, with [Emscripten](https://emscripten.org) 6.0.9 active
 
 ```
 make -f Makefile -f <this repository>/scripts/sim/wasm-viewer.mk wasm-viewer \
-  MSL_VISUAL_TRACK_BUILD=1 MSL_REPLAY_ARITHMETIC=1 -j8
+  MSL_VISUAL_TRACK_BUILD=1 MSL_REPLAY_ARITHMETIC=1 WASM_OPT=release -j8
 cp build/melee_core/wasm/viewer/melee-sim.mjs build/melee_core/wasm/viewer/melee-sim.wasm <this repository>/sim/
 ```
+
+`WASM_OPT=release` mirrors the simulator's native release profile (faster;
+the released build uses it). Local paths are mapped to `.` in the build
+(`-ffile-prefix-map`, `-fmacro-prefix-map`), so none ends up in the module.
 
 `scripts/sim/wasm-viewer.mk` compiles the same objects as the simulator's own
 `make wasm` and links them for the viewer: it exports the viewer API
