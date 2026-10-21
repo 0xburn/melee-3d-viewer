@@ -204,7 +204,7 @@ interface Inner {
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
                                "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
-                               "drawGeometry", "drawParticles", "drawTrail", "drawSphere"] as const;
+                               "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
 
@@ -259,6 +259,9 @@ export class DrawLog {
     wrap("endShadow", () => { this.cast = null; });
     wrap("drawOne", (a, drew) => { if (drew) this.mesh(a[0] as Drawable, a[1] !== null, a[2] as Skeleton | null); });
     wrap("drawGeometry", (a, drew) => { if (drew) this.add({ kind: "depth", obj: (a[0] as Drawable).key }); });
+    // (a camera into a target of its own - Stadium's screen - is logged in that picture's pixels)
+    wrap("overlay", (a) => { const t = a[2] as { w: number; h: number } | null | undefined; this.target = t ? [t.w, t.h] : null; });
+    wrap("endOverlay", () => { this.target = null; });
     wrap("drawParticles", (a) => this.particles(a[0] as Float32Array, a[1] as Batch[]));
     // (the trail and the sphere set GL themselves: their state is drawTrail's and drawSphere's own)
     wrap("drawTrail", (a, drew) => {
@@ -294,6 +297,9 @@ export class DrawLog {
     this.add({ kind: "clear", w, h, z: { test: false, func: "always", write: false },
                blend: { on: false, src: null, dst: null, sub: false, logic: null } });
   }
+
+  /** the size of the target the draws go into now, when it is not the frame's picture */
+  private target: [number, number] | null = null;
 
   private note(msg: string) {
     this.add({ kind: "error", msg });
@@ -515,19 +521,23 @@ export class DrawLog {
   private particles(data: Float32Array, batches: Batch[]) {
     const s = this.inner;
     const vp = s.overlayVP ?? s.viewProj;
+    const [PW, PH] = this.target ?? [640, 480];
+    // (a camera that turns the picture over has its rows the other way)
+    const flip = s.mirrored && this.target !== null;
     for (const b of batches) {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      // (a lettering batch, the name plates': each quad's own box and the picture's corner it reads, to set beside the
+      // (a lettering batch, the name plates' or Stadium's screen's: each quad's own box and the picture's corner it reads, to set beside the
       // game's draws one glyph at a time)
-      const cells: { box: number[]; uv: number[] }[] | null = b.sprite?.key === "plate-font" ? [] : null;
+      const cells: { box: number[]; uv: number[] }[] | null = b.sprite && (b.sprite.key === "plate-font" || b.sprite.key.startsWith("screen-font")) ? [] : null;
       for (let q = b.first; q < b.first + b.count; q++) {
         let qx0 = Infinity, qy0 = Infinity, qx1 = -Infinity, qy1 = -Infinity;
         for (let v = 0; v < 4; v++) {
           const o = (q * 4 + v) * 17, X = data[o], Y = data[o + 1], Z = data[o + 2];
           const w = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
           if (w <= 1e-9) continue;
-          const sx = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / w * 0.5 + 0.5) * 640;
-          const sy = (0.5 - (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / w * 0.5) * 480;
+          const sx = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / w * 0.5 + 0.5) * PW;
+          const ny = (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / w * 0.5;
+          const sy = (flip ? 0.5 + ny : 0.5 - ny) * PH;
           x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
           qx0 = Math.min(qx0, sx); qy0 = Math.min(qy0, sy); qx1 = Math.max(qx1, sx); qy1 = Math.max(qy1, sy);
         }
@@ -548,6 +558,7 @@ export class DrawLog {
         overlay: s.overlayVP !== null,
         bbox: Number.isFinite(x0) ? [x0, y0, x1, y1].map((v) => Math.round(v * 10) / 10) : null,
         ...(cells ? { cells } : {}),
+        ...(this.target ? { target: this.target } : {}),
       });
     }
   }

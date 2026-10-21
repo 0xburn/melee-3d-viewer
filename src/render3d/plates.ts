@@ -216,11 +216,14 @@ export function pastTheEnd(first: boolean): Uint8Array {
 // ---------------------------------------------------------------- the glyph atlas
 
 const CELL = GLYPH_PX + 2, COLS = 17;
-const atlases = new WeakMap<SisFont, GlyphAtlas>();
+const atlases = new WeakMap<SisFont, Map<string, GlyphAtlas>>();
 
-/** the glyphs of a font in one picture (made once per font): `key` names the picture */
+/** the glyphs of a font in one picture (made once per font and name): `key` names the picture, so the draw log
+ *  can tell what a batch is lettering */
 export function glyphAtlasOf(f: SisFont, key: string): GlyphAtlas {
-  const had = atlases.get(f);
+  let byKey = atlases.get(f);
+  if (!byKey) atlases.set(f, (byKey = new Map()));
+  const had = byKey.get(key);
   if (had) return had;
   const n = Math.floor(f.images.length / 512);
   const rows = Math.ceil(n / COLS), w = COLS * CELL, h = rows * CELL;
@@ -241,7 +244,7 @@ export function glyphAtlasOf(f: SisFont, key: string): GlyphAtlas {
     uv[g * 4 + 2] = (cx + 1 + GLYPH_PX) / w; uv[g * 4 + 3] = (cy + 1 + GLYPH_PX) / h;
   }
   const atlas = { sprite: { key, w, h, rgba }, uv };
-  atlases.set(f, atlas);
+  byKey.set(key, atlas);
   return atlas;
 }
 

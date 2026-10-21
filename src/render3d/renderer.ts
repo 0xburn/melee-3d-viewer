@@ -870,7 +870,7 @@ export class Renderer {
   /** images the game renders into at run time (Pokemon Stadium's big
    *  screen): drawn from a picture the caller makes, uploaded when its
    *  version changes */
-  private live = new WeakMap<Image, { tex: WebGLTexture | null; version: number; source: TexImageSource | null }>();
+  private live = new WeakMap<Image, { tex: WebGLTexture | null; version: number; source: TexImageSource | null; target?: RenderTarget }>();
 
   /** show this picture where the file has the image (a render target), from now on */
   liveImage(image: Image, source: TexImageSource, version: number) {
@@ -893,6 +893,26 @@ export class Renderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
     l.version = version;
     this.bound.fill(null);
+  }
+
+  /** A live image's texture as a target to draw into (w x h, as its picture is): Pokemon Stadium's screen,
+   *  which the game letters with quads drawn into the picture it shows. The texture must have been made
+   *  (liveImage); its first row is the top, so draw through a camera that turns the picture over. */
+  liveTarget(image: Image, w: number, h: number): RenderTarget | null {
+    const l = this.live.get(image);
+    if (!l?.tex) return null;
+    if (l.target && l.target.w === w && l.target.h === h) return l.target;
+    const gl = this.gl;
+    const depth = gl.createRenderbuffer()!;
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, l.tex, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.bound.fill(null);
+    return (l.target = { fbo, tex: l.tex, depth, w, h });
   }
 
   /** A part of the picture drawn so far into a live image's texture (w x

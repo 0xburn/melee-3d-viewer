@@ -14,23 +14,44 @@
  * The choice among them is the game's random numbers, which neither the
  * replay nor (yet) the viewer track has: the order here comes from a
  * seeded stand-in, drawn with the game's weights and durations (the stage's
- * yakumono_param). The text is drawn with the browser's own font, not the
- * game's, laid out as the game lays it out (the screen is 250 by 160).
+ * yakumono_param). The text is the game's own lettering (sistext.ts) when the
+ * executable is there: each frame a quad per glyph is drawn into the picture
+ * the screen shows (250 by 160), as the game draws them, and the browser's own
+ * font otherwise.
  */
 import type { ReplayData } from "../../common/types";
 import { Rng } from "../fx/particles";
 import { STADIUM_NORMAL, STADIUM_TIMES, stadiumEventsFromScreens, stadiumForms, type Stage, type StageFrame, type StageLogic, type StadiumTimes } from "../stage";
 import type { Emitter, Ender } from "./particles";
 import type { ViewerTrack } from "../track";
-import { ascii, glyphAlpha, type Lettering, layoutSis, type SisCommon, type SisFont, sisString, type SisTextOpts } from "../sistext";
+import { ascii, glyphAlpha, type Lettering, layoutSis, type SisCommon, type SisFont, type SisGlyph, sisString, type SisTextOpts } from "../sistext";
+import { glyphAtlasOf } from "../plates";
+
+/** what drawLetters asks of the renderer (renderer.ts): a target on the screen's picture, a camera into it, the
+ *  glyph quads */
+export interface LetterBatch { sprite: { key: string; w: number; h: number; rgba: Uint8Array }; additive: boolean; near: boolean;
+                               zwrite: boolean; nozcomp: boolean; first: number; count: number }
+export interface LetterRenderer {
+  liveTarget(image: unknown, w: number, h: number): unknown;
+  target(w: number, h: number): unknown;
+  overlay(viewProj: Float32Array, view: Float32Array, target: unknown, clear: [number, number, number, number] | null, mirrored: boolean): void;
+  drawParticles(data: Float32Array, batches: LetterBatch[]): void;
+  endOverlay(): void;
+}
 
 /** a mode of the screen from a frame (the replay's index) */
 interface Shown { at: number; mode: number; player: number }
 
 const W = 250, H = 160;
+/** the camera into the screen's picture: its pixels, y down, row 0 the top */
+const SCREEN_VP = Float32Array.from([2 / W, 0, 0, 0, 0, 2 / H, 0, 0, 0, 0, 1, 0, -1, -1, 0, 1]);
+const SCREEN_VIEW = Float32Array.from([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 /** the joint each mode shows (the code's bits: 0x40 the screen itself) */
 const JOINT_OF: Record<number, number> = { 2: 6, 3: 3, 4: 4, 5: 9, 6: 7, 15: 8, 16: 5 };
 const PICTURES = [2, 3, 4, 5, 6, 7, 8, 9];
+/** the modes whose per-frame code writes the screen's text (grStadium_801D2344: the page cleared, the stage's
+ *  information, a player defeated, the leaders, Ready and the rest) */
+const TEXT_MODES = new Set([0, 1, 9, 10, 11, 12, 13, 14]);
 /** the stage's form (the replay's type) -> the transformation's mode */
 const FORM_MODE: Record<number, number> = { 5: 2, 3: 3, 4: 4, 9: 5, 6: 6 };
 const FORM_NAME: Record<number, string> = { 5: "Normal", 3: "Fire", 4: "Grass", 9: "Water", 6: "Rock" };
@@ -174,6 +195,9 @@ export class StadiumScreen implements StageLogic {
   private ctx: CanvasRenderingContext2D;
   private drawn = "";
   version = 0;
+  /** the game's lettering for the frame: each glyph's quad, drawn into the screen's picture each frame
+   *  (drawLetters); what the stage's code wrote last, null before and without the executable */
+  private letters: { data: Float32Array; batches: LetterBatch[] } | null = null;
   /** the mode up on the frame last applied */
   mode = 1;
   player = -1;
@@ -248,6 +272,17 @@ export class StadiumScreen implements StageLogic {
     this.shown = out;
   }
 
+  /** the text the screen has on a frame: the mode that wrote it last and the frame it did, or null before any */
+  private lastText(frame: number): { mode: number; frame: number } | null {
+    let i = 0;
+    for (let k = 0; k < this.shown.length && this.shown[k].at <= frame; k++) i = k;
+    if (TEXT_MODES.has(this.shown[i].mode)) return { mode: this.shown[i].mode, frame };
+    for (let k = i - 1; k >= 0; k--) {
+      if (TEXT_MODES.has(this.shown[k].mode)) return { mode: this.shown[k].mode, frame: this.shown[k + 1].at };
+    }
+    return null;
+  }
+
   private at(frame: number): Shown {
     let s = this.shown[0];
     for (const x of this.shown) { if (x.at > frame) break; s = x; }
@@ -271,9 +306,16 @@ export class StadiumScreen implements StageLogic {
   /** the text page's picture (drawn again only when what it says changes) */
   draw(frame: number) {
     const m = this.mode;
-    if (m === 7 || m === 8) return;
     const lettering = this.st.lettering;
-    if (lettering) { this.drawGame(frame, lettering); return; }
+    // (the stage's code sets the text in these modes only; in the others it stays as it was, and is drawn all the same)
+    if (lettering) {
+      // (what the stage's code wrote last, whichever frame this is: in a mode that writes none, the last text of the
+      // mode before it, as of the frame that mode ended - its code ran that frame too)
+      const t = this.lastText(frame);
+      if (t) this.drawGame(t.frame, lettering, t.mode);
+      return;
+    }
+    if (m === 7 || m === 8) return;
     const ctx = this.ctx;
     const lines: string[] = [];
     if (m === 1 || m === 14) {
@@ -333,8 +375,8 @@ export class StadiumScreen implements StageLogic {
    *  grStadium_801D3BBC the current leaders in their colors; grStadium_801D3A0C
    *  a player defeated; grStadium_801D3F40 "Ready?", "Go!", "Time!", "Sudden
    *  Death"). The rest show the file's empty page. */
-  private gameText(frame: number, L: Lettering): { page: number[]; lines: number[]; opts: SisTextOpts } {
-    const m = this.mode, c = L.common;
+  private gameText(frame: number, L: Lettering, m: number): { page: number[]; lines: number[]; opts: SisTextOpts } {
+    const c = L.common;
     const page = (k: number) => pageOps(L.file.pages[k]);
     const opts: SisTextOpts = { boxW: W, boxH: H, align: 1, dynamic: true };
     const lines: number[] = [];
@@ -413,9 +455,9 @@ export class StadiumScreen implements StageLogic {
   private glyphs = new Map<SisFont, Map<string, HTMLCanvasElement>>();
 
   /** the screen's picture with the game's text, drawn again when what it says changes */
-  private drawGame(frame: number, L: Lettering) {
-    const { page, lines, opts } = this.gameText(frame, L);
-    const key = `${this.mode}:${page.length}:${page.join(",")}|${lines.join(",")}`;
+  private drawGame(frame: number, L: Lettering, m: number) {
+    const { page, lines, opts } = this.gameText(frame, L, m);
+    const key = `${m}:${page.length}:${page.join(",")}|${lines.join(",")}`;
     if (key === this.drawn) return;
     this.drawn = key;
     this.clear();
@@ -443,7 +485,50 @@ export class StadiumScreen implements StageLogic {
       ctx.drawImage(pic, g.x, g.y, g.w, g.h);
     }
     ctx.restore();
-    this.version++;
+    // (the picture the screen shows is the game's way: the glyphs' quads drawn into it each frame, drawLetters;
+    // the canvas keeps a copy for the checks, and is not uploaded)
+    this.letters = this.lettersOf(glyphs, L);
+  }
+
+  /** the glyphs as quads for the renderer's particle pass (17 floats a vertex, four a quad), one batch for each run
+   *  of one font's: in the picture's own pixels, y down. A glyph's color is its quad's, the texture's alpha its
+   *  alpha. */
+  private lettersOf(glyphs: SisGlyph[], L: Lettering): { data: Float32Array; batches: LetterBatch[] } {
+    const out: number[] = [];
+    const batches: LetterBatch[] = [];
+    const common = L.common?.font ?? null;
+    for (const g of glyphs) {
+      const atlas = glyphAtlasOf(g.font, g.font === common ? "screen-font:common" : "screen-font:file");
+      const last = batches[batches.length - 1];
+      if (!last || last.sprite !== atlas.sprite) {
+        batches.push({ sprite: atlas.sprite, additive: false, near: false, zwrite: false, nozcomp: true, first: out.length / 68, count: 0 });
+      }
+      batches[batches.length - 1].count++;
+      const [r, gr, b] = g.color.map((v) => v / 255);
+      const u0 = atlas.uv[g.index * 4], vTop = atlas.uv[g.index * 4 + 1], u1 = atlas.uv[g.index * 4 + 2], vBottom = atlas.uv[g.index * 4 + 3];
+      const x0 = g.x, x1 = g.x + g.w, top = g.y, bottom = g.y + g.h;
+      // (corners bottom left, top left, top right, bottom right: position 3, texture 2, primary 4, environment 4,
+      // the alpha compare always passing 3, textured 1)
+      const v = (x: number, y: number, u: number, t: number) => out.push(x, y, 0, u, t, r, gr, b, 1, r, gr, b, 0, 63, 0, 0, 1);
+      v(x0, bottom, u0, vBottom); v(x0, top, u0, vTop); v(x1, top, u1, vTop); v(x1, bottom, u1, vBottom);
+    }
+    return { data: Float32Array.from(out), batches };
+  }
+
+  private scratch: unknown = null;
+
+  /** The screen's lettering drawn into its picture, as the game does it every frame whatever the screen shows:
+   *  the picture cleared to black, then a quad a glyph over it, through a camera of the picture's own pixels that
+   *  turns it over (its first row is the top). While the screen shows the match the picture is the match's, and
+   *  the lettering goes into one of its own. Nothing without the executable's font. */
+  drawLetters(r: LetterRenderer, image: unknown) {
+    if (!this.letters) return;
+    const shows = this.mode === 7 || this.mode === 8;
+    const target = shows ? (this.scratch ??= r.target(W, H)) : r.liveTarget(image, W, H);
+    if (!target) return;
+    r.overlay(SCREEN_VP, SCREEN_VIEW, target, [0, 0, 0, 1], true);
+    r.drawParticles(this.letters.data, this.letters.batches);
+    r.endOverlay();
   }
 
   /** the stage's form at a frame (the replay's stadium events), 5 before any */

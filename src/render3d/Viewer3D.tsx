@@ -1483,6 +1483,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // and all but the effects are in its fog
     prof.mark("stageLogic");
     r.begin(viewProj, view, st ? st.clear : [0.02, 0.02, 0.05], w, h, [box.dw, box.dh]);
+    // (Stadium's screen: the game's lettering, a quad a glyph drawn into its picture, first of the frame's draws)
+    if (st?.screen && scene?.screen) scene.screen.drawLetters(r, st.screen.image);
     const stageLit = st ? st.lighting.at(fno) : DEFAULT_LIGHTING;
     const lighting = st ? st.playerLighting.at(fno) : DEFAULT_LIGHTING;
     r.setFog(st?.fogNow ?? null);
