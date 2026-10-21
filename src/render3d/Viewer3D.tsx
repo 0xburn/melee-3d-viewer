@@ -1579,10 +1579,17 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         dy.d.apply(fi.skeleton.rot, fi.skeleton.trans, fi.skeleton.scale);
         fi.skeleton.update();
       }
+      // (the joints as the game left them - its animation, the blend into it, what its code set after - when
+      // the track has them: "fj", every part gameplay keeps live; the presentation-only ones keep the
+      // viewer's pose)
+      const owner = `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`;
+      const posedBy = trackAt?.pose("fj", owner, fno - 123);
+      let laid = posedBy ? layTrackSwing(fi, a.st.internalCharacterId, posedBy.joints, true) : false;
       // (and the ones the simulator runs - the chains a hurtbox sits on - as the game swung them, when the
       // track has them: "fp")
-      const swungBy = trackAt?.pose("fp", `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`, fno - 123);
-      if (swungBy && layTrackSwing(fi, a.st.internalCharacterId, swungBy.joints, true)) fi.skeleton.update();
+      const swungBy = trackAt?.pose("fp", owner, fno - 123);
+      if (swungBy && layTrackSwing(fi, a.st.internalCharacterId, swungBy.joints, true)) laid = true;
+      if (laid) fi.skeleton.update();
     };
     for (const a of actors) {
       const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
