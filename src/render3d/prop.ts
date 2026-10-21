@@ -5,8 +5,20 @@
  * the viewer only says where it is and which frame of its animation. */
 import { AObj, Archive, DObj, JObj, MatAnim, loadAnimJoint, loadJoint, loadMatAnimJoint } from "./hsd";
 import { RENDER } from "./gx";
-import { ident, invert, Mat, mul, srt } from "./math";
+import { ident, invert, Mat, mul } from "./math";
+import { HSD_MtxSRT, mtxToGL } from "./gxmath";
 import { Skeleton } from "./skeleton";
+
+// the root's place as the game makes a joint's matrix: HSD_MtxSRT, in float32 with its own sinf and cosf
+// (an item's turn of a quarter about y is the game's cosf of it, not 0)
+const srtM = new Float32Array(12), srtS = [0, 0, 0], srtR = [0, 0, 0], srtT = [0, 0, 0];
+function gameSrt(out: Mat, sx: number, sy: number, sz: number, rx: number, ry: number, rz: number, tx: number, ty: number,
+                 tz: number) {
+  srtS[0] = sx; srtS[1] = sy; srtS[2] = sz;
+  srtR[0] = rx; srtR[1] = ry; srtR[2] = rz;
+  srtT[0] = tx; srtT[1] = ty; srtT[2] = tz;
+  mtxToGL(HSD_MtxSRT(srtM, srtS, srtR, srtT, null), out);
+}
 
 const NO_DOBJS: DObj[] = [];
 
@@ -79,7 +91,7 @@ export class Prop {
       sk.resetMaterials();
       sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, loop);
     }
-    srt(this.place, scale, scale, scale, rotX, rotY, rotZ, x, y, z);
+    gameSrt(this.place, scale, scale, scale, rotX, rotY, rotZ, x, y, z);
     sk.update(this.place);
   }
 
@@ -138,7 +150,7 @@ export class Prop {
     const sk = this.skeleton;
     sk.resetPose();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
-    srt(this.place, scale[0], scale[1], scale[2], 0, rotY, 0, x, y, z);
+    gameSrt(this.place, scale[0], scale[1], scale[2], 0, rotY, 0, x, y, z);
     sk.update(this.place);
   }
 
