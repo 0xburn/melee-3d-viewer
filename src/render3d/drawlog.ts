@@ -260,7 +260,12 @@ export class DrawLog {
     wrap("drawOne", (a, drew) => { if (drew) this.mesh(a[0] as Drawable, a[1] !== null, a[2] as Skeleton | null); });
     wrap("drawGeometry", (a, drew) => { if (drew) this.add({ kind: "depth", obj: (a[0] as Drawable).key }); });
     // (a camera into a target of its own - Stadium's screen - is logged in that picture's pixels)
-    wrap("overlay", (a) => { const t = a[2] as { w: number; h: number } | null | undefined; this.target = t ? [t.w, t.h] : null; });
+    // (cleared as it goes in, a target is the game's erase of that picture, as at a frame's start)
+    wrap("overlay", (a) => {
+      const t = a[2] as { w: number; h: number } | null | undefined;
+      this.target = t ? [t.w, t.h] : null;
+      if (t && a[3]) this.clear(t.w, t.h);
+    });
     wrap("endOverlay", () => { this.target = null; });
     wrap("drawParticles", (a) => this.particles(a[0] as Float32Array, a[1] as Batch[]));
     // (the trail and the sphere set GL themselves: their state is drawTrail's and drawSphere's own)
