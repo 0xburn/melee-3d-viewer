@@ -6,7 +6,7 @@ import test from "node:test";
 import assertNode from "node:assert/strict";
 import { FOG_GLSL, NO_FOG, fogAmount8, fogBlend8, gxSetFog, nearFar } from "../src/render3d/fog.ts";
 import { perspective } from "../src/render3d/math.ts";
-import { compiler, runC } from "./cref.ts";
+import { cSkip, runC } from "./cref.ts";
 import { browser, runPage } from "./webgl.ts";
 
 const assert = (ok: unknown, msg = "assertion failed") => assertNode.ok(ok, msg);
@@ -41,7 +41,7 @@ function cases(n: number): [number, number, number, number, number, [number, num
   return out;
 }
 
-test("GXSetFog's packing is the SDK's, bit for bit", { skip: !compiler() && "no C compiler" }, () => {
+test("GXSetFog's packing is the SDK's, bit for bit", { skip: cSkip("fog_ref") }, () => {
   const cs = cases(20000);
   const input = cs.map(([t, s, e, n, f, c]) => `${t} ${hex(s)} ${hex(e)} ${hex(n)} ${hex(f)} ${c.join(" ")}`).join("\n") + "\n";
   const lines = runC("fog_ref", input).trim().split("\n");

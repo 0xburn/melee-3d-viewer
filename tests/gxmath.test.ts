@@ -4,39 +4,14 @@
 
 import test from "node:test";
 import assertNode from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import * as G from "../src/render3d/gxmath.ts";
 import { cosf, sinf, tanf } from "../src/render3d/fx/gamemath.ts";
-
-const SRC = new URL("./c/gxmath_ref.c", import.meta.url).pathname;
-
-function compiler(): string | null {
-  for (const cc of ["cc", "gcc", "clang"]) {
-    try { execFileSync(cc, ["--version"], { stdio: "ignore" }); return cc; } catch { /* next */ }
-  }
-  return null;
-}
-const CC = compiler();
-let dir: string | null = null, exe: string | null = null;
-function ref(): string {
-  if (exe) return exe;
-  dir = mkdtempSync(join(tmpdir(), "gxmath-"));
-  exe = join(dir, "ref");
-  execFileSync(CC!, ["-O1", "-ffp-contract=off", "-fno-fast-math", "-o", exe, SRC, "-lm"], { stdio: "inherit" });
-  return exe;
-}
+import { cSkip, cleanC, runCFile } from "./cref.ts";
 
 /** the C reference's results for these inputs (groups of float32s) */
 function runC(fn: string, inputs: number[][]): Uint32Array {
   const flat = new Float32Array(inputs.flat());
-  const run = ref();
-  const a = join(dir!, "in.bin"), b = join(dir!, "out.bin");
-  writeFileSync(a, new Uint8Array(flat.buffer));
-  execFileSync(run, [fn, a, b]);
-  const out = readFileSync(b);
+  const out = runCFile("gxmath_ref", new Uint8Array(flat.buffer), [fn]);
   return new Uint32Array(out.buffer, out.byteOffset, out.byteLength / 4);
 }
 
@@ -66,7 +41,7 @@ function same(fn: string, inputs: number[][], ts: (a: number[]) => number[]) {
   }
 }
 
-const skip = !CC && "no C compiler";
+const skip = cSkip("gxmath_ref");
 const M = (a: number[], o = 0) => Float32Array.from(a.slice(o, o + 12));
 
 test("madd rounds once, even where the double sum lands on a float's half-way point", { skip }, () => {
@@ -172,4 +147,4 @@ test("the matrices move to and from GL's column-major 4 x 4s unchanged", () => {
   assertNode.equal(g[10], Math.fround(2 * p[10] - 1));
 });
 
-test.after?.(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+test.after?.(cleanC);
