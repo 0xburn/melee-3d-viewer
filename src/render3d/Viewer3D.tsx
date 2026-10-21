@@ -25,7 +25,7 @@ import * as files from "./files";
 import { Hud3D } from "./Hud3D";
 import { CRT_LOOKS, type CrtPreset, isCrtPreset, tubeOutline, unbend } from "./crt";
 import { invert, lookAt, mat, perspective, translation, mul } from "./math";
-import { CAM_ASPECT, CAM_STRIDE, CamActor, CameraRun, cameraRun, gameProjection, gameView, playerScales } from "./camera";
+import { CAM_ASPECT, CAM_FAR, CAM_NEAR, CAM_STRIDE, CamActor, CameraRun, cameraRun, gameProjection, gameView, playerScales } from "./camera";
 import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf } from "./hitlag";
 import { setBillboardView } from "./skeleton";
 import { DEFAULT_LIGHTING, Renderer } from "./renderer";
@@ -1503,7 +1503,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // stage is lit by its own lights, everything else by its player lights,
     // and all but the effects are in its fog
     prof.mark("stageLogic");
-    r.begin(proj, view, st ? st.clear : [0.02, 0.02, 0.05], w, h, [box.dw, box.dh], gxProjOn ? gxProj : null);
+    r.begin(proj, view, st ? st.clear : [0.02, 0.02, 0.05], w, h, [box.dw, box.dh], gxProjOn ? gxProj : null,
+            gxProjOn ? [CAM_NEAR, CAM_FAR] : null);
     // (Stadium's screen: the game's lettering, a quad a glyph drawn into its picture, first of the frame's draws)
     if (st?.screen && scene?.screen) scene.screen.drawLetters(r, st.screen.image);
     const stageLit = st ? st.lighting.at(fno) : DEFAULT_LIGHTING;

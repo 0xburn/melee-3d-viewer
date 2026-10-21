@@ -19,6 +19,7 @@ import { Mat, invert, lookAt, mul } from "./math";
 import { concatGL } from "./gxmath";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
+import { FOG_GLSL, type FogRegs, NO_FOG, gxSetFog, nearFar } from "./fog";
 import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar, textureMatrix } from "./gx";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
 import { LOOK_H, LOOK_W, Look480 } from "./look480";
@@ -236,8 +237,7 @@ uniform vec4 uFlat; // one flat color (a ghost's outline), when a > 0
 uniform vec4 uOutline; // the lit color toward rgb by a, when a > 0 (Mr. Game & Watch's outline: ftmaterial.c)
 uniform float uFlash; // toward white (an L-cancel's flash), 0..1
 uniform vec4 uOverColor; // a color animation's color, blended over by its alpha
-uniform vec4 uFog; // GX fog: type (0 none), start, end (eye depth)
-uniform vec3 uFogColor;
+${FOG_GLSL}
 out vec4 outColor;
 
 // a texture's own TEV stage (HSD_TObjTevDesc): GX_CC_* / GX_CA_* inputs, or
@@ -395,13 +395,8 @@ void main() {
   int op = (at >> 6) & 3;
   if (!(op == 0 ? (p0 && p1) : op == 1 ? (p0 || p1) : op == 2 ? (p0 != p1) : (p0 == p1))) discard;
   c = clamp(c, 0.0, 1.0);
-  if (uFog.x > 0.0) {
-    int ft = int(uFog.x) & 7;
-    float f = max((-vPosV.z - uFog.y) / max(uFog.z - uFog.y, 1e-6), 0.0);
-    float k = ft == 2 ? f : ft == 4 ? 1.0 - exp2(-8.0 * f) : ft == 5 ? 1.0 - exp2(-8.0 * f * f)
-            : ft == 6 ? exp2(-8.0 * (1.0 - f)) : ft == 7 ? exp2(-8.0 * (1.0 - f) * (1.0 - f)) : 0.0;
-    c = mix(c, uFogColor, clamp(k, 0.0, 1.0));
-  }
+  // the fog, on the 8-bit color at the pixel's 24-bit depth (fog.ts)
+  c = gxFog(c);
   a = clamp(a, 0.0, 1.0);
   if (uFlat.a > 0.0) { outColor = uFlat; return; }
   if (uOutline.a > 0.0) { outColor = vec4(mix(c, uOutline.rgb, uOutline.a), a); return; }
@@ -470,7 +465,7 @@ const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
 const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
                   "uLCol", "uLA", "uLK", "uEye", "uSpecAt", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
-                  "uFog", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
+                  "uFogI", "uFogF", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
                   "uShadowN", "uShadowMask", "uCast"];
 const PARTICLE_ATTRS = ["aPos", "aUv", "aPrim", "aEnv", "aCmp", "aTex"];
 /** a particle quad buffer's layout (17 floats a vertex), into the vertex array bound */
@@ -1345,7 +1340,7 @@ void main() {
    *  canvas takes exactly those, so the grille's stripes land on the screen's
    *  own pixels (the scene is drawn at 640 x 480 then, whatever the canvas) */
   begin(proj: Mat, view: Mat, clear: [number, number, number], cssW: number, cssH: number,
-        device?: [number, number], gxProj: Float32Array | null = null) {
+        device?: [number, number], gxProj: Float32Array | null = null, nearFar: [number, number] | null = null) {
     const gl = this.gl;
     // (its size follows the element, the screen's pixel ratio counted, within a cap: drawsize.ts)
     if (this.maxDim === 0) {
@@ -1374,6 +1369,7 @@ void main() {
     this.proj.set(proj);
     this.view.set(view);
     this.gxFrame = gxProj ? (this.gxFrameBuf.set(gxProj), this.gxFrameBuf) : null;
+    this.frameNearFar = nearFar;
     mul(this.viewProj, this.proj, this.view);
     this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
@@ -1520,12 +1516,29 @@ void main() {
     gl.uniform4fv(loc.uLK, l.attnK);
   }
 
-  /** the fog the draws that follow are in (null: none, as the game's effects are) */
-  setFog(f: Fog | null) {
+  /** the fog the draws that follow are in (null: none, as the game's effects are): packed as GXSetFog packs it
+   *  (fog.ts), with the near and far of the camera drawn through now (HSD_FogSet: HSD_CObjGetNear, GetFar) unless
+   *  they are given */
+  setFog(f: Fog | null, near?: number, far?: number) {
     const gl = this.gl, l = this.loc;
-    gl.uniform4f(l.uFog, f ? f.type : 0, f?.start ?? 0, f?.end ?? 0, 0);
-    if (f) gl.uniform3f(l.uFogColor, f.color[0], f.color[1], f.color[2]);
+    let r = NO_FOG;
+    if (f) {
+      // (the camera's own near and far, as its CObj has them, when the frame's camera is the game's; else
+      // taken back from the projection)
+      const [n, fa] = near !== undefined && far !== undefined ? [near, far]
+        : this.frameNearFar && this.camProj === this.proj ? this.frameNearFar : nearFar(this.camProj);
+      r = gxSetFog(f.type, f.start, f.end, n, fa, [0, 1, 2].map((i) => Math.round(Math.min(Math.max(f.color[i], 0), 1) * 255)) as
+        [number, number, number]);
+    }
+    this.fogRegs = r;
+    gl.uniform4i(l.uFogI, r.fsel, r.bMag, r.bShift, r.proj);
+    gl.uniform2f(l.uFogF, r.a, r.c);
+    gl.uniform3i(l.uFogColor, r.color[0], r.color[1], r.color[2]);
   }
+  /** the frame camera's near and far planes, when it is the game's */
+  private frameNearFar: [number, number] | null = null;
+  /** the fog's registers as last packed and uploaded */
+  private fogRegs: FogRegs = NO_FOG;
 
   /** a debug aid (?debug=flat): what is drawn next in one flat color, over
    *  every pixel the material lets through, or back to its own (null) */
@@ -1723,9 +1736,6 @@ void main() {
     return !out;
   }
 
-  private setFogUniforms(l: Record<string, WebGLUniformLocation | null>, f: Fog | null) {
-    this.gl.uniform4f(l.uFog, f ? f.type : 0, f?.start ?? 0, f?.end ?? 0, 0);
-  }
 
   private ghostRef = 0;
 

@@ -41,6 +41,7 @@ import type { Archive, Image, PObj, Tlut } from "./hsd";
 import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
+import type { FogRegs } from "./fog";
 import { RENDER, blockOf, evalMaterial, tevDescStep, tevScalar, textureMatrix } from "./gx";
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
@@ -205,6 +206,8 @@ interface Inner {
   camView: Mat; camVP: Mat; camProj: Mat; camGx: Float32Array | null; shiftView: Mat; shiftVP: Mat; shifted: boolean;
   /** the modelviews the last draw uploaded */
   mvBuf: Float32Array;
+  /** the fog's registers as GXSetFog packs them, as uploaded (fog.ts) */
+  fogRegs: FogRegs;
   mirrored: boolean;
   lighting: Lighting | null;
   overlayVP: Mat | null; viewProj: Mat;
@@ -215,7 +218,8 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "shiftView", "shiftVP", "shifted", "mirrored",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "shiftView", "shiftVP",
+                               "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
                                "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
@@ -449,8 +453,13 @@ export class DrawLog {
   private fogRec(): Record<string, unknown> | null {
     const f = this.fog;
     if (!f || !(f.type & 7)) return null;
+    // (and as the hardware takes it: GXSetFog's registers, and A, B and C as they hold them)
+    const r = this.inner.fogRegs;
+    const hx = (v: number) => v.toString(16).padStart(8, "0");
     return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1, start: this.num(f.start), end: this.num(f.end),
-             color: f.color.map((v) => Math.round(v * 255)) };
+             color: f.color.map((v) => Math.round(v * 255)),
+             ...(r ? { regs: [r.fog0, r.fog1, r.fog2, r.fog3, r.fogclr].map(hx), a: this.num(r.a), b_mag: r.bMag, b_shift: r.bShift,
+                       c: this.num(r.c), fsel: r.fsel, proj: r.proj } : {}) };
   }
 
   /** a see-through material while a color animation adds its light: lit by the set's first light alone (the

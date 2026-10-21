@@ -395,22 +395,7 @@ export function defaultAlphaTest(renderMode: number): [number, number, number, n
 
 // ---------------------------------------------------------------- fog
 
-/** how much of the fog color a point at eye depth `z` takes (GX_FOG_*:
- *  0 none, 2 linear, 4 exp, 5 exp2, 6 reverse exp, 7 reverse exp2; the
- *  orthographic kinds as the perspective ones) */
-export function fogAmount(type: number, start: number, end: number, z: number): number {
-  const t = type & 7;
-  if (t === 0 || end === start) return 0;
-  const f = Math.max((z - start) / (end - start), 0);
-  switch (t) {
-    case 2: return clamp01(f);
-    case 4: return clamp01(1 - Math.pow(2, -8 * f));
-    case 5: return clamp01(1 - Math.pow(2, -8 * f * f));
-    case 6: return clamp01(Math.pow(2, -8 * (1 - f)));
-    case 7: return clamp01(Math.pow(2, -8 * (1 - f) * (1 - f)));
-    default: return 0;
-  }
-}
+// (the fog as the hardware evaluates it, on GXSetFog's registers: fog.ts)
 
 // ---------------------------------------------------------------- textures
 
