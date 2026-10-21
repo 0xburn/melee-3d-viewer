@@ -361,12 +361,10 @@ export class PlayerHud {
     return this.pct[Math.min(i + 1, this.n - 1)] ?? 0;
   }
 
-  /** The percent at a frame. Its color, the narrow-1 spacing, which digits
-   *  show and the shake follow the game's damage at once; the digits'
-   *  pictures a frame later (ifStatus_802F4EDC asks for them after the
-   *  frame's animation has run) - which makes them the replay's own percent,
-   *  and a hit's first shaking frame still shows the number before it (the
-   *  reference frames). */
+  /** The percent at a frame (percentAt below). Its color, the narrow-1 spacing, which digits show and the shake
+   *  follow the game's damage at once; the digits' pictures are the replay's percent of the frame before (the game's
+   *  damage two frames back: ifStatus_802F4EDC asks for them after the frame's animation has run, and the pictures
+   *  change a frame after that). */
   /** whether the digits shake at frame i (and so draw eight random numbers there: ifStatus_802F4B84) */
   shakingAt(i: number): boolean {
     const l = this.lifeAt(i);
@@ -395,7 +393,10 @@ export class PlayerHud {
     const drop = this.dropAt[at];
     const anim: 0 | 1 = drop > l.from ? 1 : 0;
     const animFrame = anim === 1 ? at - drop : at - l.from;
-    const layout = { ...digitLayout(now), frame: digitLayout(percent).frame };
+    // (the digits' pictures are the number of the frame before: the game's captures show a new number's digits a frame
+    // after the replay's percent has it - the request the HUD makes for them after the frame's animation has run is
+    // taken up by the frame after next)
+    const layout = { ...digitLayout(now), frame: digitLayout(this.pct[Math.max(l.from, at - 1)] ?? 0).frame };
     const offset: [number, number][] = [[0, 0], [0, 0], [0, 0], [0, 0]];
     const hit = this.hitAt[at];
     let spaced = true;

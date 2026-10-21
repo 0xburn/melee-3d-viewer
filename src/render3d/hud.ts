@@ -652,7 +652,7 @@ export class Hud {
       if (p.num && !hidden) {
         const m = p.num;
         // (its entry animations are done by frame 31)
-        if (!m.same(`${v.percent}|${v.color}|${v.layout.dx}|${v.layout.shown}|${v.anim}|${Math.min(v.animFrame, 31)}|${v.spaced}|${v.offset.join()}`)) {
+        if (!m.same(`${v.percent}|${v.layout.frame.join()}|${v.color}|${v.layout.dx}|${v.layout.shown}|${v.anim}|${Math.min(v.animFrame, 31)}|${v.spaced}|${v.offset.join()}`)) {
           m.begin();
           m.anim(v.anim, v.animFrame);
           for (const k of [HUNDREDS, TENS, ONES, SIGN]) {
