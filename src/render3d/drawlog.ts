@@ -135,6 +135,17 @@ export function geoHash(prims: [string, number, string][]): string {
 const TLUT_ENTRIES: Record<number, number> = { 8: 16, 9: 256, 10: 16384 };
 
 /** an image's identity: its first level's bytes in its file */
+/** the format and size the game binds for a picture it makes at run time (lb_800121FC's descriptions: RGB565 at
+ *  the copy's size), which the file's placeholder does not have: set by the caller for Stadium's screen as its
+ *  mode changes (grPStadium: 250 x 160 the text page, 640 x 406 the match, 124 x 80 a close-up) */
+const liveGame = new WeakMap<Image, [number, number, number]>();
+export function setLiveGame(image: Image, format: number, w: number, h: number) {
+  const g = liveGame.get(image);
+  if (g) { g[0] = format; g[1] = w; g[2] = h; } else liveGame.set(image, [format, w, h]);
+}
+/** the mirror's picture as grIzumi makes it (lb_800121FC(refl->image, 80, 60, 4, ...)): RGB565, 80 x 60 */
+const MIRROR_GAME: [number, number, number] = [4, 80, 60];
+
 export function imageId(a: Archive, img: Image): string | null {
   const [bw, bh, bb] = blockOf(img.format);
   const size = Math.ceil(img.width / bw) * Math.ceil(img.height / bh) * bb;
@@ -540,12 +551,13 @@ export class DrawLog {
     // copy to the game, not the file's bytes)
     if (this.inner.live.has(t.image)) id = "efb:live";
     else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
+    const game = id === "mirror" ? MIRROR_GAME : id === "efb:live" ? liveGame.get(t.image) : undefined;
     const at = 24 + n * 12;
     const m = F && F.length >= at + 8 ? Array.from(F.subarray(at, at + 8))
       : textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
                       [t.rotX, t.rotY, t.rotate], o.repeatS, o.repeatT, o.wrapT);
     const rec: Record<string, unknown> = {
-      map: o.id, id, format: t.image.format, w: t.image.width, h: t.image.height,
+      map: o.id, id, format: game?.[0] ?? t.image.format, w: game?.[1] ?? t.image.width, h: game?.[2] ?? t.image.height,
       wrap: [WRAP[o.wrapS] ?? String(o.wrapS), WRAP[o.wrapT] ?? String(o.wrapT)],
       mag: o.magFilt ? "linear" : "near", min: o.lod ? MIN[o.lod.minFilt] ?? String(o.lod.minFilt) : null,
       lod_bias: o.lod ? this.num(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),

@@ -61,7 +61,7 @@ import { type EggRoll, eggRollAt, YOSHI } from "./yoshiroll";
 import { kirbyStoneAt } from "./kirbystone";
 import { ROLLOUT_ATTRS, ROLLOUT_FIRST, rolloutAngle, rolloutAttrs } from "./rollout";
 import { Hud, HudActor, HudKit } from "./hud";
-import { drawLogCommand } from "./drawlog";
+import { drawLogCommand, setLiveGame } from "./drawlog";
 import { PoseLog, poseLogCommand } from "./poselog";
 import type { Tint as ColTint } from "./fx/colanim";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
@@ -1510,6 +1510,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (scene.screen && st.screen) {
         scene.screen.draw(fno);
         r.liveImage(st.screen.image, scene.screen.canvas, scene.screen.version);
+        // (for the draw log: the description the game binds in this mode)
+        const gm = scene.screen.mode;
+        setLiveGame(st.screen.image, 4, gm === 7 ? 640 : gm === 8 ? 124 : 250, gm === 7 ? 406 : gm === 8 ? 80 : 160);
         // (the match's copy is the frame before's, whatever the number of draws of this frame)
         if (r.liveAdvance(st.screen.image, fno, scene.screen.mode === 7 || scene.screen.mode === 8, scene.screen.size[0], scene.screen.size[1])) screenAgain = true;
         // (a copy of the match is shown in the screen's constant green, the rest in its vertex colors)
