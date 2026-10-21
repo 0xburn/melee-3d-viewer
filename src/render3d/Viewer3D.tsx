@@ -1481,9 +1481,13 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // moved to where its holder's TransN2 is - worked out below, once all are posed)
     for (const a of actors) a.captor = captorOf(a, actors), a.hold = null;
     // (one the viewer track says its move script hid: set_fighter_vis - Yoshi's
-    // tongue pulling someone in, a fighter before it enters)
+    // tongue pulling someone in, a fighter before it enters. The track's bits:
+    // 1 fp->invisible, 2 x221E_b5, 4 x2226_b5; ftDrawCommon_800805C8 leaves
+    // the fighter out for either of the first two, the mirror's draw
+    // (ftDrawCommon_80080C28) for any of the three)
     const trackAt = viewerTrack();
-    const trackHidden = (a: Actor) => Number(trackAt?.at("hide", `${a.player}:${a.nana ? 1 : 0}`, fno - 123)?.[0] ?? 0) === 1;
+    const hideBits = (a: Actor) => Number(trackAt?.at("hide", `${a.player}:${a.nana ? 1 : 0}`, fno - 123)?.[0] ?? 0);
+    const trackHidden = (a: Actor) => (hideBits(a) & 3) !== 0;
     const borrowOf = (a: Actor) => {
       if (!a.captor || !ek || !THROWN.has(a.st.actionStateId)) return null;
       const cf = fs.get(`${a.captor.st.internalCharacterId}:${a.captor.costume}`);
@@ -1700,6 +1704,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const drawFighters = (pass: "opa" | "xlu", mirror = false) => {
       if (layersOff.fighters) return;
       for (const { f: fi, a } of posed) {
+        if (mirror && hideBits(a) & 4) continue;
         const again = shared.has(fi);
         if (again) poseActor(fi, a);
         const akey = actorKey(a.player, a.nana);
