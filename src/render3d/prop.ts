@@ -12,7 +12,7 @@ import { Skeleton } from "./skeleton";
 // the root's place as the game makes a joint's matrix: HSD_MtxSRT, in float32 with its own sinf and cosf
 // (an item's turn of a quarter about y is the game's cosf of it, not 0)
 const srtM = new Float32Array(12), srtS = [0, 0, 0], srtR = [0, 0, 0], srtT = [0, 0, 0];
-function gameSrt(out: Mat, sx: number, sy: number, sz: number, rx: number, ry: number, rz: number, tx: number, ty: number,
+export function gameSrt(out: Mat, sx: number, sy: number, sz: number, rx: number, ry: number, rz: number, tx: number, ty: number,
                  tz: number) {
   srtS[0] = sx; srtS[1] = sy; srtS[2] = sz;
   srtR[0] = rx; srtR[1] = ry; srtR[2] = rz;

@@ -23,7 +23,9 @@
  */
 import { AObj, Archive, Image, JObj, MatAnim, loadAnimJoint, loadJoint, loadMatAnimJoint, parseArchive, ptr } from "./hsd";
 import { applyMatAnim, Skeleton } from "./skeleton";
-import { ident, lookAt, Mat, mul, perspective, srt } from "./math";
+import { ident, lookAt, Mat, mul } from "./math";
+import { gameProjection, gameView } from "./camera";
+import { gameSrt } from "./prop";
 import type { PlayerState, ReplayData } from "../common/types";
 import type { EffectBank } from "./fx/bank";
 import { hsdFloat, hsdNext, type Particle, ParticleSystem } from "./fx/particles";
@@ -181,7 +183,7 @@ export class HudModel {
 
   /** the root placed (and scaled, turned), then the world matrices */
   finish(x: number, y: number, z = 0, scale = 1, rotZ = 0, scaleY = scale, scaleZ = scale) {
-    srt(this.place, scale, scaleY, scaleZ, 0, 0, rotZ, x, y, z);
+    gameSrt(this.place, scale, scaleY, scaleZ, 0, 0, rotZ, x, y, z);
     this.sk.update(this.place);
   }
 
@@ -327,6 +329,7 @@ export interface HudActor {
   draw: () => void;
 }
 
+const ORIGIN = [0, 0, 0];
 const PIC = 64; // the magnifier's picture, texels a side (the game's image)
 
 /** One replay's HUD: its players' displays, made once, posed each frame. */
@@ -413,6 +416,7 @@ export class Hud {
   private timer: HudModel | null;
   private proj = new Float32Array(16);
   private view = new Float32Array(16);
+  private gxProj = new Float32Array(16);
   private flatProj = new Float32Array(16);
   private flatView = ident(new Float32Array(16));
   private picProj = new Float32Array(16);
@@ -588,8 +592,9 @@ export class Hud {
     // --- the HUD camera's pieces
     const c = this.kit.cam;
     // (its own height of view, the picture's shape: never stretched)
-    perspective(this.proj, (c.fovy * Math.PI) / 180, c.aspect * k, c.near, c.far);
-    lookAt(this.view, c.eye, [0, 0, 0]);
+    // (in float32 as the game makes them: C_MTXPerspective, HSD_CObjSetupViewingMtx)
+    gameProjection(this.proj, this.gxProj, c.fovy, c.aspect * k, c.near, c.far);
+    gameView(this.view, c.eye, ORIGIN);
     r.overlay(this.proj, this.view);
     // the picture's pixels a HUD unit (the camera's view of its z = 0 plane)
     const hudPpu = r.pictureHeight / (2 * Math.abs(c.eye[2]) * Math.tan((c.fovy * Math.PI) / 360));
