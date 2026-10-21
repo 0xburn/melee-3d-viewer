@@ -4647,10 +4647,38 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
                   byZ ? 0 : tilt, false, clock?.joint);
   }
   if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale);
+  // (a laser stretched along its flight: Item_UpdateRayAnimation, up to its special attributes' +4)
+  if (RAYS.has(it.typeId) && art.special) art.prop.setRootScaleZ(rayScale(data, frame, it, art.special(4)));
   drawnArticles.push({ type: it.typeId, state: it.state, x: it.xPosition, y: it.yPosition, tilt, scale,
                        shown: Array.from(art.prop.skeleton.shown) });
   drawProp(r, art);
   return true;
+}
+
+/** Fox's and Falco's lasers, and Kirby's copies of them (itfoxlaser.c) */
+const RAYS = new Set([0x36, 0x37, 0x88, 0x89]);
+
+/** a laser's length (Item_UpdateRayAnimation): 0 when made (it_8029C504), then each frame its speed over 11.25
+ *  more, in float32, up to `max`; a reflection (its flight turned round) starts it again at 1e-3
+ *  (Item_ResetRayAfterReflection, Item_BounceRayOffShield) */
+function rayScale(data: ReplayData, frame: number, it: ReplayItem, max: number): number {
+  let f = frame;
+  while (f > 0 && frame - f < 600 && data.frames[f - 1]?.items?.some((q) => q.spawnId === it.spawnId)) f--;
+  const lim = Math.fround(max);
+  let s = 0, lastVx = NaN;
+  for (let g = f; g <= frame; g++) {
+    const q = g === frame ? it : data.frames[g]?.items?.find((x) => x.spawnId === it.spawnId);
+    if (!q) continue;
+    if (!Number.isNaN(lastVx) && q.xVelocity !== 0 && lastVx !== 0 && Math.sign(q.xVelocity) !== Math.sign(lastVx)) {
+      s = Math.fround(1e-3);
+    }
+    const speed = Math.fround(Math.hypot(q.xVelocity, q.yVelocity));
+    s = Math.fround(s + Math.fround(speed / 11.25));
+    if (s > lim) s = lim;
+    if (s < 1e-5) s = Math.fround(1e-3);
+    lastVx = q.xVelocity;
+  }
+  return s;
 }
 
 /** an article, posed: with its outline first when it has one (Mr. Game &

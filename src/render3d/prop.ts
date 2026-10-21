@@ -96,6 +96,12 @@ export class Prop {
     this.skeleton.update(this.place);
   }
 
+  /** after the pose, the root's size along z set to `value` (an item's code: HSD_JObjSetScaleZ) */
+  setRootScaleZ(value: number) {
+    this.skeleton.scale[2] = value;
+    this.skeleton.update(this.place);
+  }
+
   /** after the pose, the root's turn about z set to `value`, the same way (HSD_JObjSetRotationZ) */
   setRootRotationZ(value: number) {
     this.skeleton.rot[2] = value;
