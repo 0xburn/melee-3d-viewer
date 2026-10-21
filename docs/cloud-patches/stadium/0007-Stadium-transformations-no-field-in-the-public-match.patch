@@ -1,7 +1,7 @@
 From 0ddbfa5cce820cdc1785392a5714426a5bf156a7 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 09:24:22 +0000
-Subject: [PATCH 7/7] Stadium transformations: no field in the public match
+Subject: [PATCH 7/8] Stadium transformations: no field in the public match
  config, no environment switch
 
 The field sat in MslMatchConfig's trailing padding, so a driver built on the

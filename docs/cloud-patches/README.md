@@ -1,6 +1,6 @@
 # melee-sim-light patches (jobs 3 and 4)
 
-This cloud session could not push to briandle00/melee-sim-light. The git proxy refused it with a 403: "briandle00/melee-sim-light is not in this session's authorized repository set". kyhavlov/melee-sim-light is attached under the same name, and the two can't share one session. So both branches are here as `git format-patch` series. Both are based on `visual-only/04-shake` at `f1eb1a73`. This is the fourth round. The dynamics-counts series is unchanged from the second round. The stadium series adds 0007 after the third check with game data (0005 and 0006 came after the second).
+This cloud session could not push to briandle00/melee-sim-light. The git proxy refused it with a 403: "briandle00/melee-sim-light is not in this session's authorized repository set". kyhavlov/melee-sim-light is attached under the same name, and the two can't share one session. So both branches are here as `git format-patch` series. Both are based on `visual-only/04-shake` at `f1eb1a73`. This is the fifth round. The dynamics-counts series is unchanged from the second round. The stadium series adds 0008 after the fourth check with game data (0007 came after the third, 0005 and 0006 after the second).
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -48,9 +48,33 @@ git commit -m "Visual-state locks: the 3 recordings whose chains are now driven 
 `--write` rewrites every entry, so check that the diff touches only those 3 recordings before committing.
 
 
-## cloud/stadium (7 commits)
+## cloud/stadium (8 commits)
 
-This is a **local combination of upstream's `feat/stadium-transformations` with our branch, not something to upstream.** It cherry-picks upstream b1192b5f, 77ffc009 and 52e04722 (Kyle Havlovitz's authorship kept), then adds four fix commits. Upstream's fcc46464 is **dropped**, because it changes match termination on every stage (see round two below).
+This is a **local combination of upstream's `feat/stadium-transformations` with our branch, not something to upstream.** It cherry-picks upstream b1192b5f, 77ffc009 and 52e04722 (Kyle Havlovitz's authorship kept), then adds five fix commits. Upstream's fcc46464 is **dropped**, because it changes match termination on every stage (see round two below).
+
+### Fifth round: the setting has its own bit; slippi_patches means what it did in the base (0008)
+
+0007 did not fix it: all 92 games still failed through the base's driver call.
+
+- **What ran.** The check's driver, `tools/replay/replay_drive.{py,c}`, follows upstream's newer `wire.h`, which defines `slippi_patches` bits 1 to 6:
+  - bit 1: `MSL_PATCH_PREVENT_WOBBLING`;
+  - bit 2: `_RETAIL_SPAWNS`;
+  - bit 3: `_POST_FRAME_AT_MAP`;
+  - bits 4 to 6: the UCF-absent bits.
+
+  `replay_drive.py` sets them from each replay's codes, and `config_from_tape` copies the byte into the core config. The base reads only bit 0, so they did nothing there. This series made bit 1 mean "transformations" and refused bits 2 to 7. Every replay with the wobbling code turned transformations on: off Stadium, `validate_config` refused it ("…need Pokemon Stadium"); on Stadium, default GameData refused it ("…need game data loaded with…"). The others were refused for unknown bits. (A pooled runner exits on its first refused reset, which may be why one message showed up across many games.) 0007 did not touch this path: the public struct was a second, separate way in.
+- **Fix.**
+  - `slippi_patches` is the base's again: only `MSL_PATCH_FD_BACKGROUND_FROZEN` is defined, other bits are ignored, and nothing is refused.
+  - The setting is now `MSL_CONFIG_STADIUM_TRANSFORMATIONS`, bit 7 of `arithmetic_flags`. The config has no free byte (64 bytes, no padding). This is the one byte whose other bits every driver leaves clear, because the core has always refused a config with any bit there besides the two arithmetic modes.
+  - `native.c` (the suite field and `--stadium-transformations`), the transforming GameData preload, the live viewer's button and the smoke test set the bit there.
+  - The Stadium checks are now one function, `msl_core_stadium_config_error`, which match construction runs.
+- **Test, no game data: `make stadium-defaults-smoke`.** It runs that function, against GameData as `msl_core_game_data_init` leaves it, on every legal stage, for:
+  - the replay driver's config (`config_from_tape`'s fields, with every `slippi_patches` value 0x00–0xFF and each arithmetic mode the core runs);
+  - the validation runner's config (sent over the wire and decoded);
+  - the public API's config (over noise).
+
+  Each must leave transformations off and raise no error. An explicit request is still refused off Stadium and on default GameData. With bit 1 of `slippi_patches` read as the setting again, it fails: "replay_drive: transformations on (stage 2, value 0x02)". Now it passes.
+- Checked here: `make native validator python-library`, `replay-bench`, `stadium-transformations-smoke` and the track build compile with no warnings; `source-check` and `viewer-schema-check` pass; the gating tests pass (20); the full `pytest tests` run fails only where the base fails too (the same 4 non-data tests) or on missing data and LFS replays. The 8 patches apply with `git am` to `f1eb1a73`, and the result equals `cloud/stadium`.
 
 ### Fourth round: no field in the public config, no environment switch (0007)
 
@@ -117,7 +141,7 @@ With the setting at its default, the second series still changed production outp
 
 **Still differs with the setting off, not in gameplay output:**
 - `MslCoreViewerStage` and `MslCoreViewerState` grow to 4120 and 6432 bytes for the collision lines. The extra fields stay zero when off. Viewer and wasm callers use the regenerated `schema.generated.js`.
-- Unknown `slippi_patches` bits are rejected by `validate_config` (bits 2–7). Replay-derived configs only ever set bit 0. (Round four drops the same check from the batch layer.)
+- (Rounds three and four rejected unknown `slippi_patches` bits. Round five removes that: they are ignored, as in the base.)
 
 ### How to turn it on (explicit only)
 
@@ -125,7 +149,7 @@ With the setting at its default, the second series still changed production outp
 - **`validate_replay`:** `--stadium-transformations` turns it on for every selected case. Those cases run in a one-shot runner whose GameData is loaded for their config. The pooled server runners keep the default GameData, and `native.validate_replay` refuses `stadium_transformations` with a pooled runner.
 - **Benchmark:** `python -m tools.validation.prepare_replay_benchmark --stadium-transformations`. Without the flag, the transforming suite entries are skipped and a count is printed. With it, `replay_bench` sees the bit in those tapes and loads the transforming GameData for the run.
 - **C API / Python:** not available (round four). The public API is the base's.
-- **Core:** `msl_core_game_data_init_options(&data, root, MSL_GAME_DATA_STADIUM_TRANSFORMATIONS)` and `MSL_PATCH_STADIUM_TRANSFORMATIONS` in `slippi_patches`.
+- **Core:** `msl_core_game_data_init_options(&data, root, MSL_GAME_DATA_STADIUM_TRANSFORMATIONS)` and `MSL_CONFIG_STADIUM_TRANSFORMATIONS` in `arithmetic_flags` (round five; it was bit 1 of `slippi_patches` before).
 - **Live viewer:** the "PS (unfrozen)" stage button. The wasm build has no preload and no GameData check.
 
 ### Tested here (no game data)
