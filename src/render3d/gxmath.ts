@@ -242,6 +242,12 @@ export function PSVECCrossProduct(a: Vec, b: Vec, out: Vec): Vec {
   return out;
 }
 
+/** PSVECAdd */
+export function PSVECAdd(a: Vec, b: Vec, out: Vec): Vec {
+  out[0] = f32(a[0] + b[0]); out[1] = f32(a[1] + b[1]); out[2] = f32(a[2] + b[2]);
+  return out;
+}
+
 export function PSVECSubtract(a: Vec, b: Vec, out: Vec): Vec {
   out[0] = f32(a[0] - b[0]); out[1] = f32(a[1] - b[1]); out[2] = f32(a[2] - b[2]);
   return out;
@@ -502,6 +508,35 @@ function det3x4(m: Mtx): number {
   d = nmsub(m[10], f32(m[4] * m[1]), d);
   d = nmsub(m[6], f32(m[0] * m[9]), d);
   return d;
+}
+
+const itC = new Float32Array(12);
+
+/** HSD_MtxInverseTranspose: the inverse of the turn, transposed - the normal matrix HSD loads with a modelview
+ *  (SetupRigidModelMtx, SetupEnvelopeModelMtx) - its move 0; the matrix copied when it cannot be inverted. Each
+ *  entry's p * q - r * s with the left product fused (this build's contraction), then times 1 / det */
+export function HSD_MtxInverseTranspose(src: Mtx, dest: Mtx): Mtx {
+  const det0 = det3x4(src);
+  if (Math.abs(det0) < f32(1e-10)) { if (src !== dest) dest.set(src); return dest; }
+  const m = src, det = f32(1 / det0), o = itC;
+  o[0] = f32(msub(m[5], m[10], f32(m[9] * m[6])) * det);
+  o[4] = f32(-msub(m[1], m[10], f32(m[9] * m[2])) * det);
+  o[8] = f32(msub(m[1], m[6], f32(m[5] * m[2])) * det);
+  o[1] = f32(-msub(m[4], m[10], f32(m[8] * m[6])) * det);
+  o[5] = f32(msub(m[0], m[10], f32(m[8] * m[2])) * det);
+  o[9] = f32(-msub(m[0], m[6], f32(m[4] * m[2])) * det);
+  o[2] = f32(msub(m[4], m[9], f32(m[8] * m[5])) * det);
+  o[6] = f32(-msub(m[0], m[9], f32(m[8] * m[1])) * det);
+  o[10] = f32(msub(m[0], m[5], f32(m[4] * m[1])) * det);
+  o[3] = 0; o[7] = 0; o[11] = 0;
+  dest.set(o);
+  return dest;
+}
+
+/** a GX Mtx's turn as GL's column-major 3 x 3 (a normal matrix's upload), at an offset */
+export function mtxToGL3(m: Mtx, out: Float32Array, o = 0): Float32Array {
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out[o + c * 3 + r] = m[r * 4 + c];
+  return out;
 }
 
 const invC = new Float32Array(12);
