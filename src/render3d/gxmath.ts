@@ -517,7 +517,7 @@ const itC = new Float32Array(12);
  *  entry's p * q - r * s with the left product fused (this build's contraction), then times 1 / det */
 export function HSD_MtxInverseTranspose(src: Mtx, dest: Mtx): Mtx {
   const det0 = det3x4(src);
-  if (Math.abs(det0) < f32(1e-10)) { if (src !== dest) dest.set(src); return dest; }
+  if (!(Math.abs(det0) >= f32(1e-10))) { if (src !== dest) dest.set(src); return dest; }
   const m = src, det = f32(1 / det0), o = itC;
   o[0] = f32(msub(m[5], m[10], f32(m[9] * m[6])) * det);
   o[4] = f32(-msub(m[1], m[10], f32(m[9] * m[2])) * det);
@@ -542,12 +542,16 @@ export function mtxToGL3(m: Mtx, out: Float32Array, o = 0): Float32Array {
 const invC = new Float32Array(12);
 
 /** HSD_MtxInverseConcat: out = inverse(inv) src (src copied when inv cannot
- *  be inverted). Its contractions are the ones the game's matched code shows
- *  for this build's expressions (HSD_MtxSRT, the determinant above): in
- *  p * q +- r the left product is fused, the right one rounded first */
+ *  be inverted). Each step as the game's code does it (the old disassembly,
+ *  asm/sysdolphin/baselib/mtx.s before the relink 8e5068d3): the determinant
+ *  as above, each cofactor fmsubs or fnmsubs on one rounded product, times
+ *  1 / det (fdivs); each translation's inner part fmsubs, then fnmsubs; each
+ *  entry an fmuls and two fmadds, the translation's then an fadds. A
+ *  determinant whose size is not at least 1e-10 - NaN too (fcmpo, bge) -
+ *  copies src */
 export function HSD_MtxInverseConcat(inv: Mtx, src: Mtx, out: Mtx): Mtx {
   const det0 = det3x4(inv);
-  if (Math.abs(det0) < f32(1e-10)) { if (src !== out) out.set(src); return out; }
+  if (!(Math.abs(det0) >= f32(1e-10))) { if (src !== out) out.set(src); return out; }
   const det = f32(1 / det0);
   const i = inv;
   const t1 = f32(msub(i[5], i[10], f32(i[9] * i[6])) * det);

@@ -441,7 +441,7 @@ static void HSD_MtxInverseTranspose(Mtx src, Mtx dest)
 {
     float det = det3x4(src);
     Mtx o;
-    if (fabsf(det) < 0.0000000001f) {
+    if (!(fabsf(det) >= 0.0000000001f)) {
         memcpy(dest, src, sizeof(Mtx));
         return;
     }
@@ -466,7 +466,7 @@ static void HSD_MtxInverseTranspose(Mtx src, Mtx dest)
 static void HSD_MtxInverseConcat(Mtx inv, Mtx src, Mtx dest)
 {
     float det = det3x4(inv);
-    if (fabsf(det) < 0.0000000001f) {
+    if (!(fabsf(det) >= 0.0000000001f)) {
         memcpy(dest, src, sizeof(Mtx));
         return;
     }
