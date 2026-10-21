@@ -1236,12 +1236,11 @@ export class FxWorld {
       if (e[1] === "send") { this.stageEnd(e); continue; }
       const c = this.stageCmd(e), made = Number(e[0]) + 123;
       if (!c) continue;
-      if (c.genLife === 0) { this.stageGen(e); continue; }
       const used = frame - made;
-      if (used <= 0 || used >= c.genLife) continue;
+      if (c.genLife !== 0 && (used <= 0 || used >= c.genLife)) continue;
       const g = this.stageGen(e);
-      if (!g) continue;
-      g.genLife -= used;
+      if (!g || used <= 0) continue;
+      if (g.genLife !== 0) g.genLife -= used;
       g.age += used;
       if (g.random < 0) {
         let n = g.count;
@@ -1918,7 +1917,7 @@ export class FxWorld {
     // (a generator whose particles go with what it is on, kind 0x20000 - it
     // does not move itself: the Thunder Jolt's spark on the jolt - a
     // transform of its own that follows)
-    if (!g.srt && g.kind & 0x20000) g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true };
+    if (!g.srt && g.kind & 0x20000) g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true, view: true };
     if (g.srt) {
       // (one with a transform of its own: its particles are made about the
       // transform's origin, which follows - the generator itself stays at 0,
