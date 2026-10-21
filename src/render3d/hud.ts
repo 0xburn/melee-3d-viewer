@@ -30,7 +30,8 @@ import { hsdFloat, hsdNext, type Particle, ParticleSystem } from "./fx/particles
 import { buildParticles } from "./fx/draw";
 import {
   FIRST_FRAME, GO_FRAME, HUNDREDS, markFrame, ONES, PlayerHud, portColor, portColorIndex, SIGN, TAG_IDLE, TAG_LAUNCH, TAG_LAUNCH_SPEED,
-  TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
+  TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame, type ArrowTable, arrowTable, copyArrowTable,
+  arrowsAssign, arrowsPlace,
 } from "./hudlogic";
 import { PLATE_FONT, quad, tagText, texQuad, textPicture } from "./hudtext";
 import { glyphAtlas, PLATE_FULL, plateText, rawBytes, type PlateFont, type PlateText } from "./plates";
@@ -319,7 +320,7 @@ const PIC = 64; // the magnifier's picture, texels a side (the game's image)
 export class Hud {
   private players: {
     slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
-    tag: HudModel | null; lupe: HudModel | null; arrow: HudModel | null; pic: RenderTarget | null; place: [number, number];
+    tag: HudModel | null; lupe: HudModel | null; pic: RenderTarget | null; place: [number, number];
     /** where it sits by the HUD Slots option (hudslots.ts): the outer slots of four for two players, or as in
      *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
     places: Record<HudSlots, [number, number]>;
@@ -431,12 +432,14 @@ export class Hud {
         plate: { text: ps.displayName ?? "", raw: ps.displayNameRaw ? rawBytes(ps.displayNameRaw) : null },
         num: kit.model(kit.num, "hud:num"), mark: kit.model(kit.mark, "hud:mark"),
         stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
-        arrow: kit.model(kit.arrow, "hud:arrow"), human: ps.playerType === 0,
+        human: ps.playerType === 0,
         pic: null, place: at[hudSlotsMode()], places: at, colorIdx,
         external: ps.externalCharacterId, costume: ps.costumeIndex,
         tagFrame: nametag ? nametagFrame(tf) : tf,
       });
     }
+    // un_802FE260: the four edge arrows, whoever plays
+    for (let i = 0; i < 4 && kit.arrow; i++) { const m = kit.model(kit.arrow, "hud:arrow"); if (m) this.arrows.push(m); }
     for (const p of this.players) {
       p.life.shakeDraws = (i) => this.shakeDraws(i, p.slot, "shake");
       p.life.scatterDraws = (i) => this.shakeDraws(i, p.slot, "scatter");
@@ -491,7 +494,8 @@ export class Hud {
 
   /** every model's textures, ahead of the first frame */
   warm(r: Renderer) {
-    for (const p of this.players) for (const m of [p.num, p.mark, p.stock, p.tag, p.lupe, p.arrow]) if (m) r.warm(m.sk);
+    for (const p of this.players) for (const m of [p.num, p.mark, p.stock, p.tag, p.lupe]) if (m) r.warm(m.sk);
+    for (const m of this.arrows) r.warm(m.sk);
     for (const m of [this.ready, this.go, this.countdown]) if (m) r.warm(m.sk);
     if (this.timer) r.warm(this.timer.sk);
   }
@@ -806,36 +810,49 @@ export class Hud {
     return [0, 1, 2].map((ch) => (c[0][ch] * w[0] + c[1][ch] * w[1] + c[2][ch] * w[2] + c[3][ch] * w[3]) / 255) as [number, number, number];
   }
 
-  /** if_2FD9.c: a player whose bubble sits on the screen's left or right
-   *  edge also gets the running chevrons at that edge's middle, in the
-   *  port's color, stacked 2.6 apart when several share an edge (humans in
-   *  the first four ports only) */
+  /** if_2FD9.c: a human in ports 1-4 whose bubble sits on the screen's left or right edge gets the running
+   *  chevrons at that edge's middle, in the port's color, stacked 2.6 apart when several share an edge. The game
+   *  draws its four arrows every frame, each placed (fn_802FDA78) by the table the magnifiers' draws of the frame
+   *  before left (ifMagnify_802FB8C0): an unused one 10000 back, where and in the color it last had. Returns
+   *  the ports whose arrows show. */
   private drawArrows(r: Renderer, f: number, magnified: { p: Hud["players"][number]; sx: number; sy: number }[]): number[] {
-    const side = new Map<number, number>();
+    if (this.arrows.length < 4) return [];
     const W = edgeWidth(this.k);
+    const kinds = new Map<number, number>();
     for (const { p, sx, sy } of magnified) {
-      if (!p.arrow || !p.human || p.slot >= 4) continue;
       const [ex] = edgePoint(sx - 320, -(sy - 240), W);
-      if (Math.abs(ex) >= W - 1e-4) side.set(p.slot, ex < 0 ? 1 : 2);
+      if (Math.abs(ex) >= W - 1e-4) kinds.set(p.slot, ex < 0 ? 1 : 2);
     }
+    const assign = (t: ArrowTable) => {
+      for (let port = 0; port < 6; port++) {
+        const p = this.players.find((q) => q.slot === port);
+        arrowsAssign(t, port, kinds.get(port) ?? 0, !p?.human, p ? portColor(p.colorIdx) : [0, 0, 0]);
+      }
+    };
+    // (after a jump the frame before is not known: this frame's own magnifiers stand in for it)
+    let before = this.arrowAfter.get(f - 1);
+    if (!before) { before = arrowTable(); assign(before); }
+    const t = copyArrowTable(before);
+    const z = arrowsPlace(t);
     // (at x 25 in the game's picture: as far in from a wider picture's own edges)
-    const x = 25 + this.halfWidth() * (this.k - 1);
-    const STACK = [0, -1.3, -2.6, -3.9];
-    for (const [slot, kind] of side) {
-      const p = this.players.find((q) => q.slot === slot)!;
-      const below = [...side].filter(([s, k]) => k === kind && s < slot).length;
-      const all = [...side].filter(([, k]) => k === kind).length;
-      const m = p.arrow!;
+    const X = 25 + this.halfWidth() * (this.k - 1);
+    for (let i = 0; i < 4; i++) {
+      const m = this.arrows[i];
       m.begin();
-      const col = portColor(p.colorIdx);
       // (its blink: hudlogic.ts chevronFrame)
-      for (let d = 0; d < 3; d++) { m.mat(1, 0, chevronFrame(f), 1, d, d, true); m.color(1, col, d); }
-      m.finish(kind === 1 ? -x : x, 2.6 * below + STACK[Math.max(0, all - 1)], 0, 1, kind === 1 ? 0 : Math.PI);
+      for (let d = 0; d < 3; d++) { m.mat(1, 0, chevronFrame(f), 1, d, d, true); m.color(1, t.color[i], d); }
+      m.finish(t.x[i] === 0 ? 0 : Math.sign(t.x[i]) * X, t.y[i], z[i], 1, t.rot[i]);
       r.drawSkeleton(m.sk, "opa");
       r.drawSkeleton(m.sk, "xlu");
     }
-    return [...side.keys()];
+    // (redrawn, a frame finds the table it began from as it was)
+    assign(t);
+    this.arrowAfter = new Map([[f - 1, before], [f, t]]);
+    return before.kind.flatMap((k, i) => (k ? [before!.port[i]] : []));
   }
+  private arrows: HudModel[] = [];
+  /** the arrows' table after a frame's magnifiers, for the frame drawn and the one before it */
+  private arrowAfter = new Map<number, ArrowTable>();
 
   /** the bubble at the screen's edge toward the fighter, its pointer turned to it */
   private drawLupe(r: Renderer, p: Hud["players"][number], sx: number, sy: number) {

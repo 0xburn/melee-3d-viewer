@@ -486,3 +486,57 @@ export function chevronFrame(f: number): number {
   return (f + 2) % 16;
 }
 
+
+// ---------------------------------------------------------------- the edge arrows' table
+
+/** if_2FD9.c's table of the four edge arrows (un_804A1F10), one model each, all four drawn every frame: each
+ *  arrow's kind (x28: 0 unused, 1 the left edge's, 2 the right's), the port it went to (x2C) and its color
+ *  (x14, zero until it is first given), which of ports 0-3 hold one (x24), and where it was last put
+ *  (fn_802FDA78 leaves an unused arrow where it was and sends it 10000 back) */
+export interface ArrowTable {
+  kind: number[]; port: number[]; color: [number, number, number][]; held: boolean[];
+  x: number[]; y: number[]; rot: number[];
+}
+export function arrowTable(): ArrowTable {
+  return { kind: [0, 0, 0, 0], port: [0, 0, 0, 0], color: [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]],
+           held: [false, false, false, false], x: [0, 0, 0, 0], y: [0, 0, 0, 0], rot: [0, 0, 0, 0] };
+}
+export function copyArrowTable(t: ArrowTable): ArrowTable {
+  return { kind: [...t.kind], port: [...t.port], color: t.color.map((c) => [...c] as [number, number, number]),
+           held: [...t.held], x: [...t.x], y: [...t.y], rot: [...t.rot] };
+}
+
+/** one port's magnifier draw (ifMagnify_802FB8C0): `kind` its arrow this frame (1 left, 2 right; 0 none).
+ *  With one, un_802FD928: the first unused arrow, unless the port is a CPU's or already holds one (which
+ *  keeps its kind until it is let go); without, un_802FD9D8: the port's arrows let go. */
+export function arrowsAssign(t: ArrowTable, port: number, kind: number, cpu: boolean, color: [number, number, number]) {
+  if (port >= 4) return;
+  if (kind === 0) {
+    for (let i = 0; i < 4; i++) if (t.port[i] === port) { t.held[port] = false; t.kind[i] = 0; }
+    return;
+  }
+  for (let i = 0; i < 4; i++) {
+    if (cpu || t.kind[i] !== 0 || t.held[port]) continue;
+    t.held[port] = true;
+    t.port[i] = port;
+    t.kind[i] = kind;
+    t.color[i] = [...color];
+    return;
+  }
+}
+
+/** fn_802FDA78, each arrow by the table as the frame before left it: a left one at x -25, a right one at 25
+ *  turned half round, stacked 2.6 apart from the top of those of its kind (y 0, -1.3, -2.6 or -3.9 for one to
+ *  four); returns the z each is drawn at (10000 for an unused one, which stays where it was) */
+export function arrowsPlace(t: ArrowTable): number[] {
+  const V = [0, -1.3, -2.6, -3.9].map(Math.fround);
+  return t.kind.map((kind, i) => {
+    if (kind === 0) return 10000;
+    let j = 0, k = 0;
+    for (let n = 0; n < 4; n++) if (t.kind[n] === kind) { if (n < i) j++; k++; }
+    t.rot[i] = kind === 1 ? 0 : Math.fround(3.1415927);
+    t.y[i] = Math.fround(Math.fround(Math.fround(2.6) * j) + V[k !== 0 ? k - 1 : 0]);
+    t.x[i] = kind === 1 ? -25 : 25;
+    return 0;
+  });
+}
