@@ -7,6 +7,7 @@ import assertNode from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   DrawLog, RENDERER_NAMES, dlPrims, drawLogCommand, geoHash, gxHash, gxProjection, imageId, probes, tlutId, vertexSize,
+  gameTexMaps,
 } from "../src/render3d/drawlog.ts";
 import { LOBJ, RENDER, compileMaterial } from "../src/render3d/gx.ts";
 import { LightSet } from "../src/render3d/lightset.ts";
@@ -268,4 +269,14 @@ test("while the log is on nothing is culled (GX culls no mesh), and the renderer
   assertEquals(any.cullOn, false);
   log.detach();
   assertEquals(any.cullOn, true);
+});
+
+test("the draw log numbers texture maps as HSD_TObjAssignResources does: the bump map after the plain ones", () => {
+  const BUMP = 1 << 24;
+  // (Link's sword: a UV texture, the bump map, a reflection)
+  assertNode.deepEqual(gameTexMaps([0x10, 0x10 | BUMP, 0x11]), [0, 2, 1]);
+  // a toon texture last; of two bump maps the last is kept
+  assertNode.deepEqual(gameTexMaps([4, BUMP, 0, BUMP]), [2, -1, 0, 1]);
+  // at most 8 plain ones, 6 with a bump map
+  assertNode.deepEqual(gameTexMaps([0, 0, 0, 0, 0, 0, 0, BUMP]), [0, 1, 2, 3, 4, 5, -1, 6]);
 });

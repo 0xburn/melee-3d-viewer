@@ -146,6 +146,21 @@ export function setLiveGame(image: Image, format: number, w: number, h: number) 
 /** the mirror's picture as grIzumi makes it (lb_800121FC(refl->image, 80, 60, 4, ...)): RGB565, 80 x 60 */
 const MIRROR_GAME: [number, number, number] = [4, 80, 60];
 
+/** the texture map each of a material's textures is bound to, as HSD_TObjAssignResources numbers them: the
+ *  plain ones in list order (at most 8, less 2 with a bump map and 1 with a toon texture), then the bump map,
+ *  then the toon texture; of several bump maps or toon textures only the last gets one (the rest -1) */
+export function gameTexMaps(flags: number[]): number[] {
+  const coord = (f: number) => f & 0xf, isBump = (f: number) => (f & (1 << 24)) !== 0;
+  let toon = -1, bump = -1;
+  flags.forEach((f, i) => { if (coord(f) === 4) toon = i; else if (isBump(f)) bump = i; });
+  const limit = 8 - (toon >= 0 ? 1 : 0) - (bump >= 0 ? 2 : 0);
+  let no = 0;
+  const out = flags.map((f) => (coord(f) === 4 || isBump(f) ? -1 : no < limit ? no++ : -1));
+  if (bump >= 0) out[bump] = no++;
+  if (toon >= 0) out[toon] = no++;
+  return out;
+}
+
 export function imageId(a: Archive, img: Image): string | null {
   const [bw, bh, bb] = blockOf(img.format);
   const size = Math.ceil(img.width / bw) * Math.ceil(img.height / bh) * bb;
@@ -437,7 +452,12 @@ export class DrawLog {
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
       fog: safe("fog", () => this.fogRec(), null),
       lights: safe("lights", () => this.lightsRec(view, this.firstOnly(d)), []),
-      tex: safe("tex", () => p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)), []),
+      tex: safe("tex", () => {
+        // (by the map the game binds each to, its number the map's)
+        const maps = gameTexMaps(d.state.tex.map((t) => t?.tobj.flags ?? 0));
+        return p.textures.map((ti, n) => ({ ...this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n), map: maps[ti] }))
+          .sort((x, y) => x.map - y.map);
+      }, []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
                                               alphaMap: x.alphaMap, phase: x.phase })),
