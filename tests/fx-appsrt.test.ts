@@ -101,3 +101,33 @@ test("a particle's children share its transform (its private one too)", () => {
   assert.ok(parents.length > 0 && children.length >= parents.length, `${parents.length} ${children.length}`);
   for (const c of children) assert.ok(parents.some((p) => p.srt === c.srt), "a child under its parent's transform");
 });
+
+// ---- the quads as drawn (fx/draw.ts buildParticles): a particle's corners from its middle, under a camera
+
+import { buildParticles, FLOATS } from "../src/render3d/fx/draw.ts";
+import { readFileSync } from "node:fs";
+
+/** the first quad's corners, as built (world positions) */
+function quadOf(data: Float32Array): number[][] {
+  return [0, 1, 2, 3].map((v) => [data[v * FLOATS], data[v * FLOATS + 1], data[v * FLOATS + 2]]);
+}
+const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+test("a quad under a transform is sized by the view it is drawn through (the stage mirror's camera too)", () => {
+  const { ps, bank } = system();
+  const g = ps.generator(bank, 0x99)!;
+  g.srt = srt({ rx: 0, ry: 0, rz: 0, sx: 2, sy: 2, used: 1, owner: g, follow: true });
+  ps.step();
+  const one = ps.particles.slice(0, 1);
+  assert.equal(one.length, 1);
+  const axes = { right: [1, 0, 0], up: [0, 1, 0] };
+  // (a view that doubles lengths: the quad's half-diagonal doubles with it - psDispSubAppSRT's |vmtx mmtx|)
+  const view = [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 0, -100, 1];
+  const plain = quadOf(buildParticles(one, axes).data), viewed = quadOf(buildParticles(one, { ...axes, view }).data);
+  const r0 = dist(plain[0], plain[2]), r1 = dist(viewed[0], viewed[2]);
+  assert.ok(near(r1, 2 * r0), `${r0} ${r1}`);
+  // the renderer hands the mirror pass its camera's view and projection (beginMirror), so its particles are
+  // sized as the game's mirror camera draws them
+  const src = readFileSync(new URL("../src/render3d/renderer.ts", import.meta.url), "utf8");
+  assert.match(src, /beginMirror\(\): \{ right: number\[\]; up: number\[\]; view: Mat; viewProj: Mat \}/);
+});

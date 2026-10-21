@@ -2104,8 +2104,8 @@ void main() {
     this.mirrorCache.tex = this.mirror && this.mirrorDrawn ? this.mirror.tex : this.white;
     return this.mirrorCache;
   }
-  /** returns the mirror camera's right and up (world directions: what faces it) */
-  beginMirror(): { right: number[]; up: number[] } {
+  /** returns the mirror camera's right and up (world directions: what faces it), its view and its projection */
+  beginMirror(): { right: number[]; up: number[]; view: Mat; viewProj: Mat } {
     const gl = this.gl;
     if (!this.mirror) {
       const tex = gl.createTexture()!;
@@ -2162,7 +2162,9 @@ void main() {
     this.overlayVP = this.mirrorViewProj;
     this.dirty();
     const mv = this.mirrorView;
-    return { right: [mv[0], mv[4], mv[8]], up: [mv[1], mv[5], mv[9]] };
+    // (and the mirror camera's view and projection: the particles it draws are sized and turned by its view, the
+    // vmtx psDispSubAppSRT is handed when grIzumi_801CCEA0's camera draws them)
+    return { right: [mv[0], mv[4], mv[8]], up: [mv[1], mv[5], mv[9]], view: this.mirrorView, viewProj: this.mirrorViewProj };
   }
   endMirror() {
     const gl = this.gl;
