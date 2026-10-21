@@ -160,10 +160,13 @@ int gxFogAmount(int z) {
 }
 // (the pixel's 24-bit depth: GL's depth range is GX's, 0 at near and 1 at far)
 int gxDepth24() { return int(clamp(gl_FragCoord.z, 0.0, 1.0) * 16777215.0 + 0.5); }
+// (on the color's bytes, as the TEV leaves them)
+ivec3 gxFogI(ivec3 p) {
+  if (uFogI.x == 0) return p;
+  int n = gxFogAmount(gxDepth24());
+  return (p * (256 - n) + uFogColor * n) >> 8;
+}
 vec3 gxFog(vec3 c) {
   if (uFogI.x == 0) return c;
-  int n = gxFogAmount(gxDepth24());
-  ivec3 p = ivec3(floor(clamp(c, 0.0, 1.0) * 255.0 + 0.5));
-  p = (p * (256 - n) + uFogColor * n) >> 8;
-  return vec3(p) / 255.0;
+  return vec3(gxFogI(ivec3(floor(clamp(c, 0.0, 1.0) * 255.0 + 0.5)))) / 255.0;
 }`;

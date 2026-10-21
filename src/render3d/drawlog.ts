@@ -42,7 +42,9 @@ import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
 import type { FogRegs } from "./fog";
-import { RENDER, blockOf, evalMaterial, tevDescStep, tevScalar, textureMatrix } from "./gx";
+import {
+  RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevDescStep, tevStage, textureMatrix,
+} from "./gx";
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
@@ -430,16 +432,8 @@ export class DrawLog {
         mag: "near", min: "linear", lod_bias: 0, texgen: "shadow",
         mtx: [0, 1].map((r) => [m[r], m[4 + r], m[8 + r], m[12 + r]].map(this.num)) });
     }
-    if (nShadow && Array.isArray(rec.probe)) {
-      rec.probe = (rec.probe as number[][]).map((v, n) => {
-        const out = v.slice();
-        for (let k = 0; k < nShadow; k++) {
-          const tx = this.inputs[n].t[(p.textures.length + k) & 7];
-          for (let i = 0; i < 3; i++) out[i] = Math.round(Math.min(Math.max(out[i] / 255 * tx[i], 0), 1) * 255);
-        }
-        return out;
-      });
-    }
+    // (the shadows' texels are in the probe: the inputs after the material's own, laid on after its stages)
+    if (nShadow) rec.probe = this.probe(d, p, nShadow);
     // (a fighter's color animation: its color is in the probe, blended over last as the shader does)
     const t = this.tint;
     if (t && (t.color || t.light)) {
@@ -528,7 +522,7 @@ export class DrawLog {
   }
 
   /** the material's output for each probe input, through evalMaterial */
-  private probe(d: Drawable, p: MatProgram): number[][] | null {
+  private probe(d: Drawable, p: MatProgram, nShadow = 0): number[][] | null {
     const s = d.state, l = this.inner.lighting;
     if (p.bump >= 0) return null;                     // (an emboss needs the shifted texel: not probed)
     const amb = l?.ambient ?? [0, 0, 0];
@@ -538,35 +532,43 @@ export class DrawLog {
       : !!ol || (!!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean));
     const anySpec = !first && !(ol && !ol.adds) && !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
     const addsOn = !!ol && ol.adds && !(s.mobj.renderMode & RENDER.XLU);
-    const c01 = (v: number) => Math.min(Math.max(v, 0), 1);
+    const B = (v: number[]) => v.map(byteOf);
     return this.inputs.map((q) => {
+      // (every input as the bytes the TEV takes: a texel round(t * 255), the channels' integers)
       const texels = p.textures.map((ti) => {
         const t = s.tex[ti];
-        const raw = q.t[t.tobj.id & 7];
+        const raw = B(q.t[t.tobj.id & 7]);
         const tv = t.tobj.tev, c = t.tevColors;
         if (!tv) return raw;
-        const k = c ? Array.from(c.subarray(0, 4)) : [0, 0, 0, 0], t0 = c ? Array.from(c.subarray(4, 8)) : [0, 0, 0, 0];
-        const t1 = c ? Array.from(c.subarray(8, 12)) : [0, 0, 0, 0];
+        const k = c ? B(Array.from(c.subarray(0, 4))) : [0, 0, 0, 0], t0 = c ? B(Array.from(c.subarray(4, 8))) : [0, 0, 0, 0];
+        const t1 = c ? B(Array.from(c.subarray(8, 12))) : [0, 0, 0, 0];
         return tevDescStep(tv, k, t0, t1, raw);
       });
-      const lit = [0, 1, 2].map((i) => c01(amb[i] * s.ambient[i] + (anyDiffuse ? q.s[0][i] : 0)));
-      const ras0 = p.channel === 1 ? q.v[0] : p.channel === 2 ? [...lit, 1] : [1, 1, 1, 1];
-      const ras1 = [0, 1, 2].map((i) => c01(anySpec ? q.s[1][i] : 0)).concat([1]);
+      // (the lit channel: the ambient register, HSD_MulColor of the material's ambient and the ambient light, plus
+      // the probe's light sum, through the channel; its alpha 255)
+      const ambReg = mulColor(B([s.ambient[0], s.ambient[1], s.ambient[2]]), B([amb[0], amb[1], amb[2]]));
+      const sum0 = B(q.s[0]), sum1 = B(q.s[1]);
+      const lit = [0, 1, 2].map((i) => chanColor(255, ambReg[i] + (anyDiffuse ? sum0[i] : 0)));
+      const ras0 = p.channel === 1 ? B(q.v[0]) : p.channel === 2 ? [...lit, 255] : [255, 255, 255, 255];
+      const ras1 = [0, 1, 2].map((i) => chanColor(255, anySpec ? sum1[i] : 0)).concat([255]);
       const dif = s.override ?? s.diffuse;
       const out = evalMaterial(p, {
-        diffuse: [dif[0], dif[1], dif[2]], alpha: s.alpha, specular: [s.specular[0], s.specular[1], s.specular[2]],
-        ras0, ras1, texels, blend: p.textures.map((ti) => tevScalar(s.tex[ti].blending)),
+        diffuse: B([dif[0], dif[1], dif[2]]), alpha: byteOf(s.alpha), specular: B([s.specular[0], s.specular[1], s.specular[2]]),
+        ras0, ras1, texels, blend: p.textures.map((ti) => tevByte(s.tex[ti].blending)),
+        shadows: Array.from({ length: nShadow }, (_, k) => B(q.t[(p.textures.length + k) & 7])),
       });
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
-      // (its strength the rasterized alpha: the lit channel's, else the vertex alpha or the material's)
-      const rasA = p.channel === 2 ? s.alpha * q.s[0][3] : p.channel === 1 ? q.v[0][3] : s.alpha;
-      if (addsOn) for (let i = 0; i < 3; i++) out[i] = c01(c01(out[i]) + ol!.rgb[i] * c01(rasA));
+      // (its strength the rasterized alpha: the lit channel's - the light's alpha by the probe's turn - else the
+      // vertex alpha or the material's)
+      const rasA = p.channel === 2 && ol ? chanColor(255, Math.round(q.s[0][3] * byteOf(ol.a)))
+        : p.channel === 1 ? byteOf(q.v[0][3]) : byteOf(s.alpha);
+      if (addsOn) { const k = B(ol!.rgb); for (let i = 0; i < 3; i++) out[i] = tevStage(0, k[i], rasA, out[i], 0, 0, 0, true); }
       const tc = this.tint?.color;
-      if (tc && tc[3] > 0) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - tc[3]) + tc[i] * tc[3];
+      if (tc && tc[3] > 0) out.splice(0, 3, ...overColor(out.slice(0, 3), B(tc.slice(0, 3)), byteOf(tc[3])));
       // (an outline: the color so far taken toward the outline's by its alpha, ftMaterial_800BF6BC's stage)
       const oc = this.outline;
-      if (oc) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - Math.max(oc[3], 1e-3)) + oc[i] * Math.max(oc[3], 1e-3);
-      return out.map((v) => Math.round(c01(v) * 255));
+      if (oc) out.splice(0, 3, ...overColor(out.slice(0, 3), B(oc.slice(0, 3)), byteOf(Math.max(oc[3], 1e-3))));
+      return out;
     });
   }
 
