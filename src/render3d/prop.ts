@@ -24,6 +24,9 @@ export class Prop {
   private anim: (AObj | null)[] | null;
   private matAnim: (MatAnim | null)[][] | null;
   private place: Mat = new Float32Array(16);
+  /** its joints as the game posed them, when the viewer track has them ("jp": by preorder joint, rot,
+   *  scale, translate; NaN for a value not sent: the file's rest): laid over its animation's pose */
+  trackPose: Map<number, Float32Array> | null = null;
 
   /** rootAtOrigin: the root joint's own translation is dropped, for a model
    *  the game places by its root (an item: the replay says where it is).
@@ -70,6 +73,7 @@ export class Prop {
     const sk = this.skeleton;
     sk.resetPose();
     if (this.anim) sk.applyAObjs(this.anim, jointFrame, loop);
+    this.layTrackPose();
     if (this.rootAtOrigin || rootSet) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
     if (this.matAnim) {
       sk.resetMaterials();
@@ -134,6 +138,7 @@ export class Prop {
     const sk = this.skeleton;
     sk.resetPose();
     if (this.anim) sk.applyAObjs(this.anim, frame, loop);
+    this.layTrackPose();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
     if (this.matAnim) {
       sk.resetMaterials();
@@ -188,6 +193,7 @@ export class Prop {
     const sk = this.skeleton;
     sk.resetPose();
     if (this.anim) sk.applyAObjs(this.anim, frame, loop);
+    this.layTrackPose();
     if (this.matAnim) {
       sk.resetMaterials();
       sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, loop);
@@ -224,6 +230,22 @@ export class Prop {
     }
     this.place.set(m.subarray(0, 16));
     sk.update(this.place);
+  }
+  /** the track's joints over the animation's (its root is the item's place, never in it) */
+  private layTrackPose() {
+    const tp = this.trackPose;
+    if (!tp) return;
+    const sk = this.skeleton;
+    for (const [j, v] of tp) {
+      if (j <= 0 || j >= sk.n) continue;
+      // (a value never sent is the file's rest, whatever the animation says)
+      const r = sk.restOf(j, "rot"), s = sk.restOf(j, "scale"), t = sk.restOf(j, "trans");
+      for (let k = 0; k < 3; k++) {
+        sk.rot[j * 3 + k] = Number.isNaN(v[k]) ? r[k] : v[k];
+        sk.scale[j * 3 + k] = Number.isNaN(v[3 + k]) ? s[k] : v[3 + k];
+        sk.trans[j * 3 + k] = Number.isNaN(v[6 + k]) ? t[k] : v[6 + k];
+      }
+    }
   }
   private inv: Mat = new Float32Array(16);
   private tied: Mat = new Float32Array(16);

@@ -51,7 +51,7 @@ import { ChargeAttrs, storedAnim, storedCharges, storedFromTrack } from "./fx/ch
 import { invincibilityAsked, timedInvincible } from "./fx/invincible";
 import { launchSmokes } from "./fx/launchsmoke";
 import { WAIT, waitSubactions } from "./waitanim";
-import { fetchTrack, replayPath, TrackData, ViewerTrack } from "./track";
+import { fetchTrack, replayPath, TrackData, ViewerTrack, type TrackPose } from "./track";
 import { SHIELD_MODEL } from "./fx/dispatch";
 import { pageCache } from "../state/pageCache";
 import { SHIELD_FX, trackFilesOf, trackShapes, type TrackShapes } from "./fx/drawn";
@@ -1528,6 +1528,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         dy.d.apply(fi.skeleton.rot, fi.skeleton.trans, fi.skeleton.scale);
         fi.skeleton.update();
       }
+      // (and the ones the simulator runs - the chains a hurtbox sits on - as the game swung them, when the
+      // track has them: "fp")
+      const swungBy = trackAt?.pose("fp", `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`, fno - 123);
+      if (swungBy && layTrackSwing(fi, a.st.internalCharacterId, swungBy.joints, true)) fi.skeleton.update();
     };
     for (const a of actors) {
       const fi = fs.get(`${a.st.internalCharacterId}:${a.costume}`);
@@ -1840,6 +1844,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const v = trNow?.at("irot", String(spawnId), fno - 123);
       return v && v.length >= 3 ? v.map(Number) : null;
     };
+    // (an item's joints as the game posed them, and the chains whose links the track has: drawn from them)
+    const itemPose = (spawnId: number) => trNow?.pose("jp", String(spawnId), fno - 123)?.joints ?? null;
+    const trackChains = new Set<number>();
+    if (trNow?.has("lm")) for (const it of frame.items ?? []) if (trNow.pose("lm", String(it.spawnId), fno - 123)) trackChains.add(it.spawnId);
     // Fountain of Dreams' pond: what the game draws after the stage - the
     // fighters, the items, the effects - seen from below the floor into the
     // stage's mirror image, before the pond is drawn with it (grizumi.c)
@@ -1868,7 +1876,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       r.setLighting(lighting);
       drawFighters("opa", true);
       drawFighters("xlu", true);
-      if (!layersOff.items) for (const it of frame.items ?? []) drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake);
+      if (!layersOff.items) for (const it of frame.items ?? []) drawArticleTracked(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake, itemPose);
       drawnArticles = [];
       r.setFog(null);
       if (ek?.bank && fxw && !layersOff.effects) {
@@ -1916,7 +1924,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (st?.shyGuy) drawShyGuys(r, st.shyGuy, frame.items ?? [], fno);
     prof.mark("fighters2");
     let projectiles = 0;
-    for (const it of layersOff.items ? [] : frame.items ?? []) if (drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake)) projectiles++;
+    for (const it of layersOff.items ? [] : frame.items ?? []) {
+      if (trackChains.has(it.spawnId)) continue;
+      if (drawArticleTracked(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake, itemPose)) projectiles++;
+    }
     // one Yoshi laid in an egg: hidden, the egg (his articles' slot 3) worn
     // in its place - its child on the victim's TransN, the egg the victim's
     // size and growing to it over his attributes' +0x20 frames from +0x1C
@@ -1977,8 +1988,17 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       r.drawSkeleton(star.skeleton, "xlu");
       r.endPass();
     }
+    // the chains whose links the track has ("lm": hookshots, Sheik's chain, the yo-yo, the belay), each link
+    // at the matrix the item's code gave it
+    for (const it of frame.items ?? []) {
+      if (!trackChains.has(it.spawnId)) continue;
+      const links = trNow!.pose("lm", String(it.spawnId), fno - 123);
+      const f = articleFighter(data, fs, it, fno);
+      if (links && f) drawTrackChain(r, f, it, links, trackArticles.get(data)?.get(it.typeId));
+    }
     // the hookshots' and grapple beams' chains, where the viewer track has them
     for (const a of actors) {
+      if ((frame.items ?? []).some((it) => it.owner === a.player && trackChains.has(it.spawnId))) continue;
       const c = CHAINS[a.st.internalCharacterId];
       const v = trNow?.has("hook") ? trNow.exact("hook", `${a.player}:${a.nana ? 1 : 0}`, fno - 123) : null;
       const costume = data.settings.playerSettings[a.player]?.costumeIndex ?? 0;
@@ -2552,10 +2572,21 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   swungAt = (player, nana, frame, rot) => {
     const e = dynLook.get(actorKey(player, nana));
     const h = e?.was.find((x) => x.frame === frame);
-    if (!h) return;
-    for (let i = 0; i + 3 < h.turns.length; i += 4) {
-      const j = h.turns[i] * 3;
-      if (j + 2 < rot.length) { rot[j] = h.turns[i + 1]; rot[j + 1] = h.turns[i + 2]; rot[j + 2] = h.turns[i + 3]; }
+    if (h) {
+      for (let i = 0; i + 3 < h.turns.length; i += 4) {
+        const j = h.turns[i] * 3;
+        if (j + 2 < rot.length) { rot[j] = h.turns[i + 1]; rot[j + 1] = h.turns[i + 2]; rot[j + 2] = h.turns[i + 3]; }
+      }
+    }
+    // (the swinging joints the simulator runs, as the game left them on that frame: "fp")
+    const fi = e?.fi;
+    const by = fi && gameAnims ? viewerTrack()?.pose("fp", `${player}:${nana ? 1 : 0}:${fi.internalId}`, frame - 123) : null;
+    if (fi && by) {
+      for (const [part, v] of by.joints) {
+        const j = partToModelJoint(fi.internalId, part);
+        if (j < 0 || j * 3 + 2 >= rot.length) continue;
+        for (let k = 0; k < 3; k++) if (!Number.isNaN(v[k])) rot[j * 3 + k] = v[k];
+      }
     }
   };
   onCleanup(() => { swungAt = null; });
@@ -4017,6 +4048,24 @@ function loadLearned(): Promise<Learned | null> {
  *  its viewer track ("art": [frame, "art", kind, character, index], the
  *  index into the fighter's ftData item list, -1 for none of them) */
 const trackArticles = new WeakMap<ReplayData, Map<number, number>>();
+
+/** a fighter's swinging joints as the track has them ("fp": by part, rot, scale, translate) laid on its
+ *  pose; whether any was */
+function layTrackSwing(fi: Fighter, char: number, joints: Map<number, Float32Array>, all: boolean): boolean {
+  const sk = fi.skeleton;
+  let laid = false;
+  for (const [part, v] of joints) {
+    const j = partToModelJoint(char, part);
+    if (j < 0 || j >= sk.n) continue;
+    for (let k = 0; k < 3; k++) {
+      if (!Number.isNaN(v[k])) sk.rot[j * 3 + k] = v[k];
+      if (all && !Number.isNaN(v[3 + k])) sk.scale[j * 3 + k] = v[3 + k];
+      if (all && !Number.isNaN(v[6 + k])) sk.trans[j * 3 + k] = v[6 + k];
+    }
+    laid = true;
+  }
+  return laid;
+}
 function useTrackArticles(data: ReplayData, tr: ViewerTrack | null) {
   const out = new Map<number, number>();
   for (const e of tr?.between("art", -1e9, 1e9) ?? []) {
@@ -4061,6 +4110,47 @@ function linkMatrix(out: Float32Array, at: [number, number, number], dir: [numbe
   const yx = dy * xz - dz * xy, yy = dz * xx - dx * xz, yz = dx * xy - dy * xx;
   out.set([xx * scale, xy * scale, xz * scale, 0, yx * scale, yy * scale, yz * scale, 0,
            dx * scale, dy * scale, dz * scale, 0, at[0], at[1], at[2], 1]);
+}
+
+// A chain's links as the item's code made them (itlinkhookshot.c, itseakchain.c, itnessyoyo.c,
+// itclimbersstring.c): link i of n from the chain's start, each its own model - a link model of the item's
+// special attributes (the hookshot's two in turn by i), drawn only while it is out (it_802A24A0), and the
+// last, the end with no prev (the hookshot's head, Sheik's handle, the yo-yo, the belay's end), its own
+// model, always drawn. The track's link 0 is that end. By the owner's character: its article, the link
+// models' attribute offsets, the end's.
+const TRACK_CHAINS: Record<number, { art: number; link: (i: number) => number; end: number }> = {
+  6: { art: 2, link: (i) => (i % 2 ? 0x54 : 0x58), end: 0x5c },
+  20: { art: 2, link: (i) => (i % 2 ? 0x54 : 0x58), end: 0x5c },
+  7: { art: -1, link: () => 0x64, end: 0x68 },
+  8: { art: 10, link: () => 0x50, end: 0x54 },
+  10: { art: -1, link: () => 0x24, end: 0x28 },
+  11: { art: -1, link: () => 0x24, end: 0x28 },
+};
+const trackLinkMtx = new Float32Array(16);
+
+function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPose, said: number | undefined) {
+  const c = TRACK_CHAINS[f.internalId];
+  if (!c) return;
+  const art = said ?? c.art;
+  if (art < 0) return;
+  const n = links.links;
+  for (const [k, v] of links.joints) {
+    const out = links.out?.get(k) ?? 0;
+    const i = n - 1 - k;
+    if (k !== 0 && !out) continue;
+    if (v.some(Number.isNaN)) continue;
+    const p = f.articleModel(art, k === 0 ? c.end : c.link(i));
+    if (!p) continue;
+    // (rows 0-2 of the 3x4, as the renderer's column-major 4x4)
+    for (let row = 0; row < 3; row++) for (let col = 0; col < 4; col++) trackLinkMtx[col * 4 + row] = v[row * 4 + col];
+    trackLinkMtx[3] = trackLinkMtx[7] = trackLinkMtx[11] = 0;
+    trackLinkMtx[15] = 1;
+    p.poseMatrix(trackLinkMtx);
+    r.drawSkeleton(p.skeleton, "opa");
+    r.drawSkeleton(p.skeleton, "xlu");
+  }
+  void it;
+  r.endPass();
 }
 
 function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { state: number; age: number } | null = null) {
@@ -4115,6 +4205,24 @@ const PLAIN_ARTICLE: (typeof ARTICLES)[number] = { art: 0 };
 // Sheik's chain and the Ice Climbers' rope: their links are not in the
 // replay or the track): never drawn plainly as their model
 const ROPES = new Set([62, 63, 96, 97, 102, 113]);
+
+/** an item drawn with its joints as the viewer track has them ("jp", when it does: `poseOf`), else as its
+ *  animation has them; the pose is the item's own, so it is taken off its model again after */
+function drawArticleTracked(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number,
+                            jointOf?: (owner: number, joint: number) => Float32Array | null,
+                            partJoint?: (owner: number, part: number) => number,
+                            turnOf?: (spawnId: number) => number[] | null,
+                            shakeOf?: (owner: number) => [number, number] | undefined,
+                            poseOf?: (spawnId: number) => Map<number, Float32Array> | null): boolean {
+  const joints = poseOf?.(it.spawnId) ?? null;
+  const art = joints ? articleOf(data, fs, it, frame) : null;
+  if (art) art.prop.trackPose = joints;
+  try {
+    return drawArticle(r, data, fs, it, frame, jointOf, partJoint, turnOf, shakeOf);
+  } finally {
+    if (art) art.prop.trackPose = null;
+  }
+}
 
 function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it: ReplayItem, frame: number,
                      jointOf?: (owner: number, joint: number) => Float32Array | null,

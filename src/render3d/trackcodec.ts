@@ -5,10 +5,34 @@
  * one row to the next, the whole gzipped (a host may serve it in this form, and has
  * the layout). This reads it back into the events track.ts takes, in the
  * track's own order.
+ *
+ * A column's kind byte: 0 whole numbers (the steps, zigzag varints); 1
+ * decimals (a byte k, then the steps of round(v * 10^k)); 2 strings (a table,
+ * then each value's index); 3 anything else (as 2, each entry its JSON); 4
+ * exact floats (each value's IEEE single as its 32-bit word, the steps from
+ * one word to the next as zigzag varints: what a track that writes its
+ * floats as "0x" words keeps, read back as the floats themselves).
  */
 import type { TrackData, TrackEvent } from "./track";
 
 const MAGIC = "VTB1";
+
+const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
+
+/** a track's exact floats - strings "0x" and the IEEE single's eight hex
+ *  digits - as the numbers they are, in place (anything else is left) */
+export function decodeTrackFloats(events: TrackEvent[]): void {
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    for (let k = 2; k < e.length; k++) {
+      const v = e[k];
+      if (typeof v === "string" && v.length === 10 && v.charCodeAt(0) === 48 && v.charCodeAt(1) === 120) {
+        u32[0] = Number(v);
+        e[k] = f32[0];
+      }
+    }
+  }
+}
 
 class Reader {
   o = 0;
@@ -43,6 +67,11 @@ function column(r: Reader, n: number): (number | string)[] {
     const k = kind === 1 ? r.byte() : 0, s = 10 ** k;
     let last = 0;
     for (let i = 0; i < n; i++) { last += r.zigzag(); out[i] = k ? last / s : last; }
+    return out;
+  }
+  if (kind === 4) {
+    let last = 0;
+    for (let i = 0; i < n; i++) { last += r.zigzag(); u32[0] = last; out[i] = f32[0]; }
     return out;
   }
   const count = r.varint();
@@ -88,6 +117,9 @@ export function readTrack(b: Uint8Array): TrackData {
   const events: TrackEvent[] = new Array(total);
   for (let i = 0; i < total; i++) events[i] = rows[order[i]][at[order[i]]++];
   track.events = events;
+  // (a writer that kept the "0x" words as strings: read as the floats they are)
+  decodeTrackFloats(events);
+  track.decoded = true;
   return track;
 }
 

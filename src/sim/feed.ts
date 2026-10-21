@@ -14,6 +14,7 @@
  * the replay, the track stops, as a host's track does (track.ts until).
  */
 import { ViewerTrack, type TrackData, type TrackEvent } from "../render3d/track";
+import { decodeTrackFloats } from "../render3d/trackcodec";
 import { gameFilesFrom, setLiveTrack, type LiveTrack } from "../render3d/files";
 import { replayStore } from "../state/replayStore";
 import { shouldPublish } from "./policy";
@@ -135,6 +136,7 @@ class SimFeed implements LiveTrack {
       case "chunk":
         if (m.text) {
           const got = JSON.parse("[" + m.text + "]") as TrackEvent[];
+          decodeTrackFloats(got);
           for (const e of got) this.events.push(e);
         }
         this.frontier = m.until;
@@ -174,7 +176,7 @@ class SimFeed implements LiveTrack {
     const whole = this.done && this.exact;
     const data: TrackData = {
       version: VERSION, events: this.events, seconds: (performance.now() - this.started) / 1000,
-      exact: whole, diverged_at: whole ? null : this.frontier,
+      exact: whole, diverged_at: whole ? null : this.frontier, decoded: true,
     };
     this.snapshot = new ViewerTrack(data);
     this.published = this.frontier;

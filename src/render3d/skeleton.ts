@@ -288,9 +288,9 @@ export class Skeleton {
     } else d.node = this.flags[s] & JOBJ.SKELETON_ROOT ? 2 : 3;
   }
 
-  /** a joint's rest translation or scale (9 floats a joint: rot, scale, trans) */
-  restOf(j: number, what: "scale" | "trans"): [number, number, number] {
-    const o = j * 9 + (what === "scale" ? 3 : 6);
+  /** a joint's rest turn, scale or translation (9 floats a joint: rot, scale, trans) */
+  restOf(j: number, what: "rot" | "scale" | "trans"): [number, number, number] {
+    const o = j * 9 + (what === "rot" ? 0 : what === "scale" ? 3 : 6);
     return [this.rest[o], this.rest[o + 1], this.rest[o + 2]];
   }
 
