@@ -9,7 +9,7 @@ import {
   aobjFrame, decodePObj, sample, splineAt,
 } from "./hsd";
 import { Mat, ident, invert, mul, srt } from "./math";
-import { HSD_MtxSRT, PSMTXConcat, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
+import { HSD_MtxInverseConcat, HSD_MtxSRT, PSMTXConcat, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
 
 /** what a texture animation can change, per TObj */
 export interface TexState {
@@ -117,6 +117,21 @@ export function setBillboardView(view: Float32Array) {
 /** a joint that turns to face the camera (HSD's mkBillBoardMtx and kin): its
  *  world matrix carried into view space, the rotation replaced there, its
  *  scale and place kept, and carried back */
+const nodeX = new Float32Array(12), nodeM = new Float32Array(12), nodeE = new Float32Array(12);
+
+/** the node matrix of an envelope mesh on joint m whose skeleton joint (HSD_JObjFindSkeleton) is x, another joint
+ *  (_HSD_mkEnvelopeModelNodeMtx): inverse(x's matrix) times m's - x's matrix taken with its envelope matrix first
+ *  when x is a SKELETON joint (`envX`), alone when it is the SKELETON_ROOT (null) - HSD_MtxInverseConcat, in
+ *  float32. Column-major 4 x 4s at offsets; into out (16) */
+export function envelopeNodeMtx(out: Float32Array, wx: Float32Array, xo: number, wm: Float32Array, mo: number,
+                                envX: Float32Array | null): Float32Array {
+  mtxFromGL(wx, nodeX, xo);
+  if (envX) { mtxFromGL(envX, nodeE, 0); PSMTXConcat(nodeX, nodeE, nodeX); }
+  mtxFromGL(wm, nodeM, mo);
+  HSD_MtxInverseConcat(nodeX, nodeM, nodeM);
+  return mtxToGL(nodeM, out);
+}
+
 function billboard(out: Float32Array, m: Float32Array, kind: number, rotZ: number) {
   if (bbIdentity) { billboardInView(out, m, kind, rotZ); return; }
   mul(bbA, bbView, m);
@@ -490,12 +505,7 @@ export class Skeleton {
     // (the node matrix, the same for all of the mesh's matrices)
     if (d.node >= 2) {
       const s = d.nodeJoint;
-      invert(tmpB, W.subarray(j * 16, j * 16 + 16));
-      if (d.node === 2) mul(tmpC, W.subarray(s * 16, s * 16 + 16), tmpB);
-      else {
-        mul(tmpC, W.subarray(s * 16, s * 16 + 16), this.invBind[s] ?? ident(tmpC));
-        mul(tmpC, tmpC, tmpB);
-      }
+      envelopeNodeMtx(tmpC, W, s * 16, W, j * 16, d.node === 3 ? this.invBind[s] : null);
     }
     const M = d.mats;
     for (let m = 0; m < d.env.length; m++) {
