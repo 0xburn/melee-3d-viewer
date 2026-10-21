@@ -224,11 +224,11 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "shiftView", "shiftVP",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "cullOn", "shiftView", "shiftVP",
                                "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
-                               "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
+                               "setTint", "setOutline", "beginShadow", "beginMirror", "endMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
@@ -270,6 +270,11 @@ export class DrawLog {
     if (this.restore) return;
     const r = this.r as unknown as Record<string, (...a: unknown[]) => unknown>;
     const saved: [string, unknown][] = [];
+    // (GX culls no mesh - only its triangles, at the picture's edge - so while the log is on the renderer culls
+    // none either: every mesh the game would send is drawn and logged, its matrices with it)
+    const inner = this.r as unknown as { cullOn: boolean };
+    const cullWas = inner.cullOn;
+    inner.cullOn = false;
     const wrap = (name: string, after: (args: unknown[], drew: boolean) => void) => {
       const own = Object.prototype.hasOwnProperty.call(r, name) ? r[name] : undefined;
       const orig = r[name];
@@ -285,7 +290,10 @@ export class DrawLog {
     // (each picture's erase: the game's HSD_CObjEraseScreen and the shadow's start draw it as one flat quad, the
     // renderer clears; logged as a "clear" of the picture's size)
     wrap("begin", () => { this.newFrame(); this.clear(640, 480); });
-    wrap("beginMirror", () => this.clear(80, 60));
+    // (the stage's mirror image, Fountain of Dreams' pond: what is drawn into it - particles too - is logged in
+    // that 80 x 60 picture's pixels, as the game's draws into it are)
+    wrap("beginMirror", () => { this.clear(80, 60); this.target = [80, 60]; });
+    wrap("endMirror", () => { this.target = null; });
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
     wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
     wrap("setOutline", (a) => { this.outline = (a[0] as number[] | null) ?? null; });
@@ -310,6 +318,7 @@ export class DrawLog {
     wrap("drawSphere", (a) => this.add({ kind: "sphere", center: (a[0] as number[]).map((v) => rnd(v)), radius: rnd(a[1] as number),
                                           color: (a[2] as number[]).map((v) => rnd(v)), alpha: rnd(a[3] as number) }));
     this.restore = () => {
+      inner.cullOn = cullWas;
       for (const [name, own] of saved) {
         if (own === undefined) delete r[name];
         else r[name] = own as (...a: unknown[]) => unknown;
@@ -389,6 +398,11 @@ export class DrawLog {
   private mesh(d: Drawable, ghost: boolean, sk: Skeleton | null) {
     const s = this.inner;
     this.nonfinite = false;
+    // (a part of the record that fails is left out and says why, the rest - the matrices first - is still written)
+    const errors: string[] = [];
+    const safe = <T>(what: string, f: () => T, none: T): T => {
+      try { return f(); } catch (e) { errors.push(`${what}: ${String(e)}`); return none; }
+    };
     const st = s.staticsOf(d.state), p = st.p;
     const { view, proj } = this.camera();
     let prims = this.prims.get(d.pobj);
@@ -408,16 +422,17 @@ export class DrawLog {
       verts: prims.reduce((n, x) => n + x[1], 0),
       mtx, proj, cull: cullName, ...this.pe(),
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
-      fog: this.fogRec(),
-      lights: this.lightsRec(view, this.firstOnly(d)),
-      tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)),
+      fog: safe("fog", () => this.fogRec(), null),
+      lights: safe("lights", () => this.lightsRec(view, this.firstOnly(d)), []),
+      tex: safe("tex", () => p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)), []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
                                               alphaMap: x.alphaMap, phase: x.phase })),
                diffuse: Array.from(d.state.override ?? d.state.diffuse).map((v) => rnd(v)), alpha: rnd(d.state.alpha),
                ambient: Array.from(d.state.ambient).map((v) => rnd(v)), spec: Array.from(d.state.specular).map((v) => rnd(v)) },
-      probe: this.probe(d, p),
+      probe: safe("probe", () => this.probe(d, p), null),
     };
+    if (errors.length) rec.errors = errors;
     // (a shadow being made: the mesh in one flat gray, no texture, no depth, color only: HSD_ShadowStartRender)
     if (this.cast !== null) {
       const g = this.cast, gray = g / 255;
@@ -620,15 +635,21 @@ export class DrawLog {
       // (a lettering batch, the name plates' or Stadium's screen's: each quad's own box and the picture's corner it reads, to set beside the
       // game's draws one glyph at a time)
       const cells: { box: number[]; uv: number[] }[] | null = b.sprite && (b.sprite.key === "plate-font" || b.sprite.key.startsWith("screen-font")) ? [] : null;
+      // (each quad's four corners on the screen, in its vertex order, unrounded: to pair the game's quads one by one;
+      // a corner behind the camera null)
+      const quads: ([number, number] | null)[][] = [];
       for (let q = b.first; q < b.first + b.count; q++) {
         let qx0 = Infinity, qy0 = Infinity, qx1 = -Infinity, qy1 = -Infinity;
+        const corners: ([number, number] | null)[] = [];
+        quads.push(corners);
         for (let v = 0; v < 4; v++) {
           const o = (q * 4 + v) * 17, X = data[o], Y = data[o + 1], Z = data[o + 2];
           const w = vp[3] * X + vp[7] * Y + vp[11] * Z + vp[15];
-          if (w <= 1e-9) continue;
+          if (w <= 1e-9) { corners.push(null); continue; }
           const sx = ((vp[0] * X + vp[4] * Y + vp[8] * Z + vp[12]) / w * 0.5 + 0.5) * PW;
           const ny = (vp[1] * X + vp[5] * Y + vp[9] * Z + vp[13]) / w * 0.5;
           const sy = (flip ? 0.5 + ny : 0.5 - ny) * PH;
+          corners.push([sx, sy]);
           x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
           qx0 = Math.min(qx0, sx); qy0 = Math.min(qy0, sy); qx1 = Math.max(qx1, sx); qy1 = Math.max(qy1, sy);
         }
@@ -649,6 +670,7 @@ export class DrawLog {
         overlay: s.overlayVP !== null,
         bbox: Number.isFinite(x0) ? [x0, y0, x1, y1].map((v) => Math.round(v * 10) / 10) : null,
         ...(cells ? { cells } : {}),
+        corners: quads,
         ...(this.target ? { target: this.target } : {}),
       });
     }

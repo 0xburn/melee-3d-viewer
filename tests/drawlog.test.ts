@@ -103,6 +103,7 @@ function standIn() {
     overlayVP: null, viewProj: vp,
     // (what the renderer uploads for a draw: view times each of its matrices)
     mvBuf: new Float32Array(160),
+    cullOn: true,
     staticsOf(s: { mobj: MObj }) {
       const I = new Int32Array(32), F = new Float32Array(128);
       I[3] = 4 | (7 << 3);
@@ -192,6 +193,11 @@ test("nothing is logged without start, and particles keep their batches", () => 
   assertEquals(p.quads, 1);
   const b = p.bbox as number[];
   assert(b[0] < 320 && b[2] > 320 && b[1] < 240 && b[3] > 240, `around the middle: ${b}`);
+  // each quad's four corners, in vertex order, inside the batch's box
+  const corners = p.corners as [number, number][][];
+  assertEquals(corners.length, 1);
+  assertEquals(corners[0].length, 4);
+  for (const [x, y] of corners[0]) assert(x >= b[0] - 0.1 && x <= b[2] + 0.1 && y >= b[1] - 0.1 && y <= b[3] + 0.1, `corner ${x}, ${y}`);
 });
 
 test("numbers are written as the float32s uploaded, or to 6 digits when asked", () => {
@@ -223,4 +229,15 @@ test("numbers are written as the float32s uploaded, or to 6 digits when asked", 
   // the projection as uploaded: GL's -1 / (near - far) halves, kept as float32s
   const proj = frames[0].draws[1].proj as number[];
   assert(proj.slice(0, 6).every((v) => Math.fround(v) === v), `projection as float32s: ${proj}`);
+});
+
+test("while the log is on nothing is culled (GX culls no mesh), and the renderer's culling comes back after", () => {
+  const r = standIn();
+  // deno-lint-ignore no-explicit-any
+  const any = r as any;
+  const log = new DrawLog(any);
+  log.attach();
+  assertEquals(any.cullOn, false);
+  log.detach();
+  assertEquals(any.cullOn, true);
 });
