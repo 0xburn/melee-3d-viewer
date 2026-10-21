@@ -110,6 +110,7 @@ export class HudModel {
   begin() {
     this.sk.resetPose();
     this.sk.resetMaterials();
+    this.sk.hidden.clear();
   }
 
   /** joint animation `set` at `frame` (held at its end), on one joint or all */
@@ -153,6 +154,18 @@ export class HudModel {
     if (d) { const st = this.sk.states[d.index]; st.diffuse.set(rgb); st.dirty = true; }
   }
 
+  /** a material's alpha (the game writes its mat->alpha) */
+  alpha(joint: number, a: number, dobj = 0) {
+    const d = this.joints[joint]?.dobjs[dobj];
+    if (d) { const st = this.sk.states[d.index]; st.alpha = a; st.dirty = true; }
+  }
+
+  /** of all the model's meshes, this one alone drawn (the rest hidden till the next begin) */
+  solo(joint: number, dobj: number) {
+    const keep = this.joints[joint]?.dobjs[dobj]?.index;
+    for (const j of this.joints) for (const d of j?.dobjs ?? []) if (d.index !== keep) this.sk.hidden.add(d.index);
+  }
+
   /** HSD_JObjSetFlagsAll(HIDDEN): the joint and everything under it */
   hide(joint: number) {
     const sk = this.sk;
@@ -167,8 +180,8 @@ export class HudModel {
   }
 
   /** the root placed (and scaled, turned), then the world matrices */
-  finish(x: number, y: number, z = 0, scale = 1, rotZ = 0) {
-    srt(this.place, scale, scale, scale, 0, 0, rotZ, x, y, z);
+  finish(x: number, y: number, z = 0, scale = 1, rotZ = 0, scaleY = scale) {
+    srt(this.place, scale, scaleY, scale, 0, 0, rotZ, x, y, z);
     this.sk.update(this.place);
   }
 
@@ -321,6 +334,8 @@ export class Hud {
   private players: {
     slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
     tag: HudModel | null; lupe: HudModel | null; pic: RenderTarget | null; place: [number, number];
+    /** Slippi's name plate: the tag model's box (its joint 1's third mesh), alone */
+    plateBox: HudModel | null;
     /** where it sits by the HUD Slots option (hudslots.ts): the outer slots of four for two players, or as in
      *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
     places: Record<HudSlots, [number, number]>;
@@ -431,7 +446,7 @@ export class Hud {
         slot, life: new PlayerHud(data, slot, { ...kit.tags }, this.goAt + FIRST_FRAME, nametag.length > 0), nametag,
         plate: { text: ps.displayName ?? "", raw: ps.displayNameRaw ? rawBytes(ps.displayNameRaw) : null },
         num: kit.model(kit.num, "hud:num"), mark: kit.model(kit.mark, "hud:mark"),
-        stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
+        stock: kit.model(kit.stock, "hud:stock"), tag: kit.model(kit.tag, "hud:tag"), plateBox: kit.model(kit.tag, "hud:tag"), lupe: kit.model(kit.lupe, "hud:lupe"),
         human: ps.playerType === 0,
         pic: null, place: at[hudSlotsMode()], places: at, colorIdx,
         external: ps.externalCharacterId, costume: ps.costumeIndex,
@@ -494,7 +509,7 @@ export class Hud {
 
   /** every model's textures, ahead of the first frame */
   warm(r: Renderer) {
-    for (const p of this.players) for (const m of [p.num, p.mark, p.stock, p.tag, p.lupe]) if (m) r.warm(m.sk);
+    for (const p of this.players) for (const m of [p.num, p.mark, p.stock, p.tag, p.plateBox, p.lupe]) if (m) r.warm(m.sk);
     for (const m of this.arrows) r.warm(m.sk);
     for (const m of [this.ready, this.go, this.countdown]) if (m) r.warm(m.sk);
     if (this.timer) r.warm(this.timer.sk);
@@ -634,8 +649,20 @@ export class Hud {
         // (the bytes the replay holds for the name, while the page's text is still the replay's)
         const text = font ? plateText(font, name, name === p.plate.text ? p.plate.raw : null, this.players[0] === p) : null;
         // the plate is as wide as its name wants, up to the plate at its widest
-        const half = PLATE.hx * (text ? text.width : PLATE_FULL);
-        this.box(cx - half, oy + PLATE.sy * PLATE.y0, cx + half, oy + PLATE.sy * PLATE.y1, [0, 0, 0, PLATE.fill]);
+        const sx = text ? text.width : PLATE_FULL, b = p.plateBox;
+        if (b) {
+          // (the tag model's box, in black at 84/255, x scaled by the name, y by 0.62)
+          b.begin();
+          b.solo(1, 2);
+          b.color(1, [0, 0, 0], 2);
+          b.alpha(1, PLATE.fill, 2);
+          b.finish(cx, oy, 0, sx, 0, PLATE.sy);
+          r.drawSkeleton(b.sk, "opa");
+          r.drawSkeleton(b.sk, "xlu");
+        } else {
+          const half = PLATE.hx * sx;
+          this.box(cx - half, oy + PLATE.sy * PLATE.y0, cx + half, oy + PLATE.sy * PLATE.y1, [0, 0, 0, PLATE.fill]);
+        }
         if (text) {
           this.lettered.push(text);
           this.letteredAt.push(px + PLATE_TEXT.dx, py + PLATE_TEXT.top);
