@@ -195,47 +195,83 @@ export function layoutSis(bytes: Uint8Array, o: SisTextOpts, file: SisFont | nul
   return out;
 }
 
-/** A string the code writes in (HSD_SisLib_803A6B98): at (x, y), in the
- *  text's color and scale, its characters as the common font's codes
- *  (HSD_SisLib_803A67EC; `scale` null: none written, the text's own stands). The routine reads the
- *  bytes up to a zero or 128 of them: a space, a period, a colon or a digit pulls the letters 12 closer until a
- *  letter, quote, apostrophe, comma or hyphen puts the spacing back; a space, quote, apostrophe, comma, hyphen,
- *  period, digit, colon and a letter are turned to their full-width Shift-JIS pair; any other byte is the first of a
- *  pair, the byte after it the second, whatever that byte is (a letter, the end of the string: it is read all the
- *  same, and the pair the font has no glyph for adds nothing). A lead byte at the very end therefore takes the zero
- *  for its second and the routine reads on past it, into what the buffer held before: `past` is that, the bytes
- *  by their place in the buffer (the string's first byte is 0); zeros where it has none. */
-export function sisString(s: Uint8Array, x: number, y: number, color: [number, number, number], scale: [number, number] | null,
-                          c: SisCommon, past?: ArrayLike<number>): number[] {
-  const out: number[] = [7, ...be16(Math.trunc(x)), ...be16(Math.trunc(y)), 0x0c, ...color];
-  const fix = (v: number) => [Math.trunc(v) & 0xff, Math.trunc(v * 256) & 0xff];
-  // (no scale: the text's own, in layoutSis's options, stands)
-  if (scale) out.push(0x0e, ...fix(scale[0]), ...fix(scale[1]));
-  // (the buffer: the string, its terminator, then what was there)
-  const at = (k: number) => (k < s.length ? s[k] : k === s.length ? 0 : past?.[k] ?? 0);
-  let narrow = 0, ended = false;
-  for (let k = 0; k < 128; k++) {
-    const ch = at(k);
-    if (ch === 0) { ended = true; break; }
+/** the string routine's table: a (high, low) byte pair to the font's index (made once per font) */
+const pairIndex = new WeakMap<SisCommon, Map<number, number>>();
+function pairOf(c: SisCommon): Map<number, number> {
+  let m = pairIndex.get(c);
+  if (!m) {
+    m = new Map();
+    for (let j = 0; j < 287; j++) {
+      const key = (c.sjis[j * 2] << 8) | c.sjis[j * 2 + 1];
+      if (!m.has(key)) m.set(key, j);
+    }
+    pairIndex.set(c, m);
+  }
+  return m;
+}
+
+/** HSD_SisLib_803A67EC: a string's bytes turned to the string routine's ops. It reads up to 128 bytes or a zero: a
+ *  space, a period, a colon or a digit pulls the letters 12 closer until a letter, quote, apostrophe, comma or hyphen
+ *  puts the spacing back; a space, quote, apostrophe, comma, hyphen, period, digit, colon and a letter are turned to
+ *  their full-width Shift-JIS pair; any other byte is the first of a pair, the byte after it the second, whatever
+ *  that byte is (a letter, the end of the string: it is read all the same, and the pair the font has no glyph for
+ *  adds nothing). A lead byte at the very end therefore takes the zero for its second and the routine reads on past
+ *  it, into what the buffer held before: `buffer` is the string, its zero and then that.
+ *
+ *  The ops are written into the 128 bytes of the caller's frame that lie directly before the string's buffer and
+ *  go on past them, over the string itself when they run longer; the routine reads its bytes from that same
+ *  memory (and a digit's or a letter's byte again after the narrowing op is written), so the memory is one array
+ *  here. Returns the ops. */
+export function sisBody(buffer: ArrayLike<number>, c: SisCommon): number[] {
+  const mem = new Uint8Array(0x80 + Math.max(buffer.length, 0x100) + 0x500);
+  for (let k = 0; k < buffer.length; k++) mem[0x80 + k] = buffer[k];
+  const pairs = pairOf(c);
+  let w = 0, narrow = false;
+  const put = (...bs: number[]) => { for (const b of bs) mem[w++] = b & 0xff; };
+  const tight = () => { if (!narrow) { put(0x0a, 0xf4, 0, 0, 0); narrow = true; } };
+  const back = () => { put(0x0b); narrow = false; };
+  for (let k = 0; k < 128;) {
+    const ch = mem[0x80 + k];
+    if (ch === 0) { if (narrow) put(0x0b); break; }
     let hi: number, lo: number;
-    const tight = () => { if (!narrow) { out.push(0x0a, 0xf4, 0, 0, 0); narrow++; } };
-    const back = () => { out.push(0x0b); narrow = 0; };
     if (ch === 0x20) { tight(); hi = 0x81; lo = 0x40; }
     else if (ch === 0x22) { back(); hi = 0x81; lo = 0x68; }
     else if (ch === 0x27) { back(); hi = 0x81; lo = 0x66; }
     else if (ch === 0x2c) { back(); hi = 0x81; lo = 0x43; }
     else if (ch === 0x2d) { back(); hi = 0x81; lo = 0x7c; }
     else if (ch === 0x2e) { tight(); hi = 0x81; lo = 0x44; }
-    else if (ch >= 0x30 && ch <= 0x39) { tight(); hi = 0x82; lo = ch + 31; }
+    else if (ch >= 0x30 && ch <= 0x39) { tight(); hi = 0x82; lo = mem[0x80 + k] + 31; }
     else if (ch === 0x3a) { tight(); hi = 0x81; lo = 0x46; }
-    else if (ch >= 0x41 && ch <= 0x5a) { back(); hi = 0x82; lo = ch + 31; }
-    else if (ch >= 0x61 && ch <= 0x7a) { back(); hi = 0x82; lo = ch + 32; }
-    else { back(); hi = ch; lo = at(++k); }
-    for (let j = 0; j < 287; j++) {
-      if (c.sjis[j * 2] === hi && c.sjis[j * 2 + 1] === lo) { out.push(c.codes[j * 2], c.codes[j * 2 + 1]); break; }
-    }
+    else if (ch >= 0x41 && ch <= 0x5a) { back(); hi = 0x82; lo = mem[0x80 + k] + 31; }
+    else if (ch >= 0x61 && ch <= 0x7a) { back(); hi = 0x82; lo = mem[0x80 + k] + 32; }
+    else { back(); hi = ch; k++; lo = mem[0x80 + k]; }
+    const j = pairs.get(((hi & 0xff) << 8) | (lo & 0xff));
+    if (j !== undefined) put(c.codes[j * 2], c.codes[j * 2 + 1]);
+    k++;
   }
-  if (ended && narrow) out.push(0x0b);
+  return Array.from(mem.subarray(0, w));
+}
+
+/** A string the code writes in (HSD_SisLib_803A6B98): at (x, y), in the text's color and scale, its characters
+ *  as the common font's codes (see sisBody; `scale` null: none written, the text's own stands). `past` is what the
+ *  buffer held after the string's end, the bytes by their place in the buffer (the string's first byte is 0); zeros
+ *  where it has none. */
+export function sisString(s: Uint8Array, x: number, y: number, color: [number, number, number], scale: [number, number] | null,
+                          c: SisCommon, past?: ArrayLike<number>): number[] {
+  // (the buffer: the string, its terminator, then what was there)
+  const size = Math.max(s.length + 1, past?.length ?? 0);
+  const buffer = new Uint8Array(size);
+  for (let k = 0; k < size; k++) buffer[k] = k < s.length ? s[k] : k === s.length ? 0 : past?.[k] ?? 0;
+  return sisWrap(sisBody(buffer, c), x, y, color, scale);
+}
+
+/** A string's ops (sisBody) set at (x, y) in a color and scale (`scale` null: none written, the text's own stands),
+ *  as HSD_SisLib_803A6B98 writes them. */
+export function sisWrap(body: number[], x: number, y: number, color: [number, number, number], scale: [number, number] | null): number[] {
+  const out: number[] = [7, ...be16(Math.trunc(x)), ...be16(Math.trunc(y)), 0x0c, ...color];
+  const fix = (v: number) => [Math.trunc(v) & 0xff, Math.trunc(v * 256) & 0xff];
+  if (scale) out.push(0x0e, ...fix(scale[0]), ...fix(scale[1]));
+  out.push(...body);
   if (scale) out.push(0x0f);
   out.push(0x0d);
   return out;
