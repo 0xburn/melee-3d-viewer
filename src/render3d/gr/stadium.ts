@@ -524,7 +524,7 @@ export class StadiumScreen implements StageLogic {
   drawLetters(r: LetterRenderer, image: unknown) {
     if (!this.letters) return;
     const shows = this.mode === 7 || this.mode === 8;
-    const target = shows ? (this.scratch ??= r.target(W, H)) : r.liveTarget(image, W, H);
+    const target = shows ? (this.scratch ??= Object.assign(r.target(W, H) as object, { erase: true })) : r.liveTarget(image, W, H);
     if (!target) return;
     r.overlay(SCREEN_VP, SCREEN_VIEW, target, [0, 0, 0, 1], true);
     r.drawParticles(this.letters.data, this.letters.batches);

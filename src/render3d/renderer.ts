@@ -500,7 +500,11 @@ interface GpuMesh {
 export interface Tint { color: [number, number, number]; alpha: number }
 
 /** a texture drawn into (Renderer.target) */
-export interface RenderTarget { fbo: WebGLFramebuffer; tex: WebGLTexture; depth: WebGLRenderbuffer; w: number; h: number }
+export interface RenderTarget {
+  fbo: WebGLFramebuffer; tex: WebGLTexture; depth: WebGLRenderbuffer; w: number; h: number;
+  /** a picture the game erases with a quad of its own as it starts it (the draw log says so, drawlog.ts) */
+  erase?: boolean;
+}
 
 export type { Fog };
 
@@ -912,7 +916,7 @@ export class Renderer {
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.bound.fill(null);
-    return (l.target = { fbo, tex: l.tex, depth, w, h });
+    return (l.target = { fbo, tex: l.tex, depth, w, h, erase: true });
   }
 
   /** A part of the picture drawn so far into a live image's texture (w x
