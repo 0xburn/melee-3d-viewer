@@ -1,9 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Seven commits, one change each, as one series:
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Eight commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0007 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0008 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -105,3 +105,13 @@ Peach (f9: 3,362 to 10,959 draws with round 3) and Zelda (f19: 7,781 to 12,064) 
 - **Production.** `.text`, `.rodata` and `.data` are identical.
 
 **Needs game data.** Peach and Zelda should come back to at least their numbers before `fj`, and the rest of the fighters should not change. Then regenerate the four visual-state locks.
+
+## 0008 Viewer track: Peach's, Zelda's and Donkey Kong's chains solved too
+
+With 0007, Zelda went to 5,559 draws (from 7,781 before `fj`), but Peach is still at 5,378 (from 3,362). What is left wrong is the viewer's own solve of their chains.
+
+- **Change.** `msl_viewer_track_keep_dynamics` pruned these three fighters' chains, because solved in the track build they came out further from the game than the viewer's solve. That was without the dynamics-counts fix, which is now 0001. The exception is removed: their chains are copied and solved like every other fighter's, and `fp` writes them. 0007 skips nothing for them now, because their links are kept.
+- **Also suspect, in 0009 next.** The chain joints are presentation-only, so the headless build marks them cold, and a cold joint gets no animation (`HSD_JObjAddAnim` and `JObjAnimAll` return early). A chain solved here therefore starts from the unanimated pose, while in the game the animation drives those joints and the physics works from that. If 0008 alone does not bring Peach and Zelda right, 0009 is the next step.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+
+**Check:** Peach (Jigglypuff vs Peach, Battlefield, fsmash, frame 319: f9:0:32:0, f9:0:50:0), Zelda (Sheik vs Zelda, Dream Land, KO, frame 4480: f19:1:31:0, f19:1:32:0) and Donkey Kong.
