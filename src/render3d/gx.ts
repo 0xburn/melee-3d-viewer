@@ -97,7 +97,8 @@ function toLight(l: GxLight, p: V3): { ld: number[]; dist: number } {
 }
 
 /** the diffuse color channel at a vertex (the shader's, in JS), in bytes as
- *  GX's lighting has it: position and normal in world space, the ambient
+ *  GX's lighting has it: position and normal in view space (the lights as
+ *  gxlights.ts puts them there: every one a point), the ambient
  *  light and the material's ambient (0..1). The channel's ambient register is
  *  the two colors' product (HSD_SetupChannelMode's HSD_MulColor); each light
  *  adds its color times its attenuation and turn, rounded; the sum, clamped,
@@ -111,7 +112,7 @@ export function diffuseChannel(lights: GxLight[], ambient: V3, matAmbient: V3, p
     const { ld, dist } = toLight(l, p);
     const c = Math.max(dot(ld, l.axis), 0);
     const [a0, a1, a2, k0, k1, k2] = l.attn;
-    const att = Math.max(a0 + a1 * c + a2 * c * c, 0) / Math.max(k0 + k1 * dist + k2 * dist * dist, 1e-6);
+    const att = Math.max(a0 + a1 * c + a2 * c * c, 0) / (k0 + k1 * dist + k2 * dist * dist);
     const f = att * Math.max(dot(N, ld), 0);
     for (let i = 0; i < 3; i++) out[i] += Math.round(f * byteOf(l.color[i]));
   }

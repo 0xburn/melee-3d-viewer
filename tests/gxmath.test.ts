@@ -131,6 +131,7 @@ test("HSD_MtxSRT, HSD_MtxSRTQuat, HSD_MtxScaledAdd, HSD_MtxInverseConcat", { ski
                                                          a[13] ? a.slice(10, 13) : null)));
   same("scaledadd", Array.from({ length: N }, () => [...mtx(), ...mtx(), f(0, 1)]),
        (a) => Array.from(G.HSD_MtxScaledAdd(M(a), M(a, 12), new Float32Array(12), a[24])));
+  same("invxpose", Array.from({ length: N }, () => mtx()), (a) => Array.from(G.HSD_MtxInverseTranspose(M(a), new Float32Array(12))));
   same("invconcat", Array.from({ length: N }, () => [...mtx(), ...mtx()]),
        (a) => Array.from(G.HSD_MtxInverseConcat(M(a), M(a, 12), new Float32Array(12))));
 });
