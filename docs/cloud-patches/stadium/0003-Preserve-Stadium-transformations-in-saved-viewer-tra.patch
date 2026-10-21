@@ -1,7 +1,7 @@
-From 4af7bbe1c246d0c29355dc102481e4ec6dfd6ef0 Mon Sep 17 00:00:00 2001
+From 75b9f71a1328e490c02bf57de6e81900b6771d4f Mon Sep 17 00:00:00 2001
 From: Kyle Havlovitz <kylehav@gmail.com>
 Date: Mon, 28 Sep 2026 18:55:06 -0700
-Subject: [PATCH 4/4] Preserve Stadium transformations in saved viewer traces
+Subject: [PATCH 3/4] Preserve Stadium transformations in saved viewer traces
 
 Store the unfrozen mode in match settings and round-trip transformation type, phase and live collision segments through MSLTRACE1. Compare array-valued fields by content so unchanged geometry stays out of delta rows; frozen traces retain their existing stage columns.
 

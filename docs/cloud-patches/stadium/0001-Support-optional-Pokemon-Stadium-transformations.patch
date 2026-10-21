@@ -1,7 +1,7 @@
-From ea09a1442c0c8711bac04000855ad205f5087aad Mon Sep 17 00:00:00 2001
+From 80fcb6a291ec534ece25910c18a1fc939a7790a3 Mon Sep 17 00:00:00 2001
 From: Kyle Havlovitz <kylehav@gmail.com>
 Date: Mon, 28 Sep 2026 18:46:17 -0700
-Subject: [PATCH 2/4] Support optional Pokemon Stadium transformations
+Subject: [PATCH 1/4] Support optional Pokemon Stadium transformations
 
 Run the source-owned transformation scheduler and collision actors when the
 match config enables stadium_transformations; preserve frozen defaults.
@@ -110,7 +110,7 @@ index ddc6d63a..dde9e1df 100644
  Correctness comes from gameplay-relevant source completion: port the relevant decomp call graphs,
  persistent state, tables, callback ownership, and scheduler order. Organize implementation by
 diff --git a/API.md b/API.md
-index 05581e4b..f7c1c268 100644
+index db32e1a2..60d7e81d 100644
 --- a/API.md
 +++ b/API.md
 @@ -56,6 +56,7 @@ stocks and UCF enabled. Callers only override fields they need:
@@ -476,10 +476,10 @@ index 00000000..be14f2e8
 +oid sha256:8c52e6f8beb411c1246201d87a89c5be9e9f98fd58ec2544b03f6d61da2f9fa8
 +size 479589
 diff --git a/src/api.c b/src/api.c
-index 5999ad4d..5bea9832 100644
+index cb704d0b..2b611e86 100644
 --- a/src/api.c
 +++ b/src/api.c
-@@ -87,13 +87,17 @@ static int translate_config(const MslMatchConfig* source, MslCoreMatchConfig* ta
+@@ -89,13 +89,17 @@ static int translate_config(const MslMatchConfig* source, MslCoreMatchConfig* ta
    if (source == NULL || target == NULL || !supported_stage(source->stage) ||
        (source->num_players < 2 || source->num_players > 4) || !isfinite(source->damage_ratio) ||
        source->damage_ratio <= 0.0F || source->stocks == 0 ||
@@ -732,7 +732,7 @@ index 4cdb4cf1..7775aa06 100644
  struct mpIsland_80458E88_t;
  #ifdef MSL_CORE_HOSTED
 diff --git a/src/runtime/batch.c b/src/runtime/batch.c
-index ca31f4ac..27bf85b0 100644
+index e323e59e..240ee2a2 100644
 --- a/src/runtime/batch.c
 +++ b/src/runtime/batch.c
 @@ -84,7 +84,8 @@ static int valid_config(const MslCoreMatchConfig* config)
@@ -790,7 +790,7 @@ index a353429d..eb7bd084 100644
  #ifdef MSL_CORE_WASM
  #define MSL_FIGHTER_POSE_PART_NONE UINT8_MAX
 diff --git a/src/runtime/scalar.c b/src/runtime/scalar.c
-index a0eae5a5..9775f12a 100644
+index c02d4413..dc60b05b 100644
 --- a/src/runtime/scalar.c
 +++ b/src/runtime/scalar.c
 @@ -14,6 +14,8 @@
