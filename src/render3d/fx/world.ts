@@ -18,6 +18,7 @@ import { type Fighter } from "../fighter";
 import { EffectBank, type PtclKey } from "./bank";
 import { Spawn, spawnFor } from "./dispatch";
 import { AppSRT, Generator, hsdNext, Particle, ParticleSystem, Rng } from "./particles";
+import { APP_ONCE } from "./appsrt";
 import type { Once, ScriptEvent } from "./script";
 import { SWORD_ATTRS, SwordAttrs, SwordTrails, swordAttrs } from "./swordtrail";
 import type { Prop } from "../prop";
@@ -1909,8 +1910,9 @@ export class FxWorld {
         const atJoint = gfx === 0xe3 ? k.joint : 0;
         const turnY = gfx !== 0xd4 && gfx !== 0x243 && gfx !== 0xe3, turnZ = gfx === 0xd4 || gfx === 0x243;
         const sc = gfx === 0xd4 || gfx === 0xe3 ? m.scale : 1;
+        // (efLib_AddGeneratorAppSRT and psAddGeneratorAppSRT_begin make it with status 1: ONCE)
         g.srt = { tx: w[atJoint * 16 + 12], ty: w[atJoint * 16 + 13], tz: w[atJoint * 16 + 14],
-                  rx: 0, ry: turnY ? m.rotY : 0, rz: turnZ ? m.rotZ : 0, sx: sc, sy: sc, sz: sc, follow: false };
+                  rx: 0, ry: turnY ? m.rotY : 0, rz: turnZ ? m.rotZ : 0, sx: sc, sy: sc, sz: sc, follow: false, status: APP_ONCE };
         m.kin?.push(g);
         continue;
       }

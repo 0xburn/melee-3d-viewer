@@ -2138,7 +2138,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     prof.mark("articles");
     let models = 0, particles = 0;
     // (square to the camera: its right and up, in world directions)
-    const axes = { right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]], viewProj };
+    const axes = { right: [view[0], view[4], view[8]], up: [view[1], view[5], view[9]], viewProj, view };
     // the stage's own particles, behind everything else's
     const stagePs = st && scene?.st === st && !layersOff.stage ? scene.particles.particles : [];
     if (stagePs.length) {

@@ -12,6 +12,7 @@
  */
 import { CmdList, EffectBank } from "./bank";
 import { atan2f, cosf, sinf, tanf } from "./gamemath";
+import { APP_ONCE, appMatrix, mtxGetScale } from "./appsrt";
 
 // particle kind bits (HSD_ParticleKind)
 export const K = {
@@ -91,7 +92,14 @@ export interface AppSRT {
   /** a generator's own that only follows (its kind's 0x20000, the game's xA2): the particles' places are in
    *  the camera's axes from its place (psDispSubAppSRT) */
   view?: boolean;
+  /** psAddGeneratorAppSRT's status (appsrt.ts: APP_DYNAMIC, APP_ONCE, APP_STILL; unset: dynamic) and the
+   *  matrix the draw last made of it (mmtx), kept as it is once STILL */
+  status?: number;
+  mmtx?: Float32Array;
 }
+
+/** the generators of bank 0 whose particles each take a private copy of their transform (efLib_Cb_PtclAppSRTHook) */
+const PRIVATE_SRT = new Set([0x96, 0x97, 0x98, 0x21b]);
 
 export interface Col { r: number; g: number; b: number; a: number }
 const col = (r: number, g: number, b: number, a: number): Col => ({ r, g, b, a });
@@ -285,6 +293,7 @@ export class ParticleSystem {
     this.rng.phase = 3; this.runGenerators(rest);
     this.rng.phase = 0;
     for (let l = 0; l < 3; l++) this.displayOrder(l);
+    this.settleOnce();
     const out = this.particles;
     out.length = 0;
     for (const h of this.heads) for (let p = h; p; p = p.next) out.push(p);
@@ -367,9 +376,8 @@ export class ParticleSystem {
     if (g.srt && g.srt.follow) { g.srt.tx = m[12]; g.srt.ty = m[13]; g.srt.tz = m[14]; }
     else if (g.type & 0x200) { g.px = m[12]; g.py = m[13]; g.pz = m[14]; }
     // (type 0x1000: its own transform takes the joint's size each frame, hsd_8039D214)
-    if ((g.type & 0x1000) && g.srt && g.srt.owner === g) {
-      g.srt.sx = f32(Math.hypot(m[0], m[1], m[2])); g.srt.sy = f32(Math.hypot(m[4], m[5], m[6])); g.srt.sz = f32(Math.hypot(m[8], m[9], m[10]));
-    }
+    // (generator.c: HSD_MtxGetScale of the joint's matrix into the transform's scale)
+    if ((g.type & 0x1000) && g.srt && g.srt.owner === g) [g.srt.sx, g.srt.sy, g.srt.sz] = mtxGetScale(m);
   }
 
   /** a generator let go (the game's hsd_8039D3AC): it stays, making no more,
@@ -505,6 +513,10 @@ export class ParticleSystem {
       trail: 1, gen: g, srt: null, dead: false, linkNo, next: null,
     };
     if (g?.srt) this.under(p, g.srt);
+    // (its generator's creation hook: efLib_Cb_PtclAppSRTHook gives the generators of bank 0's 0x96, 0x97, 0x98
+    // and 0x21B efLib_Cb_ParticleRender, which makes each particle under a transform a private copy of it, made
+    // ONCE: the particle stays where its generator's transform was as it was made)
+    if (g && p.srt && g.bank.id === 0 && PRIVATE_SRT.has(g.cmdId)) this.privateSrt(p);
     if (after) { p.next = after.next; after.next = p; }
     else { p.next = this.heads[linkNo]; this.heads[linkNo] = p; }
     const tg = bank.texGroups[texGroup];
@@ -513,6 +525,22 @@ export class ParticleSystem {
     if (g?.bake && p.srt) this.bakeOut(p);
     if (interpret) this.run(p, null);
     return p;
+  }
+
+  /** efLib_Cb_ParticleRender: the particle's transform let go (psRemoveParticleAppSRT) and one of its own made
+   *  ONCE in its place, with the same place, turn and scale */
+  private privateSrt(p: Particle) {
+    const s = p.srt!;
+    s.used = (s.used ?? 1) - 1;
+    p.srt = { tx: s.tx, ty: s.ty, tz: s.tz, rx: s.rx, ry: s.ry, rz: s.rz, sx: s.sx, sy: s.sy, sz: s.sz, follow: false, used: 1,
+              owner: null, status: APP_ONCE };
+  }
+
+  /** the frame's draw of the particles (psDispSubAppSRT): each transform made ONCE that a particle is drawn
+   *  under has its matrix made now and is STILL from then on - done as the step ends, so that a frame stepped
+   *  without being drawn (a jump's) leaves them as playing does */
+  private settleOnce() {
+    for (const h of this.heads) for (let p = h; p; p = p.next) if (p.srt?.status === APP_ONCE) appMatrix(p.srt);
   }
 
   private under(p: Particle, srt: AppSRT) {

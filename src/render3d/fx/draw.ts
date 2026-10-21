@@ -9,20 +9,9 @@
  * blend is plain or additive. The game draws each particle on its own, in
  * its lists' order; a run of them with one texture and blend is one batch
  * here. */
-import { AppSRT, K, Particle, srtApply } from "./particles";
+import { K, Particle } from "./particles";
 import type { Sprite } from "./bank";
-
-/** a direction through a transform: scaled and turned as srtApply does, not moved */
-function srtTurn(s: AppSRT, x: number, y: number, z: number): [number, number, number] {
-  x *= s.sx; y *= s.sy; z *= s.sz;
-  let c = Math.cos(s.rx), n = Math.sin(s.rx);
-  [y, z] = [y * c - z * n, y * n + z * c];
-  c = Math.cos(s.ry); n = Math.sin(s.ry);
-  [x, z] = [x * c + z * n, -x * n + z * c];
-  c = Math.cos(s.rz); n = Math.sin(s.rz);
-  [x, y] = [x * c - y * n, x * n + y * c];
-  return [x, y, z];
-}
+import { appExtents, appMatrix, mtxDir, mtxPoint } from "./appsrt";
 
 export const FLOATS = 17; // pos 3, uv 2, prim 4, env 4, alpha-compare 3, textured 1
 
@@ -69,7 +58,7 @@ const FLT_EPSILON = 1.1920929e-7, FLT_MIN = 1.1754944e-38;
  *  perspective projection (viewProj), a trail's or a direction particle's way across the picture is where
  *  the projection puts it and where it was, as the game's psDispSub measures it */
 export function buildParticles(list: Particle[],
-                               axes: { right: number[]; up: number[]; viewProj?: ArrayLike<number> } = WORLD_AXES,
+                               axes: { right: number[]; up: number[]; viewProj?: ArrayLike<number>; view?: ArrayLike<number> } = WORLD_AXES,
                                shift: ((p: Particle) => [number, number] | null) | null = null):
     { data: Float32Array; batches: Batch[] } {
   const R = axes.right, U = axes.up;
@@ -106,16 +95,17 @@ export function buildParticles(list: Particle[],
   for (let qi = 0; qi < kept; qi++) {
     const p = list[order[qi]];
     const textured = groups[batchOf[qi]].sprite ? 1 : 0;
-    // where it is, and how big, through its transform (psDispSubAppSRT): a quad as wide as the transform's x
-    // scale times the size and as tall as its y scale times it; under a generator's own transform that only
+    // where it is, and how big, through its transform (psDispSubAppSRT): its matrix (HSD_MtxSRT, kept as made
+    // once it is STILL), and a quad as wide as |the camera's view times it's first column| times the size and as
+    // tall as |its second column| times it (appsrt.ts); under a generator's own transform that only
     // follows (its kind's 0x20000: the game's xA2), the particle's place and motion are in the camera's axes
     // from the transform's place, not turned or sized by it
     let cx = p.px, cy = p.py, cz = p.pz, ex = p.size, ey = p.size;
     let wx = p.vx, wy = p.vy, wz = p.vz;
     const srt = p.srt;
     if (srt) {
-      ex = p.size * Math.abs(srt.sx); ey = p.size * Math.abs(srt.sy);
       if (srt.view) {
+        ex = p.size * Math.abs(srt.sx); ey = p.size * Math.abs(srt.sy);
         const B0 = R[1] * U[2] - R[2] * U[1], B1 = R[2] * U[0] - R[0] * U[2], B2 = R[0] * U[1] - R[1] * U[0];
         cx = srt.tx + p.px * R[0] + p.py * U[0] + p.pz * B0;
         cy = srt.ty + p.px * R[1] + p.py * U[1] + p.pz * B1;
@@ -124,8 +114,10 @@ export function buildParticles(list: Particle[],
         wy = p.vx * R[1] + p.vy * U[1] + p.vz * B1;
         wz = p.vx * R[2] + p.vy * U[2] + p.vz * B2;
       } else {
-        [cx, cy, cz] = srtApply(srt, p.px, p.py, p.pz);
-        [wx, wy, wz] = srtTurn(srt, p.vx, p.vy, p.vz);
+        const m = appMatrix(srt);
+        [ex, ey] = appExtents(m, p.size, axes.view);
+        [cx, cy, cz] = mtxPoint(m, p.px, p.py, p.pz);
+        [wx, wy, wz] = mtxDir(m, p.vx, p.vy, p.vz);
       }
     }
     // (drawn somewhere else than the game has it: the HUD's, at this player's own HUD's place)
