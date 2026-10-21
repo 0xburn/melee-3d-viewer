@@ -2,7 +2,7 @@
  * float, each fused multiply-add of the paired-single assembly (and of the -fp_contract on game code) written
  * as fmaf, every other step a plain float operation. Built with contraction off, so the compiler adds none:
  *
- *   cc -O1 -ffp-contract=off -fno-fast-math gxmath_ref.c -lm
+ *   cc -O1 -std=c99 -ffp-contract=off -fno-fast-math gxmath_ref.c -lm
  *
  * The estimates frsqrte and fres are the Gekko's tables, and a single-precision multiply by a double (an
  * estimate) rounds that operand to a 25-bit significand first (f25), as the hardware does.
@@ -14,6 +14,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 typedef float Mtx[3][4];
 

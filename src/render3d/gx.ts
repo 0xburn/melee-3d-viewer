@@ -76,6 +76,10 @@ export interface GxLight {
   attn: Attn;
   diffuse: boolean;
   specular: boolean;
+  /** where the light is in the world as its LObj holds it (an infinite light's position too, and a spot's
+   *  interest: what HSD_LObjSetup hands GX through the view) */
+  place?: [number, number, number];
+  interest?: [number, number, number];
 }
 
 type V3 = [number, number, number] | number[];
