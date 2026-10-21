@@ -1977,7 +1977,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const ps = playerScales(data.settings.playerSettings)[a.player] ?? 1;
       drawStand(r, ek.entryStand, a.st, standScale(ps, fi.trophyScale), en.stand, fi.entryGap * ps);
     }
-    if (st?.shyGuy) drawShyGuys(r, st.shyGuy, frame.items ?? [], fno);
+    if (st?.shyGuy) drawShyGuys(r, st.shyGuy, data, frame.items ?? [], fno);
     prof.mark("fighters2");
     let projectiles = 0;
     for (const it of layersOff.items ? [] : frame.items ?? []) if (drawArticle(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake)) projectiles++;
@@ -3769,11 +3769,10 @@ function drawPlatform(r: Renderer, ek: EffectKit | undefined, a: Actor, frame: n
 // Yoshi's Story's Shy Guys: the stage file's own Shy Guy (a card whose
 // texture animation is it flying) where the replay says each one is, facing
 // the way it flies
-function drawShyGuys(r: Renderer, sg: { prop: Prop; scale: number },
-                     items: { typeId: number; xPosition: number; yPosition: number; facingDirection: number }[], frame: number) {
+function drawShyGuys(r: Renderer, sg: { prop: Prop; scale: number }, data: ReplayData, items: ReplayItem[], frame: number) {
   for (const it of items) {
     if (it.typeId !== SHY_GUY) continue;
-    sg.prop.pose(frame, it.xPosition, it.yPosition, 2, sg.scale, it.facingDirection < 0 ? Math.PI : 0, true);
+    sg.prop.pose(shyGuyClock(data, frame, it), it.xPosition, it.yPosition, 2, sg.scale, it.facingDirection < 0 ? Math.PI : 0, true);
     r.drawSkeleton(sg.prop.skeleton, "opa");
     r.drawSkeleton(sg.prop.skeleton, "xlu");
     r.endPass();
@@ -3910,6 +3909,42 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x57: { art: 2 },
 };
 type ReplayItem = NonNullable<ReplayData["frames"][number]["items"]>[number];
+
+// A Shy Guy's animation is its own (itheiho.c): set from its start when it
+// begins to fly (state 1, it_802D8918) or flees (state 4, at twice the rate:
+// itHeiho_UnkMotion4_Anim), from the start again when it ends (256 frames:
+// it_80272C6C), and each time it lands on a floor (itHeiho_UnkMotion1_Coll:
+// it_8026DA70) - the frame the replay has its speed across as 0, its speed
+// being recomputed from its bone that frame (it_802D98C4); in the states
+// without an animation (0, 2, 3) it holds where it was. Stepped frame by frame
+// from the last one it was asked for (a seek walks it again from the item's
+// first frame).
+const SHY_FLY = new Set([1, 4]);
+const shyClocks = new WeakMap<ReplayData, Map<number, { at: number; state: number; t: number }>>();
+function shyGuyClock(data: ReplayData, frame: number, it: ReplayItem): number {
+  let clocks = shyClocks.get(data);
+  if (!clocks) shyClocks.set(data, (clocks = new Map()));
+  let c = clocks.get(it.spawnId);
+  if (!c || c.at > frame || frame - c.at > 1) {
+    let f = frame;
+    while (f > 0 && data.frames[f - 1]?.items?.some((q) => q.spawnId === it.spawnId)) f--;
+    c = { at: f - 1, state: -1, t: 0 };
+    clocks.set(it.spawnId, c);
+  }
+  for (let f = c.at + 1; f <= frame; f++) {
+    const q = f === frame ? it : data.frames[f]?.items?.find((x) => x.spawnId === it.spawnId);
+    if (!q) continue;
+    const rate = q.state === 4 ? 2 : 1;
+    if (q.state !== c.state) { if (SHY_FLY.has(q.state)) c.t = 0; }
+    else if (SHY_FLY.has(q.state)) {
+      if (Math.abs(q.xVelocity) < 1e-6) c.t = 0;
+      else { c.t += rate; if (c.t >= 256) c.t = 0; }
+    }
+    c.state = q.state;
+    c.at = f;
+  }
+  return c.t;
+}
 // Kirby's hats on the last frame drawn (the checks read them)
 let drawnKirbyHats: { player: number; kind: number; loaded: boolean }[] = [];
 // the articles hung on a fighter on the last frame drawn (the checks read them)
