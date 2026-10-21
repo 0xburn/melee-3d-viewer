@@ -7,33 +7,24 @@
  * matrix the particles are drawn by is the camera's times it (S = vmtx mmtx), and a particle's quad is
  * |S's first column| times its size across and |S's second column| times it up.
  *
- * TODO: use src/render3d/gxmath.ts (HSD_MtxSRT, PSMTXConcat, sqrtf, HSD_MtxGetScale: the console's float32
- * steps and fused operations exactly) once it is on this branch; these are its plain float32 stand-ins.
+ * In float32 as the console has it, through gxmath.ts (HSD_MtxSRT, PSMTXConcat, MSL's sqrtf, HSD_MtxGetScale).
  */
-import { cosf, sinf } from "./gamemath";
 import type { AppSRT } from "./particles";
+import { HSD_MtxGetScale, HSD_MtxSRT, PSMTXConcat, mtxFromGL, sqrtf } from "../gxmath";
 
 const f32 = Math.fround;
+const srtS = [0, 0, 0], srtR = [0, 0, 0], srtT = [0, 0, 0];
+const viewM = new Float32Array(12), ssM = new Float32Array(12), gsM = new Float32Array(12), gsOut = [0, 0, 0];
 
 /** psAddGeneratorAppSRT's status: made again each frame, made once (then still), kept as it is */
 export const APP_DYNAMIC = 0, APP_ONCE = 1, APP_STILL = 2;
 
 /** HSD_MtxSRT with no parent scale: a 3 x 4, row major (sysdolphin/baselib/mtx.c) */
 export function mtxSRT(out: Float32Array, s: AppSRT): Float32Array {
-  const sinX = sinf(s.rx), cosX = cosf(s.rx), sinY = sinf(s.ry), cosY = cosf(s.ry), sinZ = sinf(s.rz), cosZ = cosf(s.rz);
-  const x = f32(s.sx), y = f32(s.sy), z = f32(s.sz);
-  const sxsy = f32(sinX * sinY), cxsy = f32(cosX * sinY);
-  out[0] = f32(cosZ * f32(x * cosY));
-  out[4] = f32(sinZ * f32(x * cosY));
-  out[8] = f32(-x * sinY);
-  out[1] = f32(y * f32(cosZ * sxsy - f32(cosX * sinZ)));
-  out[5] = f32(y * f32(sinZ * sxsy + f32(cosX * cosZ)));
-  out[9] = f32(cosY * f32(y * sinX));
-  out[2] = f32(z * f32(cosZ * cxsy + f32(sinX * sinZ)));
-  out[6] = f32(z * f32(sinZ * cxsy - f32(sinX * cosZ)));
-  out[10] = f32(cosY * f32(z * cosX));
-  out[3] = f32(s.tx); out[7] = f32(s.ty); out[11] = f32(s.tz);
-  return out;
+  srtS[0] = s.sx; srtS[1] = s.sy; srtS[2] = s.sz;
+  srtR[0] = s.rx; srtR[1] = s.ry; srtR[2] = s.rz;
+  srtT[0] = s.tx; srtT[1] = s.ty; srtT[2] = s.tz;
+  return HSD_MtxSRT(out, srtS, srtR, srtT, null);
 }
 
 /** the transform's matrix as the frame's draw has it (psDispSubAppSRT's first half): made again unless STILL,
@@ -59,15 +50,11 @@ export function mtxDir(m: Float32Array, x: number, y: number, z: number): [numbe
 /** a particle's half-extents under a transform: |S col 0| size and |S col 1| size, S the camera's view
  *  (column-major 4 x 4, GL's) times the transform's matrix (PSMTXConcat), or the matrix alone without a view */
 export function appExtents(m: Float32Array, size: number, view?: ArrayLike<number> | null): [number, number] {
-  let a0 = m[0], a1 = m[4], a2 = m[8], b0 = m[1], b1 = m[5], b2 = m[9];
-  if (view) {
-    const r = (row: number, c0: number, c1: number, c2: number) =>
-      f32(f32(f32(view[row] * c0) + f32(view[4 + row] * c1)) + f32(view[8 + row] * c2));
-    [a0, a1, a2] = [r(0, m[0], m[4], m[8]), r(1, m[0], m[4], m[8]), r(2, m[0], m[4], m[8])];
-    [b0, b1, b2] = [r(0, m[1], m[5], m[9]), r(1, m[1], m[5], m[9]), r(2, m[1], m[5], m[9])];
-  }
-  const sx = f32(Math.sqrt(f32(f32(f32(a0 * a0) + f32(a1 * a1)) + f32(a2 * a2))));
-  const sy = f32(Math.sqrt(f32(f32(f32(b0 * b0) + f32(b1 * b1)) + f32(b2 * b2))));
+  let S = m;
+  if (view) { mtxFromGL(view, viewM, 0); S = PSMTXConcat(viewM, m, ssM); }
+  // (each column's squares as the struct's fields: not fused; then MSL's sqrtf)
+  const sx = sqrtf(f32(f32(f32(S[0] * S[0]) + f32(S[4] * S[4])) + f32(S[8] * S[8])));
+  const sy = sqrtf(f32(f32(f32(S[1] * S[1]) + f32(S[5] * S[5])) + f32(S[9] * S[9])));
   return [f32(sx * size), f32(sy * size)];
 }
 
@@ -75,21 +62,6 @@ export function appExtents(m: Float32Array, size: number, view?: ArrayLike<numbe
  *  once the first is taken out of it, the third's once both are, all negative when the three turn the other
  *  way (a generator of type 0x1000 takes its joint's this way each update: generator.c) */
 export function mtxGetScale(w: ArrayLike<number>): [number, number, number] {
-  const mag = (v: number[]) => f32(Math.sqrt(f32(f32(f32(v[0] * v[0]) + f32(v[1] * v[1])) + f32(v[2] * v[2]))));
-  const unit = (v: number[]) => { const l = mag(v) || 1; return v.map((x) => f32(x / l)); };
-  const dot = (a: number[], b: number[]) => f32(f32(f32(a[0] * b[0]) + f32(a[1] * b[1])) + f32(a[2] * b[2]));
-  const less = (a: number[], b: number[], k: number) => a.map((x, i) => f32(x - f32(b[i] * k)));
-  let v1 = [w[0], w[1], w[2]];
-  const sx = mag(v1);
-  v1 = unit(v1);
-  let v2 = less([w[4], w[5], w[6]], v1, dot(v1, [w[4], w[5], w[6]]));
-  const sy = mag(v2);
-  v2 = unit(v2);
-  let v3 = [w[8], w[9], w[10]];
-  v3 = less(v3, v2, dot(v2, v3));
-  v3 = less(v3, v1, dot(v1, v3));
-  const sz = mag(v3);
-  v3 = unit(v3);
-  const c = [v2[1] * v3[2] - v2[2] * v3[1], v2[2] * v3[0] - v2[0] * v3[2], v2[0] * v3[1] - v2[1] * v3[0]];
-  return dot(v1, c) < 0 ? [-sx, -sy, -sz] : [sx, sy, sz];
+  HSD_MtxGetScale(mtxFromGL(w, gsM, 0), gsOut);
+  return [gsOut[0], gsOut[1], gsOut[2]];
 }
