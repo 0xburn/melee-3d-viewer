@@ -15,7 +15,7 @@
  */
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
 import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
-import { Mat, invert, lookAt, mul } from "./math";
+import { Mat, invert, lookAt, mul, mulAt } from "./math";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
 import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar, textureMatrix } from "./gx";
@@ -54,6 +54,10 @@ in vec3 aPos; in vec3 aNrm; in vec2 aUv0; in vec2 aUv1; in vec4 aClr; in float a
 uniform mat4 uViewProj;
 uniform mat4 uView;
 uniform mat4 uMats[10];
+// what GX is loaded with: each matrix's modelview (the view times the model's
+// matrix, made on the CPU as the game makes it) and the projection
+uniform mat4 uMV[10];
+uniform mat4 uProj;
 uniform float uInflate; // a ghost's outline: pushed out along the normal, world units
 uniform float uPointSize; // a point list's points, pixels across (GX's point size)
 ${MAT_DECL}
@@ -166,7 +170,8 @@ vec3 specularLights(vec3 W, vec3 N) {
 }
 
 void main() {
-  mat4 M = uMats[int(aMtx + 0.5)];
+  int mi = int(aMtx + 0.5);
+  mat4 M = uMats[mi];
   vec3 n = mat3(M) * aNrm;
   vec3 N = normalize(n + vec3(0.0, 0.0, 1e-9));
   vec4 w = M * vec4(aPos, 1.0);
@@ -205,7 +210,8 @@ void main() {
     vec2 base = b3.xy / b3.z;
     vBump = base + vec2(dot(mat3(M) * aTan, L), dot(mat3(M) * aBin, L));
   }
-  gl_Position = uViewProj * w;
+  // (a ghost's outline is pushed out in the world: the one draw not through the modelview)
+  gl_Position = uInflate > 0.0 ? uViewProj * w : uProj * (uMV[mi] * vec4(aPos, 1.0));
   gl_PointSize = uPointSize;
 }`;
 
@@ -454,10 +460,13 @@ void main() {
   outColor = clamp(c, 0.0, 1.0);
 }`;
 
+/** the programs' sources (the tests compile them in a browser) */
+export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS };
+
 // the model programs' attribute slots (the meshes' vertex arrays serve both),
 // the uniforms looked up once they are linked, and the particles' slots
 const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
-const UNIFORMS = ["uViewProj", "uView", "uMats", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
+const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
                   "uLCol", "uLA", "uLK", "uEye", "uSpecAt", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
                   "uFog", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
@@ -1186,12 +1195,15 @@ void main() {
    *  the depth cleared (the HUD: the game draws it with cameras of its own,
    *  over the match), or into a target, cleared to a color first (the
    *  magnifier's picture). endOverlay() puts the match camera back. */
-  overlay(viewProj: Mat, view: Mat, target: RenderTarget | null = null, clear: [number, number, number, number] | null = null,
+  overlay(proj: Mat, view: Mat, target: RenderTarget | null = null, clear: [number, number, number, number] | null = null,
           mirrored = false) {
     const gl = this.gl;
     this.endPass();
     // (a camera that turns the picture over turns the faces' winding too)
     this.mirrored = mirrored;
+    this.ovProj.set(proj);
+    this.ovView.set(view);
+    const viewProj = mul(this.ovVP, this.ovProj, this.ovView);
     this.overlayVP = viewProj;
     this.setCull(viewProj);
     if (target) {
@@ -1202,13 +1214,18 @@ void main() {
     if (clear) gl.clearColor(clear[0], clear[1], clear[2], clear[3]);
     gl.clear(gl.DEPTH_BUFFER_BIT | (clear ? gl.COLOR_BUFFER_BIT : 0));
     gl.uniformMatrix4fv(this.loc.uViewProj, false, viewProj);
-    gl.uniformMatrix4fv(this.loc.uView, false, view);
-    this.camera(viewProj, view);
+    gl.uniformMatrix4fv(this.loc.uView, false, this.ovView);
+    gl.uniformMatrix4fv(this.loc.uProj, false, this.ovProj);
+    this.camera(viewProj, this.ovView, this.ovProj);
     this.dirty();
   }
 
   private mirrored = false;
   private overlayVP: Mat | null = null;
+  /** an overlay's camera, as it was handed over */
+  private ovProj: Mat = new Float32Array(16);
+  private ovView: Mat = new Float32Array(16);
+  private ovVP: Mat = new Float32Array(16);
 
   // ---- a shift of what is drawn next, in world units: a fighter's hitlag
   // shake. The game adds it to the camera's view for the fighter's draw
@@ -1217,13 +1234,19 @@ void main() {
   /** the camera draws go through now (the frame's, an overlay's, the mirror's) */
   private camVP: Mat = new Float32Array(16);
   private camView: Mat = new Float32Array(16);
+  /** the projection uploaded for it (uProj) */
+  private camProj: Mat = new Float32Array(16);
   private shiftVP: Mat = new Float32Array(16);
   private shiftView: Mat = new Float32Array(16);
   private shifted = false;
-  private camera(vp: Mat, view: Mat) {
+  /** a count of the views draws have gone through: a drawable's modelview is made again under another */
+  private viewVer = 0;
+  private camera(vp: Mat, view: Mat, proj: Mat) {
     this.camVP = vp;
     this.camView = view;
+    this.camProj = proj;
     this.shifted = false;
+    this.viewVer++;
   }
   /** move what is drawn from now on by (dx, dy) in the world; (0, 0) ends it */
   shiftDraws(dx: number, dy: number) {
@@ -1231,12 +1254,14 @@ void main() {
     if (!dx && !dy) {
       if (!this.shifted) return;
       this.shifted = false;
+      this.viewVer++;
       gl.uniformMatrix4fv(this.loc.uViewProj, false, this.camVP);
       gl.uniformMatrix4fv(this.loc.uView, false, this.camView);
       this.setCull(this.camVP);
       return;
     }
     this.shifted = true;
+    this.viewVer++;
     // M x translate(dx, dy, 0): M's last column gains dx its first and dy its second
     const at = (out: Mat, m: Mat) => {
       out.set(m);
@@ -1259,7 +1284,8 @@ void main() {
     this.bindPicture();
     gl.uniformMatrix4fv(this.loc.uViewProj, false, this.viewProj);
     gl.uniformMatrix4fv(this.loc.uView, false, this.view);
-    this.camera(this.viewProj, this.view);
+    gl.uniformMatrix4fv(this.loc.uProj, false, this.proj);
+    this.camera(this.viewProj, this.view, this.proj);
     this.dirty();
   }
 
@@ -1312,7 +1338,7 @@ void main() {
    *  pixels it covers, when the browser says - with a CRT on (crt.ts), the
    *  canvas takes exactly those, so the grille's stripes land on the screen's
    *  own pixels (the scene is drawn at 640 x 480 then, whatever the canvas) */
-  begin(viewProj: Mat, view: Mat, clear: [number, number, number], cssW: number, cssH: number,
+  begin(proj: Mat, view: Mat, clear: [number, number, number], cssW: number, cssH: number,
         device?: [number, number]) {
     const gl = this.gl;
     // (its size follows the element, the screen's pixel ratio counted, within a cap: drawsize.ts)
@@ -1339,12 +1365,13 @@ void main() {
     gl.enable(gl.DEPTH_TEST);
     gl.depthFunc(gl.LEQUAL);
     gl.disable(gl.BLEND);
-    this.viewProj.set(viewProj);
+    this.proj.set(proj);
     this.view.set(view);
-    this.camera(this.viewProj, this.view);
+    mul(this.viewProj, this.proj, this.view);
+    this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
     this.culled = 0;
-    mul(this.proj, viewProj, invert(tmpM, view));
+    invert(tmpM, view);
     this.eye = [tmpM[12], tmpM[13], tmpM[14]];
     gl.useProgram(this.prog);
     this.frameUniforms(this.loc);
@@ -1360,6 +1387,7 @@ void main() {
     const gl = this.gl;
     gl.uniformMatrix4fv(l.uViewProj, false, this.viewProj);
     gl.uniformMatrix4fv(l.uView, false, this.view);
+    gl.uniformMatrix4fv(l.uProj, false, this.proj);
     gl.uniform3f(l.uEye, this.eye[0], this.eye[1], this.eye[2]);
     gl.uniform4f(l.uTint, 0, 0, 0, 0);
     gl.uniform4f(l.uFlat, 0, 0, 0, 0);
@@ -1513,9 +1541,9 @@ void main() {
    *  shadow camera, every pixel the stage's shadow intensity (0..255) as the
    *  copy keeps it (shadowGray), two pixels in from each edge
    *  (HSD_ShadowStartRender); endShadow() puts the frame back */
-  beginShadow(t: RenderTarget, viewProj: Mat, view: Mat, intensity: number) {
+  beginShadow(t: RenderTarget, proj: Mat, view: Mat, intensity: number) {
     const gl = this.gl;
-    this.overlay(viewProj, view, t, [1, 1, 1, 1]);
+    this.overlay(proj, view, t, [1, 1, 1, 1]);
     this.casting = true;
     const gray = shadowGray(intensity);
     gl.uniform4f(this.loc.uCast, gray, gray, gray, 1);
@@ -1766,23 +1794,34 @@ void main() {
 
   /** a drawable's matrices, when they are not the ones already there */
   private mats(d: Drawable) {
-    if (d === this.lastMatsD && d.stamp === this.lastMatsStamp) return;
+    if (d === this.lastMatsD && d.stamp === this.lastMatsStamp && this.viewVer === this.lastMatsView) return;
     // (the same matrices as the draw before - two meshes on one joint - are
     // not sent again)
     const n = d.nMats * 16, L = this.lastMats, M = d.mats;
-    let same = this.lastMatsD !== null && n === this.lastMatsN && n <= L.length;
+    let same = this.lastMatsD !== null && n === this.lastMatsN && n <= L.length && this.viewVer === this.lastMatsView;
     for (let k = 0; same && k < n; k++) if (M[k] !== L[k]) same = false;
     this.lastMatsD = d;
     this.lastMatsStamp = d.stamp;
     if (same) return;
     // only the ones it has: a vertex picks among its own (a rigid part's all
     // pick the first)
-    this.gl.uniformMatrix4fv(this.loc.uMats, false, M, 0, n);
-    this.lastMatsN = n;
+    this.uploadMats(M, d.nMats);
     if (n <= L.length) L.set(M.subarray(0, n));
+  }
+  /** model matrices (world) and their modelviews under the camera drawn through now, into the shader */
+  private uploadMats(M: Float32Array, count: number) {
+    const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
+    for (let k = 0; k < count; k++) mulAt(MV, k * 16, V, 0, M, k * 16);
+    this.gl.uniformMatrix4fv(this.loc.uMats, false, M, 0, n);
+    this.gl.uniformMatrix4fv(this.loc.uMV, false, MV, 0, n);
+    this.lastMatsN = n;
+    this.lastMatsView = this.viewVer;
   }
   private lastMats = new Float32Array(32);
   private lastMatsN = 0;
+  private lastMatsView = -1;
+  /** the modelviews last uploaded (uMV), the drawable's own: view times each of its matrices */
+  private mvBuf = new Float32Array(160);
 
   private drawGeometry(d: Drawable) {
     const gl = this.gl;
@@ -1974,7 +2013,7 @@ void main() {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(this.loc.uViewProj, false, this.mirrorViewProj);
     gl.uniformMatrix4fv(this.loc.uView, false, this.mirrorView);
-    this.camera(this.mirrorViewProj, this.mirrorView);
+    this.camera(this.mirrorViewProj, this.mirrorView, this.proj);
     this.setCull(this.mirrorViewProj);
     // (particles and strips through it too)
     this.overlayVP = this.mirrorViewProj;
@@ -1988,7 +2027,7 @@ void main() {
     this.bindPicture();
     gl.uniformMatrix4fv(this.loc.uViewProj, false, this.viewProj);
     gl.uniformMatrix4fv(this.loc.uView, false, this.view);
-    this.camera(this.viewProj, this.view);
+    this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
     this.dirty();
     this.endPass();
@@ -2187,7 +2226,7 @@ void main() {
     const mats = new Float32Array(16);
     mats[0] = mats[5] = mats[10] = radius; mats[15] = 1;
     mats[12] = center[0]; mats[13] = center[1]; mats[14] = center[2];
-    gl.uniformMatrix4fv(this.loc.uMats, false, mats);
+    this.uploadMats(mats, 1);
     const F = this.matF, I = this.matI;
     F.fill(0); I.fill(0);
     F[0] = color[0]; F[1] = color[1]; F[2] = color[2]; F[3] = alpha;

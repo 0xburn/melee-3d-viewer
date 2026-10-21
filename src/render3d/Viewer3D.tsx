@@ -1496,7 +1496,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // stage is lit by its own lights, everything else by its player lights,
     // and all but the effects are in its fog
     prof.mark("stageLogic");
-    r.begin(viewProj, view, st ? st.clear : [0.02, 0.02, 0.05], w, h, [box.dw, box.dh]);
+    r.begin(proj, view, st ? st.clear : [0.02, 0.02, 0.05], w, h, [box.dw, box.dh]);
     // (Stadium's screen: the game's lettering, a quad a glyph drawn into its picture, first of the frame's draws)
     if (st?.screen && scene?.screen) scene.screen.drawLetters(r, st.screen.image);
     const stageLit = st ? st.lighting.at(fno) : DEFAULT_LIGHTING;
@@ -1771,7 +1771,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const cam = cameraOf(fi, a);
         if (!cam) continue;
         const t = r.shadowTarget(shadowMaps.length);
-        r.beginShadow(t, cam.viewProj, cam.view, st.shadowIntensity);
+        r.beginShadow(t, cam.proj, cam.view, st.shadowIntensity);
         if (p) {
           const look = lookOf(fi, a, actorKey(a.player, a.nana));
           // (its low-detail model, as in a mirror: ftDrawCommon_80081200 switches every fighter to it first)

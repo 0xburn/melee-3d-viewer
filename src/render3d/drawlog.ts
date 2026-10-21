@@ -19,8 +19,15 @@
  *   prims     [type, vertices, hash] per primitive of the mesh's display
  *             list, hashed over its bytes in the file (opcode, count, vertex
  *             data) as the game sends them; geo: over all of them
- *   mtx       { slot: 3 x 4 rows }: view times the mesh's matrix per slot
- *   proj      GX's six projection numbers (from the GL matrix) and its kind
+ *   mtx       { slot: 3 x 4 rows }: the modelview the renderer uploaded per
+ *             slot (view times the mesh's matrix, as it was sent)
+ *   proj      GX's six projection numbers (of the projection the renderer
+ *             uploaded) and its kind
+ *
+ * Numbers are written exactly (`exact`, on by default): matrices, the
+ * projection, fog, lights and texture matrices as the float32 values the
+ * renderer holds, each one's every bit, so a difference of one unit in the
+ * last place shows. With `exact` off they are kept to 6 significant digits.
  *   cull z blend cmask alpha_test fog lights   as the GL state was at the draw
  *   tex       per sampler: texture map, identity (gxHash of the image's
  *             bytes in its file), format, size, wrap, filters, LOD bias,
@@ -38,7 +45,7 @@ import { RENDER, blockOf, evalMaterial, tevDescStep, tevScalar, textureMatrix } 
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
-import { Mat, invert, mul } from "./math";
+import type { Mat } from "./math";
 
 // ---------------------------------------------------------------- shared with the decoder
 
@@ -168,19 +175,24 @@ export function rnd(x: number, digits = 6): number {
   return Number(x.toPrecision(digits));
 }
 
+/** a number as a float32, every bit of it (the value the renderer holds) */
+export function f32(x: number): number {
+  return Number.isFinite(x) ? Math.fround(x) : 0;
+}
+
 /** GX's projection numbers from a GL projection (column major): GX keeps
  *  depth in [-1, 0] where GL has [-1, 1], so its third row is half of GL's
- *  third minus its fourth */
-export function gxProjection(p: ArrayLike<number>): (number | string)[] {
+ *  third minus its fourth (kept as float32: the GPU's arithmetic) */
+export function gxProjection(p: ArrayLike<number>, num: (x: number) => number = (x) => rnd(x)): (number | string)[] {
   const persp = p[11] === -1;
-  const z0 = (p[10] - p[11]) / 2, z1 = (p[14] - p[15]) / 2;
+  const z0 = Math.fround((p[10] - p[11]) / 2), z1 = Math.fround((p[14] - p[15]) / 2);
   const nums = persp ? [p[0], p[8], p[5], p[9], z0, z1] : [p[0], p[12], p[5], p[13], z0, z1];
-  return [...nums.map((v) => rnd(v)), persp ? "persp" : "ortho"];
+  return [...nums.map(num), persp ? "persp" : "ortho"];
 }
 
 /** rows 0..2 of a column-major 4 x 4 */
-function rows3(m: ArrayLike<number>, o = 0): number[][] {
-  return [0, 1, 2].map((r) => [0, 1, 2, 3].map((c) => rnd(m[o + c * 4 + r])));
+function rows3(m: ArrayLike<number>, o: number, num: (x: number) => number): number[][] {
+  return [0, 1, 2].map((r) => [0, 1, 2, 3].map((c) => num(m[o + c * 4 + r])));
 }
 
 // ---------------------------------------------------------------- the renderer, as the log reads it
@@ -190,7 +202,9 @@ interface Inner {
   gl: WebGL2RenderingContext;
   draws: number;
   cs: { cull: number; blend: number; src: number; dst: number; eq: number; dmask: number; dfunc: number; cmask: number };
-  camView: Mat; camVP: Mat; shiftView: Mat; shiftVP: Mat; shifted: boolean;
+  camView: Mat; camVP: Mat; camProj: Mat; shiftView: Mat; shiftVP: Mat; shifted: boolean;
+  /** the modelviews the last draw uploaded */
+  mvBuf: Float32Array;
   mirrored: boolean;
   lighting: Lighting | null;
   overlayVP: Mat | null; viewProj: Mat;
@@ -201,7 +215,8 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "mvBuf", "shiftView", "shiftVP", "shifted", "mirrored",
+                               "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
                                "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
@@ -213,6 +228,10 @@ export class DrawLog {
   label: number | string | null = null;
   /** at most this many frames are kept (the oldest go) */
   limit = 600;
+  /** numbers written as the float32s they are (else kept to 6 significant digits) */
+  exact = true;
+  /** a matrix's, projection's, fog's, light's or texture matrix's number, as the log writes it */
+  private num = (x: number): number => (this.exact ? f32(x) : rnd(x));
   private cur: FrameLog | null = null;
   private fog: Fog | null = null;
   /** the fighter's color animation the draws are made with (setTint) */
@@ -322,15 +341,15 @@ export class DrawLog {
     this.cur!.draws.push(rec);
   }
 
-  /** the camera of the draw being made: view and GX projection */
+  /** the camera of the draw being made: view and GX projection (the one uploaded) */
   private camera(): { view: Mat; proj: (number | string)[] } {
     const s = this.inner;
-    const view = s.shifted ? s.shiftView : s.camView, vp = s.shifted ? s.shiftVP : s.camVP;
-    const proj = mul(new Float32Array(16), vp, invert(new Float32Array(16), view));
+    const view = s.shifted ? s.shiftView : s.camView;
+    const proj = Float32Array.from(s.camProj);
     // (a picture the renderer draws upside down - the magnifier's, so its first row is the texture's top - is
     // the game's picture the right way up: its projection's y turned back)
     if (s.mirrored) for (const k of [1, 5, 9, 13]) proj[k] = -proj[k];
-    return { view, proj: gxProjection(proj) };
+    return { view, proj: gxProjection(proj, this.num) };
   }
 
   /** the pixel engine as GL has it now */
@@ -351,12 +370,9 @@ export class DrawLog {
     const { view, proj } = this.camera();
     let prims = this.prims.get(d.pobj);
     if (!prims) this.prims.set(d.pobj, (prims = dlPrims(d.archive, d.pobj)));
+    // (the modelviews as the renderer uploaded them for this draw: drawOne has just sent them)
     const mtx: Record<string, number[][]> = {};
-    const m = new Float32Array(16);
-    for (let k = 0; k < d.nMats; k++) {
-      mul(m, view, d.mats.subarray(k * 16, k * 16 + 16) as Mat);
-      mtx[String(k)] = rows3(m);
-    }
+    for (let k = 0; k < d.nMats; k++) mtx[String(k)] = rows3(s.mvBuf, k * 16, this.num);
     const cull = d.pobj.flags & 0xc000;
     let cullName = cull === 0 ? "none" : cull === 0x8000 ? "back" : cull === 0x4000 ? "front" : "all";
     // (in a picture drawn upside down the renderer turns the front face over with it, so the faces culled are
@@ -371,7 +387,7 @@ export class DrawLog {
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
       fog: this.fogRec(),
       lights: this.lightsRec(view, this.firstOnly(d)),
-      tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n])),
+      tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
                                               alphaMap: x.alphaMap, phase: x.phase })),
@@ -401,7 +417,7 @@ export class DrawLog {
       (rec.tex as Record<string, unknown>[]).push({
         map: p.textures.length + k, id: "efb:shadow", format: 0, w: SHADOW_SIZE, h: SHADOW_SIZE, wrap: ["clamp", "clamp"],
         mag: "near", min: "linear", lod_bias: 0, texgen: "shadow",
-        mtx: [0, 1].map((r) => [m[r], m[4 + r], m[8 + r], m[12 + r]].map((v) => rnd(v))) });
+        mtx: [0, 1].map((r) => [m[r], m[4 + r], m[8 + r], m[12 + r]].map(this.num)) });
     }
     if (nShadow && Array.isArray(rec.probe)) {
       rec.probe = (rec.probe as number[][]).map((v, n) => {
@@ -426,7 +442,7 @@ export class DrawLog {
   private fogRec(): Record<string, unknown> | null {
     const f = this.fog;
     if (!f || !(f.type & 7)) return null;
-    return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1, start: rnd(f.start), end: rnd(f.end),
+    return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1, start: this.num(f.start), end: this.num(f.end),
              color: f.color.map((v) => Math.round(v * 255)) };
   }
 
@@ -451,23 +467,25 @@ export class DrawLog {
       const at = [0, 1, 2].map((r) => view[r] * P[0] + view[4 + r] * P[1] + view[8 + r] * P[2] + view[12 + r] * w);
       const ax = [0, 1, 2].map((r) => view[r] * X[0] + view[4 + r] * X[1] + view[8 + r] * X[2]);
       const flags = l.attnA[k * 4 + 3];
-      out.push({ k, at: at.map((v) => rnd(v)), infinite: w === 0, axis: ax.map((v) => rnd(v)),
+      out.push({ k, at: at.map(this.num), infinite: w === 0, axis: ax.map(this.num),
                  color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((v) => Math.round(v * 255)),
-                 cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
-                 distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
+                 cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map(this.num),
+                 distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map(this.num),
                  diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 && !first });
     }
     if (ol && !first) {
       const D = ol.dir;
       const at = [0, 1, 2].map((r) => view[r] * D[0] + view[4 + r] * D[1] + view[8 + r] * D[2]);
       const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
-      out.push({ k: l.n, at: at.map((v) => rnd(v)), infinite: true, axis: [0, 0, 0], color: [...rgb, Math.round(ol.a * 255)],
+      out.push({ k: l.n, at: at.map(this.num), infinite: true, axis: [0, 0, 0], color: [...rgb, Math.round(ol.a * 255)],
                  cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false, overlay: true });
     }
     return out;
   }
 
-  private texRec(a: Archive, t: TexState | undefined, gen: number): Record<string, unknown> {
+  /** a sampler's record; its texture matrix as the material's block holds it (F, the sampler n's rows: what
+   *  was uploaded), or made here when the block has none */
+  private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0): Record<string, unknown> {
     if (!t) return { id: null };
     const o = t.tobj;
     let id = this.images.get(t.image);
@@ -475,14 +493,16 @@ export class DrawLog {
     // copy to the game, not the file's bytes)
     if (this.inner.live.has(t.image)) id = "efb:live";
     else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
-    const m = textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
-                            [t.rotX, t.rotY, t.rotate], o.repeatS, o.repeatT, o.wrapT);
+    const at = 24 + n * 12;
+    const m = F && F.length >= at + 8 ? Array.from(F.subarray(at, at + 8))
+      : textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
+                      [t.rotX, t.rotY, t.rotate], o.repeatS, o.repeatT, o.wrapT);
     const rec: Record<string, unknown> = {
       map: o.id, id, format: t.image.format, w: t.image.width, h: t.image.height,
       wrap: [WRAP[o.wrapS] ?? String(o.wrapS), WRAP[o.wrapT] ?? String(o.wrapT)],
       mag: o.magFilt ? "linear" : "near", min: o.lod ? MIN[o.lod.minFilt] ?? String(o.lod.minFilt) : null,
-      lod_bias: o.lod ? rnd(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
-      mtx: [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map((v) => rnd(v))), blending: rnd(t.blending),
+      lod_bias: o.lod ? this.num(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
+      mtx: [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
     };
     if (t.tlut) {
       rec.tlut = tlutId(a, t.tlut, t.image.format);
@@ -589,13 +609,16 @@ interface Batch { sprite: { key: string; w: number; h: number; src?: { archive: 
 const logs = new WeakMap<Renderer, DrawLog>();
 
 /** the debug handle's command: { start } attaches, { label } names the frames
- *  drawn next, { take } hands over the frames logged, { stop } detaches */
+ *  drawn next, { take } hands over the frames logged, { stop } detaches;
+ *  { exact: false } keeps the numbers to 6 digits from then on */
 export function drawLogCommand(r: Renderer | null | undefined,
-                               cmd: { start?: boolean; label?: number | string | null; take?: boolean; stop?: boolean; limit?: number }) {
+                               cmd: { start?: boolean; label?: number | string | null; take?: boolean; stop?: boolean; limit?: number;
+                                      exact?: boolean }) {
   if (!r) return null;
   let log = logs.get(r);
   if (!log) logs.set(r, (log = new DrawLog(r)));
   if (cmd.limit) log.limit = cmd.limit;
+  if (cmd.exact !== undefined) log.exact = cmd.exact;
   if (cmd.start) log.attach();
   if (cmd.label !== undefined) log.label = cmd.label;
   const out = cmd.take ? log.take() : null;
