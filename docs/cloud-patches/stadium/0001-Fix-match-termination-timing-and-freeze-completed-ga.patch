@@ -1,0 +1,422 @@
+From a63a0f1894bf04c39c66d003ccee2f30c2ac5cd9 Mon Sep 17 00:00:00 2001
+From: Kyle Havlovitz <kylehav@gmail.com>
+Date: Sun, 27 Sep 2026 22:05:54 -0700
+Subject: [PATCH 1/4] Fix match termination timing and freeze completed games
+
+Resolve stock elimination after all fighters complete the frame, and stop subsequent stepping after elimination or the existing max_frame cutoff. Store that cutoff with native match state so copy and restore preserve it.
+
+(cherry picked from upstream commit fcc4646440df10f5a58452ec3c3a86c341af1b18 onto visual-only/04-shake)
+
+Combined with this branch: msl_batch_destroy keeps this branch's game-data release; the outcome is resolved before the viewer track's frame record.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017JX71xgnBPBiwucag1mFRr
+---
+ API.md                      |  2 +-
+ src/api.c                   | 24 ++++-------
+ src/runtime/batch.c         | 15 +++++++
+ src/runtime/batch.h         |  2 +
+ src/runtime/match.c         | 41 ++++++++++--------
+ src/runtime/match.h         |  2 +
+ src/runtime/observation.c   |  4 +-
+ src/runtime/savestate.c     |  2 +-
+ src/runtime/scalar.c        |  6 +++
+ tests/test_melee_sim_api.py | 84 +++++++++++++++++++++++++++++++++++++
+ 10 files changed, 146 insertions(+), 36 deletions(-)
+
+diff --git a/API.md b/API.md
+index db32e1a2..05581e4b 100644
+--- a/API.md
++++ b/API.md
+@@ -47,7 +47,7 @@ stocks and UCF enabled. Callers only override fields they need:
+ | --- | --- | --- | --- |
+ | `stage` | `uint32_t` | `MSL_STAGE_*` | stage id |
+ | `random_seed` | `uint32_t` | any `uint32_t` | deterministic reset seed |
+-| `max_frame` | `int32_t` | `-1` or nonnegative | optional episode cutoff |
++| `max_frame` | `int32_t` | negative disables | absolute replay-frame cutoff; `28800` is eight minutes after startup |
+ | `damage_ratio` | `float` | positive | global damage ratio |
+ | `num_players` | `uint8_t` | `2`, `3`, or `4` | active source players |
+ | `is_teams` | `uint8_t` | `0` or `1` | nonzero for teams |
+diff --git a/src/api.c b/src/api.c
+index cb704d0b..5999ad4d 100644
+--- a/src/api.c
++++ b/src/api.c
+@@ -16,14 +16,13 @@
+ enum {
+   MSL_BATCH_LIMIT = 16384,
+   MSL_SAVE_MAGIC = 0x31564E45,
+-  MSL_SAVE_VERSION = 1,
++  MSL_SAVE_VERSION = 2,
+ };
+ 
+ typedef struct MslSaveHeader {
+   uint32_t magic;
+   uint32_t version;
+   uint32_t payload_size;
+-  int32_t max_frame;
+   uint8_t viewpoint_player;
+   uint8_t _reserved[3];
+ } MslSaveHeader;
+@@ -34,7 +33,6 @@ struct MslBatch {
+   MslCoreMatchConfig* configs;
+   MslCoreInput* inputs;
+   uint8_t* viewpoint_players;
+-  int32_t* max_frames;
+   uint32_t size;
+ };
+ 
+@@ -47,7 +45,7 @@ _Static_assert(sizeof(MslInput) == 32, "MslInput layout");
+ _Static_assert(sizeof(MslItem) == 48, "MslItem layout");
+ _Static_assert(sizeof(MslObservation) == 1208, "MslObservation layout");
+ _Static_assert(sizeof(MslTerminal) == 16, "MslTerminal layout");
+-_Static_assert(sizeof(MslSaveHeader) == 20, "MslSaveHeader layout");
++_Static_assert(sizeof(MslSaveHeader) == 16, "MslSaveHeader layout");
+ 
+ static MslResult public_result(MslCoreResult result) { return (MslResult)result; }
+ 
+@@ -352,9 +350,7 @@ MslResult msl_batch_create(const char* data_root, uint32_t batch_size, MslBatch*
+   batch->configs = calloc(batch_size, sizeof(*batch->configs));
+   batch->inputs = calloc(batch_size, sizeof(*batch->inputs));
+   batch->viewpoint_players = calloc(batch_size, sizeof(*batch->viewpoint_players));
+-  batch->max_frames = calloc(batch_size, sizeof(*batch->max_frames));
+-  if (batch->configs == NULL || batch->inputs == NULL || batch->viewpoint_players == NULL ||
+-      batch->max_frames == NULL) {
++  if (batch->configs == NULL || batch->inputs == NULL || batch->viewpoint_players == NULL) {
+     msl_batch_destroy(batch);
+     return MSL_OUT_OF_MEMORY;
+   }
+@@ -380,7 +376,6 @@ void msl_batch_destroy(MslBatch* batch) {
+   if (batch->game_data != NULL) {
+     release_game_data();
+   }
+-  free(batch->max_frames);
+   free(batch->viewpoint_players);
+   free(batch->inputs);
+   free(batch->configs);
+@@ -412,7 +407,10 @@ MslResult msl_batch_reset(MslBatch* batch, const MslMatchConfig configs[],
+     if (reset_mask == NULL || reset_mask[env] != 0) {
+       memset(&batch->inputs[env], 0, sizeof(batch->inputs[env]));
+       batch->viewpoint_players[env] = configs[env].viewpoint_player;
+-      batch->max_frames[env] = configs[env].max_frame;
++      result = msl_core_batch_set_max_frame(batch->runtime, env, configs[env].max_frame);
++      if (result != MSL_CORE_OK) {
++        return public_result(result);
++      }
+     }
+   }
+   // Slippi's first published row (-123) is after the first gameplay tick.
+@@ -439,9 +437,8 @@ MslResult msl_batch_observe(const MslBatch* batch, MslObservation observations[]
+   if (result != MSL_CORE_OK) {
+     return public_result(result);
+   }
+-  return public_result(msl_core_batch_write_terminals(batch->runtime, terminals,
+-                                                      sizeof(terminals[0]), batch->max_frames,
+-                                                      sizeof(batch->max_frames[0]), NULL, 0));
++  return public_result(msl_core_batch_write_terminal(batch->runtime, terminals,
++                                                     sizeof(terminals[0]), -1, NULL, 0));
+ }
+ 
+ MslResult msl_batch_step_masked(MslBatch* batch, const MslInput inputs[],
+@@ -480,7 +477,6 @@ MslResult msl_batch_copy(MslBatch* destination, const MslBatch* source,
+   for (index = 0; index < count; ++index) {
+     destination->viewpoint_players[destination_indices[index]] =
+         source->viewpoint_players[source_indices[index]];
+-    destination->max_frames[destination_indices[index]] = source->max_frames[source_indices[index]];
+   }
+   return MSL_OK;
+ }
+@@ -524,7 +520,6 @@ MslResult msl_batch_save(const MslBatch* batch, uint32_t env_index, void* buffer
+   header.magic = MSL_SAVE_MAGIC;
+   header.version = MSL_SAVE_VERSION;
+   header.payload_size = (uint32_t)(required_size - sizeof(header));
+-  header.max_frame = batch->max_frames[env_index];
+   header.viewpoint_player = batch->viewpoint_players[env_index];
+   memcpy(buffer, &header, sizeof(header));
+   result = msl_core_batch_save_match(batch->runtime, env_index, (uint8_t*)buffer + sizeof(header),
+@@ -556,7 +551,6 @@ MslResult msl_batch_restore(MslBatch* batch, uint32_t env_index, const void* buf
+   if (result != MSL_CORE_OK) {
+     return public_result(result);
+   }
+-  batch->max_frames[env_index] = header.max_frame;
+   batch->viewpoint_players[env_index] = header.viewpoint_player;
+   return MSL_OK;
+ }
+diff --git a/src/runtime/batch.c b/src/runtime/batch.c
+index e323e59e..ca31f4ac 100644
+--- a/src/runtime/batch.c
++++ b/src/runtime/batch.c
+@@ -292,6 +292,21 @@ MslCoreResult msl_core_batch_reset_matches(
+     return MSL_CORE_OK;
+ }
+ 
++MslCoreResult msl_core_batch_set_max_frame(
++    MslCoreBatch* batch, uint32_t match_index, int32_t max_frame)
++{
++    MslCoreMatchRules* rules;
++    if (batch == NULL || match_index >= batch->match_count) {
++        return MSL_CORE_INVALID_ARGUMENT;
++    }
++    if (!batch->initialized[match_index]) {
++        return MSL_CORE_INVALID_STATE;
++    }
++    rules = &batch->matches[match_index].rules;
++    rules->max_frame = max_frame;
++    return MSL_CORE_OK;
++}
++
+ MslCoreResult msl_core_batch_step_matches(
+     MslCoreBatch* batch, const MslCoreInput* inputs, size_t input_stride,
+     const uint8_t* match_mask, size_t mask_stride)
+diff --git a/src/runtime/batch.h b/src/runtime/batch.h
+index a8fe2916..fc42f916 100644
+--- a/src/runtime/batch.h
++++ b/src/runtime/batch.h
+@@ -31,6 +31,8 @@ uint32_t msl_core_batch_match_count(const MslCoreBatch* batch);
+ MslCoreResult msl_core_batch_reset_matches(
+     MslCoreBatch* batch, const MslCoreMatchConfig* configs,
+     size_t config_stride, const uint8_t* match_mask, size_t mask_stride);
++MslCoreResult msl_core_batch_set_max_frame(
++    MslCoreBatch* batch, uint32_t match_index, int32_t max_frame);
+ MslCoreResult msl_core_batch_step_matches(
+     MslCoreBatch* batch, const MslCoreInput* inputs, size_t input_stride,
+     const uint8_t* match_mask, size_t mask_stride);
+diff --git a/src/runtime/match.c b/src/runtime/match.c
+index 9d8e60f5..3c22defe 100644
+--- a/src/runtime/match.c
++++ b/src/runtime/match.c
+@@ -43,7 +43,6 @@ static _Thread_local MslCoreMatchRules* msl_bound_match_rules;
+ #define msl_ucf_shield_drop_084_enabled \
+     (msl_bound_match_rules->ucf_shield_drop_084_enabled)
+ #define msl_match_frame_count (msl_bound_match_rules->frame_count)
+-#define msl_match_ended (msl_bound_match_rules->ended)
+ #define msl_respawn_reservation_timer                                         \
+     (msl_bound_match_rules->respawn_reservation_timer)
+ #define msl_respawn_reservation_character                                     \
+@@ -97,6 +96,7 @@ void msl_core_match_rules_init(MslCoreMatchRules* rules, int is_teams,
+                                int ucf_shield_drop_084_enabled)
+ {
+     memset(rules, 0, sizeof(*rules));
++    rules->max_frame = -1;
+     msl_core_bind_match_rules(rules);
+     msl_is_teams = is_teams;
+     msl_friendly_fire = friendly_fire != 0;
+@@ -668,22 +668,6 @@ void gm_80167320(int slot, bool subchar)
+     }
+ 
+     if (Player_GetStocks(slot) == 0) {
+-        unsigned int alive_sides = 0;
+-        int other;
+-
+-        // The source does not create another fighter on the final stock.
+-        // Standard stock elimination counts surviving players or teams.
+-        // refs/melee/src/melee/gm/gm_16AE.c::{gm_GetFFAOutcome,
+-        //     gm_GetTeamBattleOutcome}
+-        for (other = 0; other < 6; ++other) {
+-            if (Player_GetPlayerSlotType(other) != Gm_PKind_NA &&
+-                Player_GetStocks(other) > 0)
+-            {
+-                int side = msl_is_teams ? Player_GetTeam(other) : other;
+-                alive_sides |= 1U << side;
+-            }
+-        }
+-        msl_match_ended = (alive_sides & (alive_sides - 1)) == 0;
+         return;
+     }
+ 
+@@ -702,7 +686,28 @@ void gm_80167320(int slot, bool subchar)
+     Player_80032070(slot, subchar);
+ }
+ 
+-bool msl_core_match_is_over(void) { return msl_match_ended; }
++// fn_8016CFE0 checks gm_GetMatchOutcome before the next gameplay pass.
++// Publish that decision after the complete preceding pass so same-frame KOs
++// include every port, and the terminal observation needs no extra tick.
++void msl_core_resolve_match_outcome(void)
++{
++    unsigned int alive_sides = 0;
++    int slot;
++
++    // gm_GetFFAOutcome / gm_GetTeamBattleOutcome: at most one surviving side,
++    // including simultaneous elimination of all sides (no surviving winner).
++    for (slot = 0; slot < 6; ++slot) {
++        if (Player_GetPlayerSlotType(slot) != Gm_PKind_NA &&
++            Player_GetStocks(slot) > 0)
++        {
++            int side = msl_is_teams ? Player_GetTeam(slot) : slot;
++            alive_sides |= 1U << side;
++        }
++    }
++    msl_bound_match_rules->ended |= (alive_sides & (alive_sides - 1)) == 0;
++}
++
++bool msl_core_match_is_over(void) { return msl_bound_match_rules->ended; }
+ 
+ // Source respawn calls these to reset HUD presentation state. They do not
+ // publish any fighter, item, stage-collision, or match-rule gameplay data in
+diff --git a/src/runtime/match.h b/src/runtime/match.h
+index 535f529b..526c7ff6 100644
+--- a/src/runtime/match.h
++++ b/src/runtime/match.h
+@@ -30,6 +30,7 @@ typedef struct MslCoreMatchRules {
+     bool ucf_shield_drop_084_enabled;
+     u32 frame_count;
+     bool ended;
++    s32 max_frame;
+     u8 respawn_reservation_timer[6];
+     s8 respawn_reservation_character[6];
+     MslCoreUcfPadBuffer ucf_pad[4];
+@@ -56,6 +57,7 @@ bool msl_core_uses_online_fnmsubs_zero(void);
+ bool msl_core_has_brawl_offscreen_damage(void);
+ bool msl_core_freezes_dead_up_fall_physics(void);
+ void msl_core_advance_match_frame(void);
++void msl_core_resolve_match_outcome(void);
+ void msl_core_apply_team_stock_steal(void);
+ bool msl_core_match_is_over(void);
+ 
+diff --git a/src/runtime/observation.c b/src/runtime/observation.c
+index ad102da9..90ab15b3 100644
+--- a/src/runtime/observation.c
++++ b/src/runtime/observation.c
+@@ -540,7 +540,9 @@ void msl_core_match_write_terminal(const MslCoreMatch* match,
+         }
+     }
+     alive_teams = (uint8_t) __builtin_popcount((unsigned int) team_mask);
+-    max_reached = max_frame_id >= 0 && match->frame_id >= max_frame_id;
++    max_reached = (match->rules.max_frame >= 0 &&
++                   match->frame_id >= match->rules.max_frame) ||
++                  (max_frame_id >= 0 && match->frame_id >= max_frame_id);
+     out[offsetof(MslCoreTerminal, done)] = match->rules.ended || max_reached;
+     out[offsetof(MslCoreTerminal, match_ended)] = match->rules.ended != 0;
+     out[offsetof(MslCoreTerminal, stockout)] = stockout;
+diff --git a/src/runtime/savestate.c b/src/runtime/savestate.c
+index b38ad388..f05eec80 100644
+--- a/src/runtime/savestate.c
++++ b/src/runtime/savestate.c
+@@ -22,7 +22,7 @@
+ #endif
+ 
+ enum {
+-    MSL_SAVESTATE_VERSION = 4,
++    MSL_SAVESTATE_VERSION = 5,
+ };
+ 
+ typedef struct MslSavestateHeader {
+diff --git a/src/runtime/scalar.c b/src/runtime/scalar.c
+index c02d4413..a0eae5a5 100644
+--- a/src/runtime/scalar.c
++++ b/src/runtime/scalar.c
+@@ -2672,6 +2672,7 @@ int msl_core_match_step_finish(MslCoreMatch* match, uint32_t frame_seed)
+     // source match owner advances it only after those processes have run.
+     msl_core_advance_match_frame();
+     match->random_seed = *seed_ptr;
++    msl_core_resolve_match_outcome();
+ #if MSL_VISUAL_TRACK_BUILD
+     if (match->viewer_track != NULL) {
+         msl_viewer_track_frame(match);
+@@ -2691,6 +2692,11 @@ int msl_core_match_step(MslCoreMatch* match, const MslCoreInput* input,
+ #ifdef MSL_SUBSYSTEM_PROFILE
+     uint64_t started = msl_profile_cycles();
+ #endif
++    if (match != NULL && (match->rules.ended ||
++        (match->rules.max_frame >= 0 && match->frame_id >= match->rules.max_frame)))
++    {
++        return 0;
++    }
+     if (msl_core_match_step_prepare(match, input, frame_seed, stage_events) !=
+         0)
+     {
+diff --git a/tests/test_melee_sim_api.py b/tests/test_melee_sim_api.py
+index 688c0f24..0b151732 100644
+--- a/tests/test_melee_sim_api.py
++++ b/tests/test_melee_sim_api.py
+@@ -500,3 +500,87 @@ def test_game_data_is_shared_across_batches_and_forks(monkeypatch, tmp_path) ->
+             os._exit(code)
+     _, status = os.waitpid(pid, 0)
+     assert os.waitstatus_to_exitcode(status) == 0
++
++
++def test_stockout_latches_after_all_ports_and_freezes(monkeypatch) -> None:
++    monkeypatch.setenv("MSL_DATA_DIR", str(ROOT / "data"))
++    # Symmetric simultaneous KOs, then staggered KOs in both port orders.
++    with msl.EnvBatch(3, length=1, action_format="raw") as env:
++        env.configure_match(stocks=1, seed=1, players=(
++            msl.PlayerConfig(msl.Character.FOX), msl.PlayerConfig(msl.Character.FOX)))
++        env.reset_all()
++        first_stockout = {}
++        for tick in range(500):
++            env.reset_cursor()
++            pads = env.raw_action_view[0]["players"]
++            pads["main_x"] = 0
++            pads["main_x"][:, 0] = -80
++            pads["main_x"][:, 1] = 80
++            if tick < 123:
++                pads["main_x"] = 0
++            elif tick < 143:
++                pads["main_x"][1, 1] = 0
++                pads["main_x"][2, 0] = 0
++            env.step()
++            for lane in range(3):
++                stocks = env.current_frame[lane]["slots"]["stocks"][:2]
++                if np.any(stocks == 0) and lane not in first_stockout:
++                    assert env.terminal_at(0)[lane]["done"]
++                    assert env.terminal_at(0)[lane]["match_ended"]
++                    first_stockout[lane] = env.current_frame[lane].copy()
++            if len(first_stockout) == 3:
++                break
++        assert len(first_stockout) == 3
++        assert first_stockout[0]["slots"]["stocks"][:2].tolist() == [0, 0]
++        assert first_stockout[1]["slots"]["stocks"][:2].tolist() == [0, 1]
++        assert first_stockout[2]["slots"]["stocks"][:2].tolist() == [1, 0]
++        frozen = env.current_frame.copy()
++        snapshot = env.save(1)
++        for _ in range(80):
++            env.reset_cursor()
++            env.step()
++        assert env.current_frame.tobytes() == frozen.tobytes()
++        env.restore(0, snapshot)
++        env.reset_cursor()
++        env.step()
++        assert env.current_frame[0].tobytes() == frozen[1].tobytes()
++        assert env.terminal_at(0)[0]["match_ended"]
++
++
++def test_frame_cutoff_and_restore(monkeypatch) -> None:
++    monkeypatch.setenv("MSL_DATA_DIR", str(ROOT / "data"))
++    with msl.EnvBatch(3, length=1) as env:
++        env.configure_matches([
++            msl.MatchConfig(max_frame=60),
++            msl.MatchConfig(max_frame=0),
++            msl.MatchConfig(),
++        ])
++        env.reset_all()
++        for _ in range(123):
++            env.reset_cursor()
++            env.step()
++        assert env.current_frame["frame_id"].tolist() == [0, 0, 0]
++        assert env.terminal_at(0)["done"].tolist() == [0, 1, 0]
++        assert env.terminal_at(0)["match_ended"].tolist() == [0, 0, 0]
++        for _ in range(10):
++            env.reset_cursor()
++            env.step(np.array([0, 1, 1], dtype=np.uint8))
++        assert env.current_frame["frame_id"].tolist() == [0, 0, 10]
++        for _ in range(59):
++            env.reset_cursor()
++            env.step()
++        assert not env.terminal_at(0)[0]["done"]
++        snapshot = env.save(0)
++        env.reset_cursor()
++        env.step()
++        assert env.current_frame["frame_id"].tolist() == [60, 0, 70]
++        assert env.terminal_at(0)["done"].tolist() == [1, 1, 0]
++        assert env.terminal_at(0)["match_ended"].tolist() == [0, 0, 0]
++        assert env.terminal_at(0)["max_frame_reached"].tolist() == [1, 1, 0]
++        final = env.current_frame[0].copy()
++        env.restore(2, snapshot)
++        env.reset_cursor()
++        env.step()
++        assert env.current_frame[0].tobytes() == final.tobytes()
++        assert env.current_frame[2].tobytes() == final.tobytes()
++        assert env.terminal_at(0)[2]["max_frame_reached"]
+-- 
+2.43.0
+
