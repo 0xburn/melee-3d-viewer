@@ -10,6 +10,7 @@
  * its lists' order; a run of them with one texture and blend is one batch
  * here. */
 import { AppSRT, K, Particle, srtApply } from "./particles";
+import { atan2f, cosf, sinf } from "./gamemath";
 import type { Sprite } from "./bank";
 
 /** a direction through a transform: scaled and turned as srtApply does, not moved */
@@ -54,6 +55,8 @@ let order = new Int32Array(256), batchOf = new Int32Array(256);
 export let quadSrt = new Uint8Array(256);
 const pool: Batch[] = [];
 const CORNERS = new Float64Array(8);
+// (an untransformed quad's right and up, the game's way: scratch)
+const EXACT = new Float64Array(6);
 
 /** a color or alpha reference part way to its target, as the game works it out (getColorPrimEnv,
  *  psDispParticles' alpha compare): in 16.16 fixed point, kept to 8 bits */
@@ -61,6 +64,33 @@ const mixed = (cur: number, target: number, remain: number, count: number) =>
   count ? (((target << 16) + (cur - target) * Math.trunc((65536 * remain) / count)) >> 16) & 255 : cur;
 
 const WORLD_AXES = { right: [1, 0, 0], up: [0, 1, 0] };
+
+const f32 = Math.fround;
+/** a * b + c and a * b - c rounded once (the console's fmadds, fmsubs: two singles' product is exact in a double) */
+const fmadd = (a: number, b: number, c: number) => f32(a * b + c);
+const fmsub = (a: number, b: number, c: number) => f32(a * b - c);
+// the turn PSMTXRotAxisRad makes, its nine numbers by row (scratch)
+const ROT = new Float64Array(9);
+/** PSMTXRotAxisRad as its paired-single code works it out, each step rounded to single precision: the axis
+ *  normalized (PSVECNormalize: here the rounded exact square root, where the console takes an estimate and one
+ *  refinement), sinf and cosf the game's own */
+function rotAxisRad(ax: number, ay: number, az: number, rad: number) {
+  const sT = sinf(rad), cT = cosf(rad), omc = f32(1 - cT);
+  const len = f32(Math.sqrt(f32(fmadd(az, az, fmadd(ay, ay, f32(ax * ax))))));
+  const x = f32(ax / len), y = f32(ay / len), z = f32(az / len);
+  const t4x = f32(x * omc), t4y = f32(y * omc), t5 = f32(z * omc);
+  const t3x = f32(t4x * y), t3y = f32(t4y * y);
+  const t2x = f32(t4x * x);
+  const rx = f32(x * sT), ry = f32(y * sT);
+  const t4zx = f32(t4x * z), t4zy = f32(t4y * z);
+  const t6 = f32(t3x - z * sT);       // fnmsubs: -(z sT - t3x), rounded once
+  const t7 = fmadd(z, sT, t3x);
+  ROT[0] = f32(t2x + cT); ROT[1] = t6; ROT[2] = f32(t4zx + ry);
+  ROT[3] = t7; ROT[4] = f32(cT + t3y); ROT[5] = f32(-rx + t4zy);
+  ROT[6] = f32(t4zx + -ry); ROT[7] = f32(rx + t4zy); ROT[8] = f32(f32(t5 * z) + cT);
+}
+/** a vector through ROT as psDispSub's code multiplies it: m02 z + (m00 x + m01 y), each a fused step */
+const rotX = (r: number, x: number, y: number, z: number) => fmadd(ROT[r + 2], z, fmadd(ROT[r], x, f32(ROT[r + 1] * y)));
 // (the game skips a particle smaller than this: psDispParticles' FLT_EPSILON; and FLT_MIN, below which a
 // motion's up part counts as none)
 const FLT_EPSILON = 1.1920929e-7, FLT_MIN = 1.1754944e-38;
@@ -163,6 +193,29 @@ export function buildParticles(list: Particle[],
     } else angle = p.rotate;
     if (!srt) angle = -angle;
     if (Math.abs(angle) <= 0.01) angle = 0;
+    // (an untransformed one exactly as psDispSub works it out, in the world and in single precision: the
+    // camera's right + up and right - up times its size, turned about their cross product by PSMTXRotAxisRad,
+    // and its corners its place less and more each)
+    const exact = !srt && !moved;
+    if (exact) {
+      const sz = f32(p.size);
+      const Ax = f32(R[0] + U[0]), Ay = f32(R[1] + U[1]), Az = f32(R[2] + U[2]);
+      const Bx = f32(R[0] - U[0]), By = f32(R[1] - U[1]), Bz = f32(R[2] - U[2]);
+      let r0 = f32(Ax * sz), r1 = f32(Ay * sz), r2 = f32(Az * sz), u0 = f32(Bx * sz), u1 = f32(By * sz), u2 = f32(Bz * sz);
+      let turn = p.rotate;
+      if (trail || p.kind & K.DIRVEC) {
+        turn = Math.abs(f32(vy)) < FLT_MIN ? (vx >= 0 ? 1.5707964 : -1.5707964) : atan2f(f32(vx), f32(vy));
+        if (p.kind & K.DIRVEC) turn = f32(turn + p.rotate);
+      }
+      if (Math.abs(turn) > 0.01) {
+        const axx = fmsub(r1, u2, f32(r2 * u1)), axy = fmsub(r2, u0, f32(r0 * u2)), axz = fmsub(r0, u1, f32(r1 * u0));
+        rotAxisRad(axx, axy, axz, turn);
+        const n0 = rotX(0, r0, r1, r2), n1 = rotX(3, r0, r1, r2), n2 = rotX(6, r0, r1, r2);
+        const m0 = rotX(0, u0, u1, u2), m1 = rotX(3, u0, u1, u2), m2 = rotX(6, u0, u1, u2);
+        r0 = n0; r1 = n1; r2 = n2; u0 = m0; u1 = m1; u2 = m2;
+      }
+      EXACT[0] = r0; EXACT[1] = r1; EXACT[2] = r2; EXACT[3] = u0; EXACT[4] = u1; EXACT[5] = u2;
+    }
     const c = Math.cos(angle), s = Math.sin(angle);
     // the corners' basis, turned: R = (ex, ey), U = (ex, -ey) - without a transform the game's diagonal one,
     // right + up and right - up, each the particle's size
@@ -190,8 +243,16 @@ export function buildParticles(list: Particle[],
     for (let k = 0; k < 4; k++) {
       const a = corners[k * 2], b = corners[k * 2 + 1];
       const back = trail && (k === 0 || k === 3) ? 1 : 0;
-      const ox = cx - back * wx, oy = cy - back * wy, oz = cz - back * wz;
-      out[o++] = ox + a * R[0] + b * U[0]; out[o++] = oy + a * R[1] + b * U[1]; out[o++] = oz + a * R[2] + b * U[2];
+      if (exact) {
+        // (v0 = place - right, v1 = place - up, v2 = place + right, v3 = place + up; a trail's v0 and v3 from
+        // where it was, its place less its velocity)
+        const px = back ? f32(cx - wx) : cx, py = back ? f32(cy - wy) : cy, pz = back ? f32(cz - wz) : cz;
+        const e = k === 0 || k === 2 ? 0 : 3, sg = k < 2 ? -1 : 1;
+        out[o++] = f32(px + sg * EXACT[e]); out[o++] = f32(py + sg * EXACT[e + 1]); out[o++] = f32(pz + sg * EXACT[e + 2]);
+      } else {
+        const ox = cx - back * wx, oy = cy - back * wy, oz = cz - back * wz;
+        out[o++] = ox + a * R[0] + b * U[0]; out[o++] = oy + a * R[1] + b * U[1]; out[o++] = oz + a * R[2] + b * U[2];
+      }
       out[o++] = uv[k * 2] * ms; out[o++] = uv[k * 2 + 1] * mt + mtOff;
       // (a trail's tail: its alpha times the particle's trail, kept to 8 bits as GXColor4u8 takes it)
       const tail = trail && (k === 0 || k === 3);
