@@ -42,7 +42,7 @@ import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
 import { type FogRegs, fogDecoded } from "./fog";
-import { PSMTXMultVec, PSMTXMultVecSR, PSVECNormalize, PSVECSubtract, mtxFromGL } from "./gxmath";
+import type { ViewLights } from "./gxlights";
 import {
   RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevDescStep, tevStage, textureMatrix,
 } from "./gx";
@@ -212,6 +212,8 @@ interface Inner {
   camView: Mat; camVP: Mat; camProj: Mat; camGx: Float32Array | null; shiftView: Mat; shiftVP: Mat; shifted: boolean;
   /** the modelviews the last draw uploaded */
   mvBuf: Float32Array;
+  /** the lights as uploaded in view space (gxlights.ts) */
+  lightV: ViewLights;
   /** the fog's registers as GXSetFog packs them, as uploaded (fog.ts) */
   fogRegs: FogRegs;
   mirrored: boolean;
@@ -224,11 +226,12 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "shiftView", "shiftVP",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "lightV", "fogRegs", "cullOn", "shiftView",
+                               "shiftVP",
                                "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
-                               "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
+                               "setTint", "setOutline", "beginShadow", "beginMirror", "endMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
@@ -270,6 +273,11 @@ export class DrawLog {
     if (this.restore) return;
     const r = this.r as unknown as Record<string, (...a: unknown[]) => unknown>;
     const saved: [string, unknown][] = [];
+    // (GX culls no mesh - only its triangles, at the picture's edge - so while the log is on the renderer culls
+    // none either: every mesh the game would send is drawn and logged, its matrices with it)
+    const inner = this.r as unknown as { cullOn: boolean };
+    const cullWas = inner.cullOn;
+    inner.cullOn = false;
     const wrap = (name: string, after: (args: unknown[], drew: boolean) => void) => {
       const own = Object.prototype.hasOwnProperty.call(r, name) ? r[name] : undefined;
       const orig = r[name];
@@ -285,7 +293,10 @@ export class DrawLog {
     // (each picture's erase: the game's HSD_CObjEraseScreen and the shadow's start draw it as one flat quad, the
     // renderer clears; logged as a "clear" of the picture's size)
     wrap("begin", () => { this.newFrame(); this.clear(640, 480); });
-    wrap("beginMirror", () => this.clear(80, 60));
+    // (the stage's mirror image, Fountain of Dreams' pond: what is drawn into it - particles too - is logged in
+    // that 80 x 60 picture's pixels, as the game's draws into it are)
+    wrap("beginMirror", () => { this.clear(80, 60); this.target = [80, 60]; });
+    wrap("endMirror", () => { this.target = null; });
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
     wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
     wrap("setOutline", (a) => { this.outline = (a[0] as number[] | null) ?? null; });
@@ -310,6 +321,7 @@ export class DrawLog {
     wrap("drawSphere", (a) => this.add({ kind: "sphere", center: (a[0] as number[]).map((v) => rnd(v)), radius: rnd(a[1] as number),
                                           color: (a[2] as number[]).map((v) => rnd(v)), alpha: rnd(a[3] as number) }));
     this.restore = () => {
+      inner.cullOn = cullWas;
       for (const [name, own] of saved) {
         if (own === undefined) delete r[name];
         else r[name] = own as (...a: unknown[]) => unknown;
@@ -389,6 +401,11 @@ export class DrawLog {
   private mesh(d: Drawable, ghost: boolean, sk: Skeleton | null) {
     const s = this.inner;
     this.nonfinite = false;
+    // (a part of the record that fails is left out and says why, the rest - the matrices first - is still written)
+    const errors: string[] = [];
+    const safe = <T>(what: string, f: () => T, none: T): T => {
+      try { return f(); } catch (e) { errors.push(`${what}: ${String(e)}`); return none; }
+    };
     const st = s.staticsOf(d.state), p = st.p;
     const { view, proj } = this.camera();
     let prims = this.prims.get(d.pobj);
@@ -408,16 +425,17 @@ export class DrawLog {
       verts: prims.reduce((n, x) => n + x[1], 0),
       mtx, proj, cull: cullName, ...this.pe(),
       alpha_test: [COMPARE[I[3] & 7], rnd(F[20]), ALPHA_OP[(I[3] >> 6) & 3], COMPARE[(I[3] >> 3) & 7], rnd(F[21])],
-      fog: this.fogRec(),
-      lights: this.lightsRec(view, this.firstOnly(d)),
-      tex: p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)),
+      fog: safe("fog", () => this.fogRec(), null),
+      lights: safe("lights", () => this.lightsRec(view, this.firstOnly(d)), []),
+      tex: safe("tex", () => p.textures.map((ti, n) => this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n)), []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
                stages: p.stages.map((x) => ({ tex: d.state.tex[p.textures[x.tex]]?.tobj.id ?? null, colorMap: x.colorMap,
                                               alphaMap: x.alphaMap, phase: x.phase })),
                diffuse: Array.from(d.state.override ?? d.state.diffuse).map((v) => rnd(v)), alpha: rnd(d.state.alpha),
                ambient: Array.from(d.state.ambient).map((v) => rnd(v)), spec: Array.from(d.state.specular).map((v) => rnd(v)) },
-      probe: this.probe(d, p),
+      probe: safe("probe", () => this.probe(d, p), null),
     };
+    if (errors.length) rec.errors = errors;
     // (a shadow being made: the mesh in one flat gray, no texture, no depth, color only: HSD_ShadowStartRender)
     if (this.cast !== null) {
       const g = this.cast, gray = g / 255;
@@ -485,45 +503,29 @@ export class DrawLog {
    *  position 2^20 times its LObj's, as a point (setup_infinite_lightobj); a point or spot light's position
    *  (MTXMultVec), a spot's axis toward it (its light vector, interest - position, through PSMTXMultVecSR and
    *  PSVECNormalize, turned round) */
-  private lightsRec(view: Mat, first = false): Record<string, unknown>[] {
-    const l = this.inner.lighting;
-    if (!l) return [];
+  private lightsRec(_view: Mat, first = false): Record<string, unknown>[] {
+    const l = this.inner.lighting, v = this.inner.lightV;
+    if (!l || !v) return [];
     const out: Record<string, unknown>[] = [];
-    const V = mtxFromGL(view, new Float32Array(12));
-    const through = (x: number, y: number, z: number, w: number) => {
-      const v = [Math.fround(x), Math.fround(y), Math.fround(z)];
-      if (w === 0) { v[0] = Math.fround(v[0] * 1048576); v[1] = Math.fround(v[1] * 1048576); v[2] = Math.fround(v[2] * 1048576); }
-      return Array.from(PSMTXMultVec(V, v, [0, 0, 0]));
-    };
     // (a color animation's light, ftCo_8009F5AC's x588: added to the set (white, its alpha the strength), or
     // with the ambient light alone (its color): the renderer's uOverMode 1 and 2)
     const ol = this.tint?.light ?? null;
     for (let k = 0; k < (first ? Math.min(1, l.n) : l.n) && !(ol && !ol.adds); k++) {
-      const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4), Q = l.place.subarray(k * 4, k * 4 + 4);
-      const w = P[3];
-      const at = through(Q[0], Q[1], Q[2], w);
-      let ax = [0, 0, 0];
-      if (w !== 0) {
-        const I = l.interest.subarray(k * 4, k * 4 + 4);
-        const d = I[3] ? PSVECSubtract([I[0], I[1], I[2]], [Q[0], Q[1], Q[2]], [0, 0, 0]) : [-X[0], -X[1], -X[2]];
-        PSVECNormalize(d, d);
-        const v = PSVECNormalize(PSMTXMultVecSR(V, d, [0, 0, 0]), [0, 0, 0]);
-        ax = [-v[0], -v[1], -v[2]];
-      }
+      const w = l.pos[k * 4 + 3];
+      const at = Array.from(v.pos.subarray(k * 4, k * 4 + 3)), ax = Array.from(v.axis.subarray(k * 4, k * 4 + 3));
       const flags = l.attnA[k * 4 + 3];
       // (an infinite light's `at` its direction - the position GX holds, normalized - and `pos` that position)
       out.push({ k: out.length, at: (w === 0 ? unit(at) : at).map(this.num), ...(w === 0 ? { pos: at.map(this.num) } : {}),
                  infinite: w === 0, axis: ax.map(this.num),
-                 color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((v) => Math.round(v * 255)),
+                 color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((c) => Math.round(c * 255)),
                  cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map(this.num),
                  distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map(this.num),
                  diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 && !first });
     }
     if (ol && !first) {
-      const D = ol.dir;
-      const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
+      const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((c) => Math.round(c * 255));
+      const op = Array.from(v.over.subarray(0, 3));
       // (the next light the game loads: after the set's, or the first when it is the ambient's alone)
-      const op = through(D[0], D[1], D[2], 0);
       out.push({ k: out.length, at: unit(op).map(this.num), pos: op.map(this.num), infinite: true, axis: [0, 0, 0],
                  color: [...rgb, Math.round(ol.a * 255)], cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false,
                  overlay: true });

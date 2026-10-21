@@ -16,7 +16,8 @@
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
 import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
-import { concatGL } from "./gxmath";
+import { HSD_MtxInverseTranspose, concatGL, mtxFromGL, mtxToGL3 } from "./gxmath";
+import { type ViewLights, jointInView, lightsInView, newViewLights, specularDirs } from "./gxlights";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
 import { FOG_GLSL, type FogRegs, NO_FOG, gxSetFog, nearFar } from "./fog";
@@ -121,6 +122,8 @@ uniform mat4 uMats[10];
 // matrix, made on the CPU as the game makes it) and the projection
 uniform mat4 uMV[10];
 uniform mat4 uProj;
+// and each one's normal matrix (HSD_MtxInverseTranspose of the modelview: the normals GX lights in view space)
+uniform mat3 uNrm[10];
 uniform float uInflate; // a ghost's outline: pushed out along the normal, world units
 uniform float uPointSize; // a point list's points, pixels across (GX's point size)
 ${MAT_DECL}
@@ -131,7 +134,11 @@ uniform vec3 uAmbLight;
 uniform int uNumLights;
 uniform vec4 uLPos[8]; uniform vec4 uLAxis[8]; uniform vec4 uLCol[8]; uniform vec4 uLA[8]; uniform vec4 uLK[8];
 uniform vec3 uEye;    // the camera, world space
-uniform vec3 uSpecAt; // the drawn joint: the specular half-way vectors are aimed from it
+// the lights as GX is loaded with them for the view drawn through (gxlights.ts): each one's position in view
+// space (an infinite one's 2^20 out, a point), a spot's axis toward it, each specular light's half-way
+// direction for the drawn joint (HSD_LObjSetupSpecularInit), and the color animation light's position
+uniform vec4 uLPosV[8]; uniform vec4 uLAxisV[8]; uniform vec4 uLSpecV[8];
+uniform vec3 uOverPosV;
 // a fighter's color animation (fx/colanim.ts): a light from uOverDir
 // (ftCo_8009F5AC's x588). Mode 1 (x7C_light_enable): a white light added to
 // the fighter's own (its alpha the strength, LOBJ_ALPHA), whose alpha channel
@@ -198,41 +205,45 @@ vec3 chanOut(ivec3 acc) { ivec3 l = clamp(acc, 0, 255); return vec3((255 * (l + 
 // register (the ambient light times the material's ambient, HSD_MulColor),
 // then each diffuse light by its angle and distance attenuation and the
 // normal's turn to it, each term rounded, the sum clamped
-vec3 diffuseLights(vec3 W, vec3 N) {
+// (in view space, as GX lights: V the vertex, N its normal through the normal matrix; every light a point - an
+// infinite one 2^20 out - its way to the vertex normalized, its spot attenuation by that way and its axis, its
+// distance attenuation by the distance)
+vec3 toLightV(vec3 p, vec3 V, out float dist) { vec3 v = p - V; dist = length(v); return v / max(dist, 1e-30); }
+vec3 diffuseLights(vec3 V, vec3 N) {
   ivec3 L = (bytes3(uAmbLight) * bytes3(uMatF[1].rgb)) / 255;
   bool first = firstLightOnly();
   for (int k = 0; k < 8; k++) {
     if (k >= uNumLights || (first && k > 0)) break;
     vec4 a = uLA[k];
     if ((int(a.w) & 1) == 0 || uOverMode == 2) continue;
-    vec4 p = uLPos[k];
-    vec3 ld = p.xyz; float dist = 0.0;
-    if (p.w != 0.0) { vec3 v = p.xyz - W; dist = length(v); ld = v / max(dist, 1e-6); }
-    float c = max(dot(ld, uLAxis[k].xyz), 0.0);
+    float dist;
+    vec3 ld = toLightV(uLPosV[k].xyz, V, dist);
+    float c = max(dot(ld, uLAxisV[k].xyz), 0.0);
     vec3 kk = uLK[k].xyz;
-    float att = max(a.x + a.y * c + a.z * c * c, 0.0) / max(kk.x + kk.y * dist + kk.z * dist * dist, 1e-6);
+    float att = max(a.x + a.y * c + a.z * c * c, 0.0) / (kk.x + kk.y * dist + kk.z * dist * dist);
     L += term(att * max(dot(N, ld), 0.0), uLCol[k].rgb);
   }
-  if (uOverMode == 2) L += term(max(dot(N, uOverDir), 0.0), uOverLight.rgb);
-  else if (uOverMode == 1 && !first) L += term(max(dot(N, uOverDir), 0.0), vec3(1.0));
+  float od;
+  vec3 ol = toLightV(uOverPosV, V, od);
+  if (uOverMode == 2) L += term(max(dot(N, ol), 0.0), uOverLight.rgb);
+  else if (uOverMode == 1 && !first) L += term(max(dot(N, ol), 0.0), vec3(1.0));
   return chanOut(L);
 }
 
 // the specular channel: each specular light aimed along the half-way vector
 // between it and the eye as seen from the joint, attenuated by the material's
 // shininess as GX's specular lights are
-vec3 specularLights(vec3 W, vec3 N) {
+vec3 specularLights(vec3 V, vec3 N) {
   ivec3 S = ivec3(0);
   if (uOverMode == 2 || firstLightOnly()) return vec3(0.0);
-  vec3 cdir = normalize(uSpecAt - uEye);
   float k0 = 0.5 * uMatF[1].w, k2 = 1.0 - k0;
   for (int k = 0; k < 8; k++) {
     if (k >= uNumLights) break;
     if ((int(uLA[k].w) & 2) == 0) continue;
-    vec4 p = uLPos[k];
-    vec3 lv = p.w == 0.0 ? -p.xyz : normalize(uSpecAt - p.xyz);
-    vec3 h = -normalize(lv + cdir);
-    vec3 ld = p.w == 0.0 ? p.xyz : normalize(p.xyz - W);
+    // (GX_AF_SPEC: the light's direction - the half-way one - against the normal, where the light is in front)
+    vec3 h = uLSpecV[k].xyz;
+    float dist;
+    vec3 ld = toLightV(uLPosV[k].xyz, V, dist);
     float nl = dot(N, ld);
     float c = nl >= 0.0 ? max(dot(N, h), 0.0) : 0.0;
     float att = c * c / max(k0 + k2 * c * c, 1e-6);
@@ -248,20 +259,24 @@ void main() {
   vec3 N = normalize(n + vec3(0.0, 0.0, 1e-9));
   vec4 w = M * vec4(aPos, 1.0);
   if (uInflate > 0.0) w.xyz += normalize(n + vec3(0.0, 0.0, 1e-4)) * uInflate;
-  vec3 nv = normalize(mat3(uView) * N);
+  // (the vertex and its normal as GX has them: through the modelview and its normal matrix)
+  vec3 pv = (uMV[mi] * vec4(aPos, 1.0)).xyz;
+  vec3 nv = normalize(uNrm[mi] * aNrm + vec3(0.0, 0.0, 1e-30));
   vNrmV = nv;
-  vPosV = (uView * w).xyz;
+  vPosV = pv;
   vPosW = w.xyz;
   ivec4 m0 = uMatI[0];
   vRas0 = vec4(1.0);
   if (m0.y == 1) vRas0 = aClr;
-  else if (m0.y == 2) vRas0 = vec4(diffuseLights(w.xyz, N), 1.0);
-  vRas1 = (m0.z & 4) != 0 ? specularLights(w.xyz, N) : vec3(0.0);
+  else if (m0.y == 2) vRas0 = vec4(diffuseLights(pv, nv), 1.0);
+  vRas1 = (m0.z & 4) != 0 ? specularLights(pv, nv) : vec3(0.0);
   // (the added color is the light's times the rasterized alpha, GX_CC_RASA: a lit material's alpha channel is
   // lit by the added light alone (LOBJ_ALPHA); an unlit one's is its vertex alpha or its material's)
   // (the alpha channel's byte: the light's alpha by the turn, through the channel; the fragment shader adds
   // the light's color times it, ftMaterial_800BF534's stage)
-  float rasA = m0.y == 2 ? chanOut(term(max(dot(N, uOverDir), 0.0), vec3(uOverLight.a))).x : m0.y == 1 ? aClr.a : uMatF[0].a;
+  float od;
+  vec3 ol = toLightV(uOverPosV, pv, od);
+  float rasA = m0.y == 2 ? chanOut(term(max(dot(nv, ol), 0.0), vec3(uOverLight.a))).x : m0.y == 1 ? aClr.a : uMatF[0].a;
   vOverA = uOverMode == 1 ? rasA : -1.0;
   vT0 = texGen(0, aUv0, aUv1, nv, w);
   vT1 = texGen(1, aUv0, aUv1, nv, w);
@@ -504,7 +519,7 @@ export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS, TEV_GLSL };
 // the uniforms looked up once they are linked, and the particles' slots
 const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
 const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
-                  "uLCol", "uLA", "uLK", "uEye", "uSpecAt", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
+                  "uLCol", "uLA", "uLK", "uEye", "uNrm", "uLPosV", "uLAxisV", "uLSpecV", "uOverPosV", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
                   "uFogI", "uFogF", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
                   "uShadowN", "uShadowMask", "uCast"];
@@ -1531,6 +1546,11 @@ void main() {
     if (li) {
       gl.uniform4f(l.uOverLight, li.rgb[0], li.rgb[1], li.rgb[2], li.a);
       gl.uniform3f(l.uOverDir, li.dir[0], li.dir[1], li.dir[2]);
+      const od = this.overDir;
+      if (!od || od[0] !== li.dir[0] || od[1] !== li.dir[1] || od[2] !== li.dir[2]) {
+        this.overDir = [li.dir[0], li.dir[1], li.dir[2]];
+        this.overVer++;
+      }
     }
   }
   private tinted = true;
@@ -1893,9 +1913,15 @@ void main() {
    *  PSMTXConcat(vmtx, model) in float32, as HSD_JObjDisp and SetupEnvelopeModelMtx make what GX is loaded with */
   private uploadMats(M: Float32Array, count: number) {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
-    for (let k = 0; k < count; k++) concatGL(MV, k * 16, V, 0, M, k * 16);
+    const N = this.nrmBuf, T = this.nrmTmp;
+    for (let k = 0; k < count; k++) {
+      concatGL(MV, k * 16, V, 0, M, k * 16);
+      // (and its normal matrix: HSD_MtxInverseTranspose of the modelview, as SetupRigidModelMtx loads it)
+      mtxToGL3(HSD_MtxInverseTranspose(mtxFromGL(MV, T, k * 16), T), N, k * 9);
+    }
     this.gl.uniformMatrix4fv(this.loc.uMats, false, M, 0, n);
     this.gl.uniformMatrix4fv(this.loc.uMV, false, MV, 0, n);
+    this.gl.uniformMatrix3fv(this.loc.uNrm, false, N, 0, count * 9);
     this.lastMatsN = n;
     this.lastMatsView = this.viewVer;
   }
@@ -1904,6 +1930,42 @@ void main() {
   private lastMatsView = -1;
   /** the modelviews last uploaded (uMV), the drawable's own: view times each of its matrices */
   private mvBuf = new Float32Array(160);
+  /** and their normal matrices (uNrm: 3 x 3s, column major) */
+  private nrmBuf = new Float32Array(90);
+  private nrmTmp = new Float32Array(12);
+
+  // ---- the lights as GX is loaded with them for the view drawn through now (gxlights.ts), made again when the
+  // lighting, the view or the color animation's light changes; and each specular joint's half-way directions
+  /** what the uploaded view lights were made from: lighting version, view version, color animation light version */
+  private lightVKey = [-1, -1, -1];
+  private overVer = 0;
+  private overDir: number[] | null = null;
+  /** the view-space lights as uploaded (the draw log reads them) */
+  private lightV: ViewLights = newViewLights();
+  private lightMtx = new Float32Array(12);
+  private specDirs = new Float32Array(32);
+  private specKey = [NaN, NaN, NaN, -1];
+  private specPos = [0, 0, 0];
+  private viewLights() {
+    const l = this.lighting, K = this.lightVKey;
+    if (!l || (K[0] === l.version && K[1] === this.viewVer && K[2] === this.overVer)) return;
+    K[0] = l.version; K[1] = this.viewVer; K[2] = this.overVer;
+    const V = mtxFromGL(this.shifted ? this.shiftView : this.camView, this.lightMtx, 0);
+    const v = lightsInView(l, V, this.overDir, this.lightV);
+    const gl = this.gl, loc = this.loc;
+    gl.uniform4fv(loc.uLPosV, v.pos);
+    gl.uniform4fv(loc.uLAxisV, v.axis);
+    gl.uniform3f(loc.uOverPosV, v.over[0], v.over[1], v.over[2]);
+    this.specKey[3] = -1;
+  }
+  /** the specular lights' half-way directions for a joint at (x, y, z) in the world */
+  private specularAt(x: number, y: number, z: number) {
+    const l = this.lighting, S = this.specKey;
+    if (!l || (S[0] === x && S[1] === y && S[2] === z && S[3] === 1)) return;
+    S[0] = x; S[1] = y; S[2] = z; S[3] = 1;
+    jointInView(this.lightMtx, x, y, z, this.specPos);
+    this.gl.uniform4fv(this.loc.uLSpecV, specularDirs(l, this.lightV, this.specPos, this.specDirs));
+  }
 
   private drawGeometry(d: Drawable) {
     const gl = this.gl;
@@ -1933,14 +1995,13 @@ void main() {
   // (-1: not known - something else set it directly). A frame makes several
   // hundred draws; most share their state with the one before.
   private cs = { cull: -1, blend: -1, src: -1, dst: -1, eq: -1, dmask: -1, dfunc: -1, cmask: -1 };
-  // the texture unit last made active, and the specular point last sent (not known: -1, NaN)
+  // the texture unit last made active (not known: -1)
   private unit = -1;
-  private specX = NaN; private specY = NaN; private specZ = NaN;
   private dirty() {
     const c = this.cs;
     c.cull = c.blend = c.src = c.dst = c.eq = c.dmask = c.dfunc = c.cmask = -1;
     this.unit = -1;
-    this.specX = NaN;
+    this.specKey[3] = -1;
     this.lastMatsD = null;
     this.vaoBound = undefined;
   }
@@ -2265,12 +2326,10 @@ void main() {
       gl.bufferSubData(gl.UNIFORM_BUFFER, 0, c.bytes);
       c.sent = true;
     }
+    this.viewLights();
     if (p.specular && sk) {
       const j = d.jobj.index * 16, W = sk.world;
-      if (W[j + 12] !== this.specX || W[j + 13] !== this.specY || W[j + 14] !== this.specZ) {
-        gl.uniform3f(this.loc.uSpecAt, W[j + 12], W[j + 13], W[j + 14]);
-        this.specX = W[j + 12]; this.specY = W[j + 13]; this.specZ = W[j + 14];
-      }
+      this.specularAt(W[j + 12], W[j + 13], W[j + 14]);
     }
     if (ghost) {
       // a ghost keeps what is at least half there: the material's block, its alpha test changed, through the scratch one
@@ -2309,6 +2368,7 @@ void main() {
     mats[0] = mats[5] = mats[10] = radius; mats[15] = 1;
     mats[12] = center[0]; mats[13] = center[1]; mats[14] = center[2];
     this.uploadMats(mats, 1);
+    this.viewLights();
     const F = this.matF, I = this.matI;
     F.fill(0); I.fill(0);
     F[0] = color[0]; F[1] = color[1]; F[2] = color[2]; F[3] = alpha;
@@ -2316,7 +2376,7 @@ void main() {
     I[4] = I[5] = I[6] = I[7] = -1;
     I[1] = 2; I[2] = 2; I[3] = 7 | (7 << 3);
     this.uploadMaterial();
-    this.specX = NaN;
+    this.specKey[3] = -1;
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     gl.depthMask(false);
