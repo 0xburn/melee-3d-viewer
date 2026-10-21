@@ -33,7 +33,7 @@ import {
   TENS, timerAt, edgePoint, edgeWidth, tagFrame, nametagFrame, chevronFrame,
 } from "./hudlogic";
 import { PLATE_FONT, quad, tagText, texQuad, textPicture } from "./hudtext";
-import { glyphAtlas, PLATE_FULL, plateText, rawBytes, type PlateFont, type PlateText } from "./plates";
+import { glyphAtlas, PLATE_FULL, plateTexts, rawBytes, type PlateFont, type PlateText } from "./plates";
 import { hudSlot, hudSlotsMode, outerSlots, type HudSlots } from "../common/hudslots";
 
 // Slippi's name plate (its playback, 1285 x 1056 frames) is a model of the game's: x from -2.77197 to 2.77197 and
@@ -315,18 +315,21 @@ export interface HudActor {
 
 const PIC = 64; // the magnifier's picture, texels a side (the game's image)
 
+/** one player's HUD state (Hud) */
+interface HudPlayer {
+  slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
+  tag: HudModel | null; lupe: HudModel | null; arrow: HudModel | null; pic: RenderTarget | null; place: [number, number];
+  /** where it sits by the HUD Slots option (hudslots.ts): the outer slots of four for two players, or as in
+   *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
+  places: Record<HudSlots, [number, number]>;
+  colorIdx: number; external: number; costume: number; tagFrame: number; human: boolean; nametag: string;
+  /** the display name as the replay gives it, and the bytes it holds (for the plate's lettering) */
+  plate: { text: string; raw: Uint8Array | null };
+}
+
 /** One replay's HUD: its players' displays, made once, posed each frame. */
 export class Hud {
-  private players: {
-    slot: number; life: PlayerHud; num: HudModel | null; mark: HudModel | null; stock: HudModel | null;
-    tag: HudModel | null; lupe: HudModel | null; arrow: HudModel | null; pic: RenderTarget | null; place: [number, number];
-    /** where it sits by the HUD Slots option (hudslots.ts): the outer slots of four for two players, or as in
-     *  the game, its port's slot by the match's number of places (ifAll_802F343C) */
-    places: Record<HudSlots, [number, number]>;
-    colorIdx: number; external: number; costume: number; tagFrame: number; human: boolean; nametag: string;
-    /** the display name as the replay gives it, and the bytes it holds (for the plate's lettering) */
-    plate: { text: string; raw: Uint8Array | null };
-  }[] = [];
+  private players: HudPlayer[] = [];
   /** the words the page holds for the plates and nametags, demo mode's
    *  stand-ins where it swaps them ("plate:<port>", "tag:<port>"; Hud3D.tsx) */
   private words = new Map<string, string>();
@@ -606,6 +609,16 @@ export class Hud {
       r.drawSkeleton(t.sk, "opa");
       r.drawSkeleton(t.sk, "xlu");
     }
+    // Slippi's plates for the game, in the order it sets them (each depends on the ones before, see plates.ts)
+    const plateWords = this.players.map((p) => ({ p, name: this.words.get(`plate:${p.slot}`) }))
+      .filter((x): x is { p: HudPlayer; name: string } => !!x.name);
+    const plateFont = this.kit.plates;
+    const plateTextOf = new Map<HudPlayer, PlateText>();
+    if (plateFont && plateWords.length) {
+      const made = plateTexts(plateFont, plateWords.map(({ p, name }) => ({ port: p.slot, name, raw: name === p.plate.text ? p.plate.raw : null })),
+                              this.data.settings.stageId);
+      plateWords.forEach(({ p }, k) => plateTextOf.set(p, made[k]));
+    }
     // the marks, then Slippi's plates over them (all in one draw), then the numbers and icons
     for (const p of this.players) {
       const [px, py] = p.place;
@@ -625,9 +638,7 @@ export class Hud {
       const name = this.words.get(`plate:${p.slot}`);
       if (name) {
         const cx = px + PLATE.ox, oy = py + PLATE.oy;
-        const font = this.kit.plates;
-        // (the bytes the replay holds for the name, while the page's text is still the replay's)
-        const text = font ? plateText(font, name, name === p.plate.text ? p.plate.raw : null, this.players[0] === p) : null;
+        const text = plateTextOf.get(p) ?? null;
         // the plate is as wide as its name wants, up to the plate at its widest
         const half = PLATE.hx * (text ? text.width : PLATE_FULL);
         this.box(cx - half, oy + PLATE.sy * PLATE.y0, cx + half, oy + PLATE.sy * PLATE.y1, [0, 0, 0, PLATE.fill]);

@@ -6,8 +6,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { FORMAT_ARGS, FORMAT_ARGS_FIRST, formatName, glyphAtlas, nameBytes, pastTheEnd, plateFontFromDol, plateText, rawBytes, type PlateFont } from "../src/render3d/plates.ts";
-import { ascii, sisString } from "../src/render3d/sistext.ts";
+import { glyphAtlas, nameBytes, plateFontFromDol, plateText, plateTexts, rawBytes, runPlates, type PlateFont } from "../src/render3d/plates.ts";
+import { ascii, sisBody, sisString } from "../src/render3d/sistext.ts";
+import { vsprintf, VaList } from "../src/render3d/msl.ts";
 import { gameFiles, withGameFiles } from "./game-files.ts";
 
 /** a font of 287 blank glyphs with the trims given, and the full-width Latin pairs 'a' (glyph 1) to 'z' (glyph 26) */
@@ -68,11 +69,10 @@ test("a name's bytes as the replay holds them: up to the first zero, 31 at most"
 });
 
 test("the formatter: the name is a printf format whose first argument is 16", () => {
-  const f = (s: string) => String.fromCharCode(...formatName(ascii(s), [16]));
+  const f = (s: string) => String.fromCharCode(...vsprintf(ascii(s), new VaList([0, 0, 16], [], [])));
   assert.equal(f("Mango"), "Mango");
   assert.equal(f("%d"), "16");
   assert.equal(f("%x"), "10");
-  assert.equal(f("%X-%o"), "10-"); // (no second argument given: nothing)
   assert.equal(f("%5d"), "   16");
   assert.equal(f("%-4dA"), "16  A");
   assert.equal(f("%04d"), "0016");
@@ -81,13 +81,18 @@ test("the formatter: the name is a printf format whose first argument is 16", ()
   assert.equal(f("%sN"), "N");
   assert.equal(f("A%"), "A%");
   assert.equal(f("%yz"), "%yz");
-  assert.deepEqual([...formatName(ascii("%c"))], [16]);
-  // (the registers the later conversions read, as the game's plates showed them)
-  const g = (s: string, first = false) => String.fromCharCode(...formatName(ascii(s), first ? FORMAT_ARGS_FIRST : FORMAT_ARGS));
-  assert.equal(g("%dA%dA%d"), "16A-2135059648A-2142444672");
-  assert.equal(g("%dA%dA%d", true), "16A-2135060016A-2142444672");
-  assert.equal(g("%XA%u"), "10A2159907648");
-  assert.equal(g("%dA%dA%dA%dA%dA%dA%d").split("A").length, 7);
+});
+
+test("the conversions after the first read what the caller left: registers, the text's address, the stack", () => {
+  const tiny0 = tiny({}).common;
+  const run = (name: string, k = 0) => runPlates(tiny0, [ascii("x"), ascii(name)].slice(1 - Math.min(k, 1)), [0, 1].slice(1 - Math.min(k, 1)), 32).at(-1)!;
+  const text = (r: { printed: Uint8Array }) => String.fromCharCode(...r.printed);
+  // (the first plate: r5 16, the text 0x80bd91d0 + 0x0, r7 0x804ce380, r8 0x804d0000, r9 0x50, r10 8, then the stack)
+  assert.equal(text(run("%d,%d,%d,%d,%d,%d,%d")), "16,-2135060016,-2142444672,-2142437376,80,8,1127219200");
+  // (the second plate's: the text 0x170 on, r9 1, r10 the first plate's ops end)
+  const second = text(run("%d,%d,%d,%d,%d", 1)).split(",");
+  assert.equal(second[1], String(0x80bd9340 - 2 ** 32));
+  assert.equal(second[4], "1");
 });
 
 test("the string routine: a digit narrows like a space, a lone lead byte takes the next byte and, at the end, reads on past it", () => {
@@ -104,11 +109,9 @@ test("the string routine: a digit narrows like a space, a lone lead byte takes t
   past[3] = 0x61; // an 'a' (glyph 1) three bytes in
   assert.deepEqual(glyphs(sisString(ascii("b?"), 0, 0, [255, 255, 255], null, c, past)), [2, 1]);
   assert.deepEqual(glyphs(sisString(ascii("b?"), 0, 0, [255, 255, 255], null, c)), [2]);
-  // (the buffer as measured: an N three bytes in, nothing four in, a 5 or an N at 15)
-  assert.equal(pastTheEnd(false)[3], 0x4e);
-  assert.equal(pastTheEnd(false)[4], 0);
-  assert.equal(pastTheEnd(true)[15], 0x35);
-  assert.equal(pastTheEnd(false)[15], 0x4e);
+  // (the ops are written over the string when they run longer than the 128 bytes before it, and a digit's byte is read again after its narrowing op)
+  const eleven = sisBody(Uint8Array.from([...ascii("12345678901"), 0]), c);
+  assert.equal(eleven.filter((v, k) => v === 0x0a && eleven[k + 1] === 0xf4).length, 1);
 });
 
 test("the plate's width follows the name's glyphs: (20 - left trim) summed, held to 60..144, times 0.0146", () => {
@@ -189,65 +192,35 @@ test("the game's font squeezes 'Platinum Player' to the box and lets 'Master Pla
   near(m.quads[2] - m.quads[0], 1.035, 1e-6);
 });
 
-// Names in the game's own plates (captures of copies of a public replay with only the display name changed): the
-// name's bytes in hex, whether it is the first player's plate, the glyph indexes the game drew (its 32 by 32 quads
-// through the font's picture hash) and the plate model's x scale in its draw
-const GAME_PLATES: [string, boolean, number[], number][] = [
-  ["41", true, [10], 0.876],
-  ["4162", false, [10, 37], 0.876],
-  ["436f6479", true, [12, 50, 39, 60], 0.876],
-  ["416d7361", false, [10, 48, 54, 36], 0.876],
-  ["57616c6c79", true, [32, 36, 47, 47, 60], 0.9052],
-  ["5279756b69", false, [27, 60, 56, 46, 44], 0.9198],
-  ["46696374696f6e", true, [15, 44, 38, 55, 44, 50, 49], 1.2118],
-  ["536f6f6e736179", false, [28, 50, 50, 49, 54, 36, 60], 1.3578],
-  ["5a61696e4a6f79626f79", true, [35, 36, 44, 49, 19, 50, 60, 37, 50, 60], 1.9126],
-  ["5279756b69416c62657274", false, [27, 60, 56, 46, 44, 10, 47, 37, 40, 53, 55], 1.971],
-  ["5a61696e536f6f6e736179", true, [35, 36, 44, 49, 28, 50, 50, 49, 54, 36, 60], 2.1024],
-  ["5a61696e43616262616765", false, [35, 36, 44, 49, 12, 36, 37, 37, 36, 42, 40], 2.1024],
-  // (a lead byte at the end: the game read on past the name)
-  ["5768793f", true, [32, 43, 60, 23], 0.8906],
-  ["613f", true, [36, 23], 0.876],
-  ["6162636465666768696a6b6c6d3f", true, [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 5], 2.1024],
-  ["6162636465666768696a6b6c6d3f", false, [36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 23], 2.1024],
-  // (punctuation, digits, a space; an ASCII lead byte takes the next byte)
-  ["522644", false, [27], 0.876],
-  ["4f274e65696c", true, [24, 243, 23, 40, 44, 47], 1.1826],
-  ["523244322033", false, [27, 2, 13, 2, 227, 3], 1.095],
-  ["41424320616263", true, [10, 11, 12, 227, 36, 37, 38], 1.4162],
-  // (full-width letters, a digit and '!' and a full-width space in the replay's own bytes; half-width kana; hiragana;
-  // kanji the font has, and one it does not)
-  ["826082828250814981408279", false, [10, 37, 1, 236, 227, 35], 1.0804],
-  ["b1b2b3", true, [], 0.876],
-  ["82a082a282a4", false, [63, 65, 67], 0.876],
-  ["8c52926358", true, [266, 279, 33], 0.876],
-  ["9f54588abf8e9a", false, [33], 0.876],
-  // (the formatter)
-  ["2564", true, [1, 6], 0.876],
-  ["2578", false, [1, 0], 0.876],
-  ["253564", false, [227, 227, 227, 1, 6], 0.876],
-  ["4e25644e", true, [23, 1, 6, 23], 0.876],
-  ["25734e", false, [23], 0.876],
-  ["353025", true, [5, 0], 0.876],
-  ["61257362", false, [36, 37], 0.876],
-  // (later conversions: the registers' leftovers, 16, a pointer a plate, two the same, 1)
-  ["2564412564412564412564", true, [1, 6, 10, 252, 2, 1, 3, 5, 0, 6, 0, 0, 1, 6, 10, 252, 2, 1, 4, 2, 4, 4, 4, 6, 7, 2, 10, 252, 2, 1, 4, 2, 4, 3, 7, 3, 7, 6], 2.1024],
-  ["2564412564412564412564412564412564412564", false, [1, 6, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 4, 8, 10, 252, 2, 1, 4, 2, 4, 4, 4, 6, 7, 2, 10, 252, 2, 1, 4, 2, 4, 3, 7, 3, 7, 6, 10, 1, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 9, 9, 10, 1, 1, 2, 7, 2, 1, 9, 2, 0, 0], 2.1024],
-  ["257541256941256f412558412563", false, [1, 6, 10, 252, 2, 1, 3, 5, 0, 5, 9, 6, 4, 8, 10, 2, 0, 0, 2, 3, 1, 6, 1, 6, 0, 0, 10, 8, 0, 4, 13, 0, 0, 0, 0, 10], 2.1024],
-];
+// Games' plates as the game drew them (plates-fixtures.json: captures of copies of public replays with only the display
+// names changed, on every port and in the stages measured): per game its stage, ports, names (hex), the glyph the
+// game drew for each quad of each plate (its 32 by 32 quad's picture through the font's hash), and each plate's x scale
+// in its draw. `stale` are the heap words the game's frame held that no replay can tell (see StaleWords), from the
+// captures that have a trace of them; the others use the defaults.
+interface GameFixture { id: string; stage: number; ports: number[]; names: string[]; stale: Record<string, number>[] | null; glyphs: number[][]; scales: number[] }
+const FIXTURES = JSON.parse(fs.readFileSync(new URL("./plates-fixtures.json", import.meta.url), "utf8")) as GameFixture[];
 
-test("the game's plates for names short and long, with punctuation, full-width and Japanese characters: the same glyphs and width", withGameFiles, () => {
-  const font = plateFontFromDol(executable())!;
+function glyphIndexes(font: PlateFont, t: { quads: Float32Array; count: number }): number[] {
   const { w, h } = glyphAtlas(font).sprite;
-  for (const [hex, first, glyphs, scale] of GAME_PLATES) {
-    const bytes = Uint8Array.from(hex.match(/../g)!.map((x) => parseInt(x, 16)));
-    const t = plateText(font, "", bytes, first);
-    const seq: number[] = [];
-    for (let k = 0; k < t.count; k++) {
-      const col = Math.round(t.quads[k * 8 + 4] * w - 1) / 34, row = Math.round(t.quads[k * 8 + 5] * h - 1) / 34;
-      seq.push(Math.round(row) * 17 + Math.round(col));
-    }
-    assert.deepEqual(seq, glyphs, `glyphs of ${hex}`);
-    near(t.width, scale, 6e-5);
+  const seq: number[] = [];
+  for (let k = 0; k < t.count; k++) {
+    const col = Math.round(t.quads[k * 8 + 4] * w - 1) / 34, row = Math.round(t.quads[k * 8 + 5] * h - 1) / 34;
+    seq.push(Math.round(row) * 17 + Math.round(col));
   }
+  return seq;
+}
+
+test("the game's plates for every captured game: the same glyphs and the same plate width on every port", withGameFiles, () => {
+  const font = plateFontFromDol(executable())!;
+  let plates = 0;
+  for (const g of FIXTURES) {
+    const names = g.names.map((hex) => Uint8Array.from(hex.match(/../g)!.map((x) => parseInt(x, 16))));
+    const made = plateTexts(font, names.map((raw, k) => ({ port: g.ports[k], name: "", raw })), g.stage, g.stale ?? undefined);
+    made.forEach((t, k) => {
+      assert.deepEqual(glyphIndexes(font, t), g.glyphs[k], `${g.id}: glyphs of plate ${k} (${g.names[k]})`);
+      near(t.width, g.scales[k], 6e-5);
+      plates++;
+    });
+  }
+  assert.ok(plates > 400);
 });

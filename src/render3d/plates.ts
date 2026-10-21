@@ -15,7 +15,8 @@
  * atlas (one picture for all of them) and each name's quads. A frame only
  * copies a name's quads to where its plate is.
  */
-import { glyphAlpha, layoutSis, parseSisCommon, sisString, type SisCommon, type SisFont } from "./sistext";
+import { glyphAlpha, layoutSis, parseSisCommon, sisBody, sisWrap, type SisCommon, type SisFont } from "./sistext";
+import { VaList, vsprintf, type MemoryReader } from "./msl";
 import { textFontFromDol } from "./dol";
 
 /** a glyph is 32 pixels of text, and a pixel of text is 1/32 of a unit in the HUD camera's space */
@@ -136,89 +137,177 @@ export function rawBytes(raw: string): Uint8Array {
   return Uint8Array.from(out);
 }
 
-/** The registers the formatter's arguments come from (HSD_SisLib_803A6B98 hands the name to vsprintf as its format
- *  with whatever the caller left in r5 to r10 and above): the same in every game and on every stage measured, the
- *  second a little different on the first player's plate. A name with more conversions than these gets nothing for
- *  the rest. */
-export const FORMAT_ARGS_FIRST = [16, -2135060016, -2142444672, -2142437376];
-export const FORMAT_ARGS = [16, -2135059648, -2142444672, -2142437376, 1, -2135059699, 1127219200];
+// ---------------------------------------------------------------- what the string routine is given
 
-/** The formatter the name goes through (the string is a printf format). "%d" draws 16 on every plate ("%x" 10,
- *  "%5d" "   16", "%-4d" "16  ", "%04d" 0016), a "%d" after it the next of the arguments above, a "%s" of one is
- *  empty (the string it points at is not drawn), "%c" is the byte; a percent sign that goes with nothing it knows
- *  stays as it is, "%%" is one. */
-export function formatName(b: Uint8Array, args: number[] = FORMAT_ARGS): Uint8Array {
-  const out: number[] = [];
-  let arg = 0;
-  const digit = (c: number | undefined) => c !== undefined && c >= 0x30 && c <= 0x39;
-  for (let i = 0; i < b.length; i++) {
-    const ch = b[i];
-    if (ch === 0) break;
-    if (ch !== 0x25) { out.push(ch); continue; }
-    let j = i + 1;
-    if (b[j] === 0x25) { out.push(0x25); i = j; continue; }
-    let left = false, zero = false, plus = false, space = false, alt = false;
-    for (; j < b.length; j++) {
-      const f = b[j];
-      if (f === 0x2d) left = true; else if (f === 0x30) zero = true; else if (f === 0x2b) plus = true;
-      else if (f === 0x20) space = true; else if (f === 0x23) alt = true; else break;
+// Slippi's playback sets a plate's text with the game's own routine (HSD_SisLib_803A6B98), handing it the display name
+// as a printf format and nothing else: the arguments a conversion in the name reads are what the caller left in the
+// registers and on its stack, and the buffer the formatted text goes to is a frame of the routine's own that still
+// holds what earlier calls left in it. Everything below is the game's, as the code computes it and as the plates
+// drawn for names with up to twelve conversions, with lead bytes at the end and with odd percent signs showed it.
+
+/** the text heap (HSD_SisLib_Alloc and its free): 12 byte headers, best fit, the head block carved from its front, a
+ *  freed block next to the head given back to it and any other put at the list's end. A plate's text takes 4 blocks
+ *  (the text's own 0xA0 bytes, 0x10, the ops buffer's 0x80, 0x10) and grows its ops buffer in steps of 0x80. */
+class TextHeap {
+  private free: { hdr: number; data: number; size: number }[];
+  private used: { hdr: number; data: number; size: number }[] = [];
+  constructor(data: number, size = 0x100000) { this.free = [{ hdr: data - 12, data, size }]; }
+  alloc(n: number): number {
+    n = (n + 3) & ~3;
+    let best = -1;
+    for (let i = 0; i < this.free.length; i++) {
+      const b = this.free[i];
+      if (b.size === n) { best = i; break; }
+      if (b.size > n && (best < 0 || b.size < this.free[best].size)) best = i;
     }
-    let width = 0, prec = -1;
-    while (digit(b[j])) width = width * 10 + b[j++] - 0x30;
-    if (b[j] === 0x2e) { j++; prec = 0; while (digit(b[j])) prec = prec * 10 + b[j++] - 0x30; }
-    while (b[j] === 0x68 || b[j] === 0x6c || b[j] === 0x4c) j++;
-    const conv = b[j] ?? 0;
-    if (conv === 0 || !"diuxXocsp".includes(String.fromCharCode(conv))) {
-      // (not a conversion it knows, or the string ended on the percent sign: kept as written)
-      for (let k = i; k <= Math.min(j, b.length - 1); k++) if (b[k] !== 0) out.push(b[k]);
-      i = j;
-      continue;
-    }
-    i = j;
-    const v = args[arg++] ?? null;
-    let text: number[] = [];
-    if (v !== null) {
-      const c = String.fromCharCode(conv);
-      if (c === "c") text = [v & 0xff];
-      else if (c === "s") text = [];
-      else {
-        const u = v >>> 0;
-        let digits = c === "x" ? u.toString(16) : c === "X" ? u.toString(16).toUpperCase() : c === "o" ? u.toString(8)
-          : c === "u" ? String(u) : String(Math.abs(v | 0));
-        if (prec >= 0) digits = digits.padStart(prec, "0");
-        const sign = c === "d" || c === "i" ? ((v | 0) < 0 ? "-" : plus ? "+" : space ? " " : "") : "";
-        const prefix = alt && v !== 0 ? (c === "x" ? "0x" : c === "X" ? "0X" : c === "o" ? "0" : "") : "";
-        const pad = width - sign.length - prefix.length - digits.length;
-        let s: string;
-        if (pad <= 0) s = sign + prefix + digits;
-        else if (left) s = sign + prefix + digits + " ".repeat(pad);
-        else if (zero && prec < 0) s = sign + prefix + "0".repeat(pad) + digits;
-        else s = " ".repeat(pad) + sign + prefix + digits;
-        text = [...s].map((x) => x.charCodeAt(0));
-      }
-      if ((c === "c" || c === "s") && width > text.length) {
-        const fill = Array(width - text.length).fill(0x20);
-        text = left ? [...text, ...fill] : [...fill, ...text];
-      }
-    }
-    out.push(...text);
+    if (best < 0) throw new Error("text heap exhausted");
+    let blk: { hdr: number; data: number; size: number };
+    if (best === 0) {
+      const h = this.free[0], hdr = h.data + n;
+      blk = { hdr: h.hdr, data: h.data, size: n };
+      this.free[0] = { hdr, data: hdr + 12, size: h.size - n - 12 };
+    } else blk = this.free.splice(best, 1)[0];
+    this.used.push(blk);
+    return blk.data;
   }
-  return Uint8Array.from(out);
+  release(data: number) {
+    const i = this.used.findIndex((b) => b.data === data);
+    if (i < 0) return;
+    const [node] = this.used.splice(i, 1);
+    const head = this.free[0];
+    if (head.hdr === node.data + node.size) this.free[0] = { hdr: node.hdr, data: node.data, size: head.size + node.size + 12 };
+    else this.free.push(node);
+  }
 }
 
-/** What the string routine reads when a name finishes on a byte it takes for a lead byte (a lone '!' or '?', a
- *  half-width kana): the second byte is the terminator, and it goes on into what the buffer held before. Those
- *  bytes, by their place in the buffer (the name's first byte is 0), as the game's plates showed them for names
- *  of 1 to 30 bytes ending in '?' on two stages: an N at 3, 5, 11, 13, 19, 21, 27 and 29, a 7 at 7 and 9, a 9 at
- *  31, and at 15 and 17 a 5 on the first player's plate, an N on the others'; nothing at the places between. */
-export function pastTheEnd(first: boolean): Uint8Array {
-  const t = new Uint8Array(40);
-  const put = (at: number[], ch: string) => at.forEach((i) => { t[i] = ch.charCodeAt(0); });
-  put([3, 5, 11, 13, 19, 21, 27, 29], "N");
-  put([7, 9], "7");
-  put([15, 17], first ? "5" : "N");
-  put([31], "9");
-  return t;
+/** where the first plate's text lands in the text heap, and how far each stage moves it (a Pokemon Stadium game has
+ *  the stage's own text allocated first: 0x254 bytes), and a plate takes 0x170 */
+const TEXT_HEAP_START = 0x80bd91d0;
+const TEXT_HEAP_STAGE: Record<number, number> = { 3: 0x254 };
+/** the first slot of the caller's stack past the registers, per stage (a double-conversion constant, 0x43300000, on
+ *  all but Corneria's stage (7), where it is 0) */
+const STACK_SLOT0: Record<number, number> = { 7: 0 };
+
+/** the caller's stack from its first slot (slot 0 is per stage, see above): a double's conversion constant, and
+ *  stack and code addresses and small numbers the earlier calls left */
+const STACK_SLOTS = [0x43300000, 0, 0x804eeaf8, 0x802f9ebc, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0xffffffff, 0, 0, 0, 0,
+                     0x804eeaf8, 0x802f617c, 0x804eeaf8, 0x802f6494, 0x804eead0, 0x8037acc0];
+/** the saved float registers f1 to f8 (the text's x and y, a few viewport numbers) */
+const FLOAT_REGS = [0, 0, 0, 640, 480, -0.4807128906250, 1, 0];
+
+/** the game's low memory, which a string argument that is a small number reads (the disc header's id first) */
+const LOW_MEMORY = hexBytes("47414c45303100020000000000000000000000000000000000000000c2339f3d0d15ea5e0000000101830d401000000600000000818298008182980000007529");
+/** the first bytes of other memory the arguments point at: [address, bytes] */
+const MEMORY_AT: [number, Uint8Array][] = [
+  [0x804ce380, hexBytes("3f3f1800")],
+  [0x804d0000, hexBytes("00")],
+  [0x804eeaf8, hexBytes("804eeb18802f652c00")],
+  [0x802f9ebc, hexBytes("4800007400")],
+];
+function hexBytes(h: string): Uint8Array {
+  const out = new Uint8Array(h.length / 2);
+  for (let k = 0; k < out.length; k++) out[k] = parseInt(h.slice(k * 2, k * 2 + 2), 16);
+  return out;
+}
+
+/** heap pointers the earlier calls left in the buffer's stale bytes; they depend on the game's whole memory history and
+ *  cannot be known from the replay (they are only read when a name ends on a lead byte or the text runs on past its
+ *  end), so these stand in: the first plate's are the game's in every game measured */
+export interface StaleWords { x4: number; x16: number; x25: number; x38: number }
+export const STALE_DEFAULT: StaleWords = { x4: 0x80ef9280, x16: 0x80ef9280, x25: 0x80ef9280, x38: 0x80ef9280 };
+
+/** the 42 words below the formatted string's start: the stack the routine's frame stands on holds what earlier calls
+ *  wrote there. Constant words are code and stack addresses; the rest are the text's own addresses by plate order. */
+function staleImage(k: number, t0: number, T: number[], x: StaleWords): Uint8Array {
+  const first = k === 0;
+  const prev = first ? t0 - 0x1a8 : T[k - 1];
+  const ws = [
+    0x804ce38c, 0x804ee998, 0x8037acc0, 0x804ee9a0, first ? 0x8035e084 : x.x4,
+    first ? 0x804ee9b8 : 0x804ee9a8, 2, 0x804ee9c8, 0x80390014, 0x804ee9d0,
+    first ? 0x80382044 : 0x8036c198, 0x804ee9d0, first ? 0x80000000 : 0x8035e0e0, 0x80bdfee0,
+    first ? 0x803dda84 : 0x60, 0x80bdfee0, x.x16, t0 - 0x1c, prev, T[k], 2, 0x804eea38, 0x803a5be8,
+    first ? 0x804eea00 : 0, first ? 0x8037aa3c : 0, first ? x.x25 : 0x3fe3d70a,
+    first ? 8 : 0x40000000, first ? 0x80 : 0x3fe8cccc, first ? 0x803dda78 : 0xc0000000, 0x804eea20,
+    first ? 9 : 0, first ? 12 : 0x40840000, 0x803dda78, 0x8065fa60, first ? 0x803dda84 : 0x60,
+    0x80bdfee0, 0x803dda78, 0x8065fa60, first ? x.x38 : prev, first ? t0 : T[k], first ? t0 : T[k], 0x804eea38,
+  ];
+  const out = new Uint8Array(ws.length * 4), v = new DataView(out.buffer);
+  ws.forEach((w, i) => v.setUint32(i * 4, w >>> 0));
+  return out;
+}
+
+/** The ops buffer's walk after the text is written (the width loop of HSD_SisLib_803A6B98 starts 15 bytes in): where it
+ *  ends, which is the pointer the next plate's call finds in r10. */
+function opsWalk(ops: ArrayLike<number>): number {
+  let i = 15;
+  while (i < ops.length) {
+    const b = ops[i];
+    if (b === 0x0f) return i;
+    i += b === 0x20 || b === 0x40 ? 2 : 1;
+  }
+  return i;
+}
+
+/** one plate's text as the string routine makes it: the formatted bytes and the ops they become */
+export interface PlateRun { printed: Uint8Array; body: number[] }
+
+/**
+ * The plates Slippi sets, in the order it sets them (the players' ports, low to high): for each, what the name becomes
+ * through the game's printf (the registers and stack its caller leaves) and the string routine (the buffer's stale
+ * bytes). Each plate's call depends on the earlier ones through the text heap (its addresses are the first
+ * conversions' values) and the ops buffer's end, so they are run in order.
+ * `names` are the display names' bytes and `ports` the ports they belong to (the text's position, which a string
+ * conversion of the text's address reads, is by port).
+ */
+export function runPlates(common: SisCommon, names: Uint8Array[], ports: number[], stage: number,
+                          stale: (Partial<StaleWords> | undefined)[] = []): PlateRun[] {
+  const t0 = TEXT_HEAP_START + (TEXT_HEAP_STAGE[stage] ?? 0);
+  const slot0 = STACK_SLOT0[stage] ?? STACK_SLOTS[0];
+  const heap = new TextHeap(t0);
+  const out: PlateRun[] = [];
+  const T: number[] = [];
+  const bufs: [number, number[]][] = [];
+  const f32 = Math.fround;
+  // (the text's own bytes: its x and y by port, then zero)
+  const textBytes = (port: number) => {
+    const v = new DataView(new ArrayBuffer(24));
+    v.setFloat32(0, f32(-20.2 + 14 * port)); v.setFloat32(4, f32(20.64)); v.setFloat32(12, 150); v.setFloat32(16, 150);
+    return new Uint8Array(v.buffer);
+  };
+  let prevEnd = 0;
+  names.forEach((name, k) => {
+    const text = heap.alloc(0xa0); heap.alloc(0x10); let buf = heap.alloc(0x80); heap.alloc(0x10);
+    T.push(text);
+    const regs = [0, 0, 0x10, text, 0x804ce380, 0x804d0000, k === 0 ? 0x50 : 1, k === 0 ? 8 : prevEnd];
+    const stack = [slot0, ...STACK_SLOTS.slice(1)];
+    const mem: MemoryReader = (a) => {
+      if (a >= 0 && a < LOW_MEMORY.length) return LOW_MEMORY[a];
+      for (let j = 0; j < T.length; j++) if (a >= T[j] && a < T[j] + 0xa0) { const b = textBytes(ports[j] ?? j); return a - T[j] < b.length ? b[a - T[j]] : 0; }
+      for (const [at, bytes] of bufs) if (a >= at && a < at + bytes.length) return bytes[a - at];
+      for (const [at, bytes] of MEMORY_AT) if (a >= at && a < at + bytes.length) return bytes[a - at];
+      return 0;
+    };
+    const printed = vsprintf(name, new VaList(regs, FLOAT_REGS, stack), mem);
+    const image = staleImage(k, t0, T, { ...STALE_DEFAULT, ...stale[k] });
+    const buffer = new Uint8Array(Math.max(printed.length + 1, image.length));
+    buffer.set(image);
+    buffer.set(printed);
+    buffer[printed.length] = 0;
+    // (the formatted string, its zero, then what the frame held past that)
+    const body = sisBody(buffer, common);
+    const ops = [...new Array(14).fill(0), ...body, 0x0f, 0x0d, 0];
+    const need = 0x11 + body.length;
+    if (need > 0x80) {
+      const grown = 0x80 + ((((need - 0x80) >> 7) + 1) << 7);
+      const next = heap.alloc(grown);
+      heap.release(buf);
+      buf = next;
+    }
+    prevEnd = buf + opsWalk(ops);
+    bufs.push([buf, ops]);
+    out.push({ printed, body });
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------- the glyph atlas
@@ -263,40 +352,52 @@ export function glyphAtlas(font: PlateFont): GlyphAtlas {
 
 // ---------------------------------------------------------------- a name's quads
 
-const texts = new WeakMap<PlateFont, Map<string, PlateText>>();
+const texts = new WeakMap<PlateFont, Map<string, PlateText[]>>();
 
-/** A name's quads and plate width (made once per name). `raw` is the replay's own bytes for it (rawBytes), when the
- *  text is still what the replay says: the game was given those, not the text. `first`: the first player's
- *  plate (what lies past the end of a name differs a little, see pastTheEnd). */
-export function plateText(font: PlateFont, name: string, raw?: Uint8Array | null, first = false): PlateText {
+/** One plate of a game: the player's port, the name the page shows and the bytes the replay holds for it (rawBytes),
+ *  while the text is still what the replay says: the game was given those, not the text. */
+export interface PlateName { port: number; name: string; raw?: Uint8Array | null }
+
+/** The quads and plate widths of a game's plates, in the order given (the players' ports, low to high: the game's
+ *  plates depend on the ones before them, see runPlates), made once per game. `stage` is the stage's id. */
+export function plateTexts(font: PlateFont, plates: PlateName[], stage: number, stale?: (Partial<StaleWords> | undefined)[]): PlateText[] {
   let m = texts.get(font);
   if (!m) texts.set(font, (m = new Map()));
-  const key = `${first ? 1 : 0}${raw ? "r" + Array.from(raw).join(",") : "s" + name}`;
+  const bytes = plates.map((p) => p.raw ?? nameBytes(p.name));
+  const key = `${stage}|${stale ? JSON.stringify(stale) : ""}|${plates.map((p, k) => `${p.port}:${p.raw ? "r" : "s"}${Array.from(bytes[k]).join(",")}`).join("|")}`;
   const had = m.get(key);
   if (had) return had;
   const c = font.common;
-  // the name's bytes, through the formatter and the string routine's ops, laid out as the plate's text is: at the
-  // text's own scale, kerned, dynamic, centered on its middle and squeezed to the box when it runs wider
-  const bytes = formatName(raw ?? nameBytes(name), first ? FORMAT_ARGS_FIRST : FORMAT_ARGS);
-  const ops = Uint8Array.from(sisString(bytes, 0, 0, [255, 255, 255], null, c, pastTheEnd(first)));
-  const glyphs = layoutSis(ops, { align: 1, boxW: TEXT_BOX, fit: true, kern: true, dynamic: true, scale: [TEXT_SCALE, TEXT_SCALE] },
-                           null, c.font);
+  const runs = runPlates(c, bytes, plates.map((p) => p.port), stage, stale);
   const atlas = glyphAtlas(font);
-  const quads = new Float32Array(glyphs.length * 8);
-  let sum = 0;
-  glyphs.forEach((g, k) => {
-    sum += SUM_BASE - c.font.kern[g.index * 2];
-    const o = k * 8;
-    quads[o] = g.x / GLYPH_PX;
-    quads[o + 1] = -g.y / GLYPH_PX;
-    quads[o + 2] = (g.x + g.w) / GLYPH_PX;
-    quads[o + 3] = -(g.y + g.h) / GLYPH_PX;
-    quads.set(atlas.uv.subarray(g.index * 4, g.index * 4 + 4), o + 4);
+  const result = runs.map((run) => {
+    // the name's ops, laid out as the plate's text is: at the text's own scale, kerned, dynamic, centered on its
+    // middle and squeezed to the box when it runs wider
+    const ops = Uint8Array.from(sisWrap(run.body, 0, 0, [255, 255, 255], null));
+    const glyphs = layoutSis(ops, { align: 1, boxW: TEXT_BOX, fit: true, kern: true, dynamic: true, scale: [TEXT_SCALE, TEXT_SCALE] },
+                             null, c.font);
+    const quads = new Float32Array(glyphs.length * 8);
+    let sum = 0;
+    glyphs.forEach((g, k) => {
+      sum += SUM_BASE - c.font.kern[g.index * 2];
+      const o = k * 8;
+      quads[o] = g.x / GLYPH_PX;
+      quads[o + 1] = -g.y / GLYPH_PX;
+      quads[o + 2] = (g.x + g.w) / GLYPH_PX;
+      quads[o + 3] = -(g.y + g.h) / GLYPH_PX;
+      quads.set(atlas.uv.subarray(g.index * 4, g.index * 4 + 4), o + 4);
+    });
+    const clamped = Math.min(SUM_MAX, Math.max(SUM_MIN, sum));
+    return { quads, count: glyphs.length, width: clamped * SUM_SLOPE } as PlateText;
   });
-  const clamped = Math.min(SUM_MAX, Math.max(SUM_MIN, sum));
-  const t: PlateText = { quads, count: glyphs.length, width: clamped * SUM_SLOPE };
-  m.set(key, t);
-  return t;
+  m.set(key, result);
+  return result;
+}
+
+/** One name's plate on its own (the first plate of a game on a stage with no text of its own): a convenience for
+ *  the checks and the demo; a game's plates come from plateTexts. */
+export function plateText(font: PlateFont, name: string, raw?: Uint8Array | null, stage = 0): PlateText {
+  return plateTexts(font, [{ port: 0, name, raw }], stage)[0];
 }
 
 /** the plate model's x scale at the sum's cap */
