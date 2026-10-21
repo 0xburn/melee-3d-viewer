@@ -452,6 +452,13 @@ export function minFilter(lodFilter: number | null, mipmap: boolean, format: num
   return f;
 }
 
+/** a scalar the texture environment takes as a constant (a texture's
+ *  blending, HSD_TE_X F32): as the TEV's registers hold it, 255 times the
+ *  value cut to a whole number and kept to 0..255 (HSD_TExpSetReg) */
+export function tevScalar(v: number): number {
+  return Math.min(255, Math.max(0, Math.trunc(255 * Math.fround(v)))) / 255;
+}
+
 /** HSD's texture matrix (MakeTextureMtx: scale by repeat over scale, turn
  *  by the rotation, move by minus the translation) as three rows of four */
 export function textureMatrix(tr: number[], sc: number[], rot: number[], repS: number, repT: number, wrapT: number): number[] {

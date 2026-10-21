@@ -18,7 +18,7 @@ import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
-import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, textureMatrix } from "./gx";
+import { Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar, textureMatrix } from "./gx";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
 import { LOOK_H, LOOK_W, Look480 } from "./look480";
 import { GamePicture, type PictureOptions } from "./picture";
@@ -112,12 +112,21 @@ vec3 texGen(int i, vec2 uv0, vec2 uv1, vec3 nv, vec4 W) {
   return vec3(dot(r0, vec4(uv, 1.0, 1.0)), dot(r1, vec4(uv, 1.0, 1.0)), 1.0);
 }
 
+// a see-through material of a fighter whose color animation adds its light
+// (ftMaterial_800BF534 takes it to ftCo_8009F75C(fp, false)): its channels are
+// set while the lights are the ambient and x588 alone - the diffuse channel on
+// GX light 0, no specular light - and the fighters' own set is loaded again
+// before it is drawn (ftCo_8009F75C(fp, true)), so it is lit by the ambient
+// and the set's first light only, without the added light
+bool firstLightOnly() { return uOverMode == 1 && (uMatI[0].z & 512) != 0; }
+
 // GX's color channel: the ambient, then each diffuse light by its angle and
 // distance attenuation and the normal's turn to it, clamped
 vec3 diffuseLights(vec3 W, vec3 N) {
   vec3 L = uAmbLight * uMatF[1].rgb;
+  bool first = firstLightOnly();
   for (int k = 0; k < 8; k++) {
-    if (k >= uNumLights) break;
+    if (k >= uNumLights || (first && k > 0)) break;
     vec4 a = uLA[k];
     if ((int(a.w) & 1) == 0 || uOverMode == 2) continue;
     vec4 p = uLPos[k];
@@ -129,7 +138,7 @@ vec3 diffuseLights(vec3 W, vec3 N) {
     L += uLCol[k].rgb * (att * max(dot(N, ld), 0.0));
   }
   if (uOverMode == 2) L += uOverLight.rgb * max(dot(N, uOverDir), 0.0);
-  else if (uOverMode == 1) L += vec3(max(dot(N, uOverDir), 0.0));
+  else if (uOverMode == 1 && !first) L += vec3(max(dot(N, uOverDir), 0.0));
   return min(L, vec3(1.0));
 }
 
@@ -138,7 +147,7 @@ vec3 diffuseLights(vec3 W, vec3 N) {
 // shininess as GX's specular lights are
 vec3 specularLights(vec3 W, vec3 N) {
   vec3 S = vec3(0.0);
-  if (uOverMode == 2) return S;
+  if (uOverMode == 2 || firstLightOnly()) return S;
   vec3 cdir = normalize(uSpecAt - uEye);
   float k0 = 0.5 * uMatF[1].w, k2 = 1.0 - k0;
   for (int k = 0; k < 8; k++) {
@@ -171,7 +180,10 @@ void main() {
   if (m0.y == 1) vRas0 = aClr;
   else if (m0.y == 2) vRas0 = vec4(diffuseLights(w.xyz, N), 1.0);
   vRas1 = (m0.z & 4) != 0 ? specularLights(w.xyz, N) : vec3(0.0);
-  vOverAdd = uOverMode == 1 ? uOverLight.rgb * (uOverLight.a * max(dot(N, uOverDir), 0.0)) : vec3(0.0);
+  // (the added color is the light's times the rasterized alpha, GX_CC_RASA: a lit material's alpha channel is
+  // lit by the added light alone (LOBJ_ALPHA); an unlit one's is its vertex alpha or its material's)
+  float rasA = m0.y == 2 ? uOverLight.a * max(dot(N, uOverDir), 0.0) : m0.y == 1 ? aClr.a : uMatF[0].a;
+  vOverAdd = uOverMode == 1 ? uOverLight.rgb * rasA : vec3(0.0);
   vT0 = texGen(0, aUv0, aUv1, nv, w);
   vT1 = texGen(1, aUv0, aUv1, nv, w);
   vT2 = texGen(2, aUv0, aUv1, nv, w);
@@ -2109,7 +2121,7 @@ void main() {
         gl.bindTexture(gl.TEXTURE_2D, tx);
         this.bound[n] = tx;
       }
-      const bl = Math.fround(t.blending);
+      const bl = Math.fround(tevScalar(t.blending));
       if (F[12 + n] !== bl) { F[12 + n] = bl; ch = true; }
       if (c.tcs[n] !== tc || c.tcVers[n] !== tc.ver) {
         F.set(tc.m, 24 + n * 12);
