@@ -22,6 +22,8 @@
  * emulator is in it.
  */
 import type { MObj, TObj } from "./hsd";
+import { MakeTextureMtx } from "./gxmath";
+import { CNST_ALPHA, CNST_BLEND, CNST_DIFFUSE, CNST_SPECULAR, CNST_TEXREG, type TevProgram, compileTExp, runTev } from "./texp";
 
 // ---------------------------------------------------------------- lights
 
@@ -189,6 +191,9 @@ export interface MatProgram {
   /** how each sampled texture's coordinates are made */
   texGen: TexGen[];
   stages: MatStage[];
+  /** its TEV as HSD_TExpCompile makes it: the stages the hardware runs (texp.ts), the one table the fragment
+   *  shader and `evalMaterial` both run */
+  tev: TevProgram;
   /** the sampler of its emboss bump map (HSD's volatile emboss stages: the
    *  color plus the map, minus the map shifted toward the first diffuse
    *  light, both times the lit color), or -1 */
@@ -207,7 +212,7 @@ export function compileMaterial(mo: MObj, tobjs: TObj[], skip?: (t: TObj) => boo
     vertexBase: (mode & RENDER.VERTEX) !== 0,
     lit: (mode & RENDER.DIFFUSE) !== 0,
     specular: (mode & RENDER.SPECULAR) !== 0,
-    textures: [], texGen: [], stages: [], bump: -1,
+    textures: [], texGen: [], stages: [], tev: { stages: [], out: 0 }, bump: -1,
   };
   // the textures that get a sampler: shadow and toon textures are the
   // game's own additions, a bump map's emboss is left out
@@ -248,6 +253,8 @@ export function compileMaterial(mo: MObj, tobjs: TObj[], skip?: (t: TObj) => boo
     done |= TEX.LIGHTMAP_SPECULAR;
   }
   pass(TEX.LIGHTMAP_EXT, 2);
+  // (the same textures, in the same samplers, through MObjMakeTExp and HSD_TExpCompile)
+  prog.tev = compileTExp(mo, tobjs, (i) => (usable(tobjs[i]) ? sampler.get(i) ?? -1 : -1));
   // a bump map's emboss (one at most)
   const bi = tobjs.findIndex((t) => (t.flags & TEX.BUMP) !== 0 && usable(t));
   if (bi >= 0) prog.bump = use(bi);
@@ -294,7 +301,8 @@ export const byteOf = (v: number): number => Math.min(255, Math.max(0, Math.roun
 /** a scalar the TEV takes as a constant (HSD_TExpSetReg's HSD_TE_F32): 255
  *  times the value, cut to a whole number, kept to 0..255 */
 export function tevByte(v: number): number {
-  return Math.min(255, Math.max(0, Math.trunc(255 * Math.fround(v))));
+  // ((int)(0xFF * f): the product a float's)
+  return Math.min(255, Math.max(0, Math.trunc(Math.fround(255 * Math.fround(v)))));
 }
 
 /** the same, as the 0..1 value the byte stands for */
@@ -376,50 +384,46 @@ export function alphaMap(op: number, a: number, t: number, blend: number): numbe
 }
 
 /** what a material's TEV makes of its inputs (the fragment shader, in its
- *  integers): its colors, each stage's texel (after its own TEV step) and
- *  blend, the two lighting channels; every input a byte (0..255; a texel
- *  through its own TEV step may be past them), the result four bytes.
- *  The stages are MObjMakeTExp's: the diffuse color (the material's, or the
- *  vertex color), the diffuse textures, times the lit color, plus the
- *  specular color with its textures times the specular channel, the textures
- *  after lighting; then HSD_TObjSetupVolatileTev's emboss and shadows. */
+ *  integers): its colors, each sampler's texel and blend and own TEV colors
+ *  (konst, tev0, tev1), the two lighting channels; every input a byte
+ *  (0..255), the result four bytes. The stages are HSD_TExpCompile's
+ *  (`p.tev`: MObjMakeTExp's graph, simplified); then
+ *  HSD_TObjSetupVolatileTev's emboss and shadows, each reading the last
+ *  stage's 10-bit result, and the pixel its low 8 bits. */
 export function evalMaterial(p: MatProgram, inp: {
   diffuse: number[]; alpha: number; specular: number[]; ras0: number[]; ras1: number[];
   texels: number[][]; blend: number[];
+  /** each sampler's own TEV colors, konst, tev0, tev1 (bytes, rgba) */
+  tevColors?: number[][][];
   /** the bump map's texel at its shifted coordinates */
   bumpShifted?: number[];
   /** the shadows' texels, each laid on after everything (TObjSetupTevModulateShadow) */
   shadows?: number[][];
 }): number[] {
-  let c = p.vertexBase ? inp.ras0.slice(0, 3) : inp.diffuse.slice(0, 3);
-  let a = p.vertexBase ? inp.ras0[3] : inp.alpha;
-  const run = (phase: number, col: number[]): number[] => {
-    for (const s of p.stages) {
-      if (s.phase !== phase) continue;
-      const t = inp.texels[s.tex], b = inp.blend[s.tex] ?? 255;
-      col = colorMap(s.colorMap, col, t, b);
-      if (s.alphaMap >= 0) a = alphaMap(s.alphaMap, a, t[3], b);
-    }
-    return col;
-  };
-  c = run(0, c);
-  // (the lit color: lerp(0, color, channel))
-  if (p.lit) { c = c.map((v, i) => tevStage(0, v, inp.ras0[i], 0, 0, 0, 0, true)); a = tevStage(0, a, inp.ras0[3], 0, 0, 0, 0, true); }
-  if (p.specular) {
-    let s = run(1, inp.specular.slice(0, 3));
-    s = s.map((v, i) => tevStage(0, v, inp.ras1[i], 0, 0, 0, 0, true));
-    c = c.map((v, i) => tevStage(s[i], 0, 0, v, 0, 0, 0, true));
-  }
-  c = run(2, c);
+  const zero = [0, 0, 0, 0];
+  const out = runTev(p.tev, {
+    texel: (s) => inp.texels[s] ?? zero,
+    ras: (ch) => (ch === 1 ? inp.ras1 : inp.ras0),
+    cnst: (id) => {
+      if (id === CNST_DIFFUSE) return [...inp.diffuse.slice(0, 3), 255];
+      if (id === CNST_ALPHA) return [inp.alpha, inp.alpha, inp.alpha, inp.alpha];
+      if (id === CNST_SPECULAR) return [...inp.specular.slice(0, 3), 255];
+      if (id < CNST_TEXREG) { const b = inp.blend[id - CNST_BLEND] ?? 255; return [b, b, b, b]; }
+      const k = id - CNST_TEXREG;
+      return inp.tevColors?.[Math.floor(k / 3)]?.[k % 3] ?? zero;
+    },
+  }, { stage: tevStage, compare: tevCompare });
+  let c = out.slice(0, 3);
   if (p.bump >= 0 && inp.bumpShifted) {
     // (SetupEmbossBumpTev: plus the map times the lit color, unclamped, then minus the shifted map's, clamped)
     const t = inp.texels[p.bump], u = inp.bumpShifted;
     c = c.map((v, i) => tevStage(0, t[i], inp.ras0[i], v, 0, 0, 0, false));
     c = c.map((v, i) => tevStage(0, u[i], inp.ras0[i], v, 1, 0, 0, true));
   }
-  for (const s of p.stages) if (s.phase === 3) c = colorMap(s.colorMap, c, inp.texels[s.tex], 255);
+  for (const s of p.stages) if (s.phase === 3) c = c.map((v, i) => tevStage(0, v, inp.texels[s.tex][i], 0, 0, 0, 0, true));
   for (const sh of inp.shadows ?? []) c = c.map((v, i) => tevStage(0, v, sh[i], 0, 0, 0, 0, true));
-  return [...c, a];
+  // (what leaves the last stage for the pixel engine: the register's low 8 bits)
+  return [c[0] & 255, c[1] & 255, c[2] & 255, out[3] & 255];
 }
 
 /** a texture's own TEV step (HSD_TObjTevDesc, MakeColorGenTExp) on its texel,
@@ -561,28 +565,12 @@ export function minFilter(lodFilter: number | null, mipmap: boolean, format: num
   return f;
 }
 
-/** HSD's texture matrix (MakeTextureMtx: scale by repeat over scale, turn
- *  by the rotation, move by minus the translation) as three rows of four */
-export function textureMatrix(tr: number[], sc: number[], rot: number[], repS: number, repT: number, wrapT: number): number[] {
-  const su = Math.abs(sc[0]) < 1e-10 ? 0 : (repS || 1) / sc[0];
-  const sv = Math.abs(sc[1]) < 1e-10 ? 0 : (repT || 1) / sc[1];
-  const sz = sc[2] ?? 1;
-  const tx = -tr[0], ty = -(tr[1] + (wrapT === 2 && sv ? 1 / sv : 0)), tz = tr[2] ?? 0;
-  // HSD_MkRotationMtx: Rz(-rz) Ry(ry) Rx(rx), from the TObj's rotation
-  const [rx, ry, rz] = [rot[0] ?? 0, rot[1] ?? 0, -(rot[2] ?? 0)];
-  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry), cz = Math.cos(rz), sz_ = Math.sin(rz);
-  const R = [
-    [cy * cz, sx * sy * cz - cx * sz_, cx * sy * cz + sx * sz_],
-    [cy * sz_, sx * sy * sz_ + cx * cz, cx * sy * sz_ - sx * cz],
-    [-sy, sx * cy, cx * cy],
-  ];
-  const S = [su, sv, sz], T = [tx, ty, tz];
-  const out: number[] = [];
-  for (let r = 0; r < 3; r++) {
-    const row = R[r].map((v) => v * S[r]);
-    out.push(row[0], row[1], row[2], row[0] * T[0] + row[1] * T[1] + row[2] * T[2]);
-  }
-  return out;
+/** HSD's texture matrix (MakeTextureMtx: scale by repeat over scale, turn by the rotation - its z negated -
+ *  move by minus the translation; HSD_MkRotationMtx and PSMTXConcat, in float32 as the game makes it) as three
+ *  rows of four. (A repeat of 0, which the game asserts against, is taken as 1.) */
+export function textureMatrix(tr: number[], sc: number[], rot: number[], repS: number, repT: number, wrapT: number): Float32Array {
+  return MakeTextureMtx(new Float32Array(12), [tr[0], tr[1], tr[2] ?? 0], [sc[0], sc[1], sc[2] ?? 1],
+                        [rot[0] ?? 0, rot[1] ?? 0, rot[2] ?? 0], repS || 1, repT || 1, wrapT);
 }
 
 /** GX fog as a stage sets it: its kind (GX_FOG_*), where it starts and ends

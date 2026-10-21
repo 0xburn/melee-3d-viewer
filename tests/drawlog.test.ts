@@ -193,6 +193,11 @@ test("nothing is logged without start, and particles keep their batches", () => 
   assertEquals(p.quads, 1);
   const b = p.bbox as number[];
   assert(b[0] < 320 && b[2] > 320 && b[1] < 240 && b[3] > 240, `around the middle: ${b}`);
+  // each quad's four corners, in vertex order, inside the batch's box
+  const corners = p.corners as [number, number][][];
+  assertEquals(corners.length, 1);
+  assertEquals(corners[0].length, 4);
+  for (const [x, y] of corners[0]) assert(x >= b[0] - 0.1 && x <= b[2] + 0.1 && y >= b[1] - 0.1 && y <= b[3] + 0.1, `corner ${x}, ${y}`);
 });
 
 test("numbers are written as the float32s uploaded, or to 6 digits when asked", () => {

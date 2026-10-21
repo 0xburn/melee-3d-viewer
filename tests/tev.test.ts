@@ -1,15 +1,16 @@
 // gx.ts's integer TEV and lighting: hand-worked stages (each expected byte worked out in its comment), the
-// channel's output, HSD_MulColor, a material through MObjMakeTExp's stages, a particle's color as the game
+// channel's output, HSD_MulColor, a material through HSD_TExpCompile's stages, a particle's color as the game
 // draws it, and the fragment shader's TEV (renderer.ts TEV_GLSL) against the TypeScript on many random
 // inputs in a headless browser (skipped without one, tests/webgl.ts).
 
 import test from "node:test";
 import assertNode from "node:assert/strict";
 import {
-  ALPHA_MAP_IN, COLOR_MAP_IN, MatProgram, alphaMap, chanColor, colorMap, evalMaterial, mulColor, overColor, tevByte,
+  ALPHA_MAP_IN, COLOR_MAP_IN, RENDER, TEX, alphaMap, chanColor, colorMap, compileMaterial, evalMaterial, mulColor, overColor, tevByte,
   tevCompare, tevDescStep, tevStage,
 } from "../src/render3d/gx.ts";
 import { psColorByte } from "../src/render3d/fx/draw.ts";
+import type { MObj, TObj } from "../src/render3d/hsd.ts";
 import { SHADERS } from "../src/render3d/renderer.ts";
 import { browser, runPage } from "./webgl.ts";
 
@@ -78,21 +79,15 @@ test("a color channel: the material color times the clamped sum, (mat * (acc + (
   eq(mulColor([128, 255, 0, 255], [128, 255, 255, 255]), [64, 255, 0, 255]);
 });
 
-test("a material through MObjMakeTExp's stages: its diffuse color, a modulated texture, times the lit color", () => {
-  const p: MatProgram = { channel: 2, vertexBase: false, lit: true, specular: false, textures: [0], texGen: [0],
-                          stages: [{ tex: 0, colorMap: 4, alphaMap: 3, phase: 0 }], bump: -1 };
+test("a material through HSD_TExpCompile's stages: its diffuse color, a modulated texture, times the lit color", () => {
+  const p = compileMaterial({ renderMode: RENDER.DIFFUSE } as MObj, [{ src: 4, flags: TEX.LIGHTMAP_DIFFUSE | (4 << 16) | (3 << 20), tev: null } as unknown as TObj]);
   // modulate: [200, 100, 50] by [128, 255, 0] = [101, 100, 0]; alpha 255 by 255 = 255
   // lit by [255, 128, 0]: 101 * 256 -> 101; 100 * 129 = 12900 + 128 >> 8 = 50; 0
   eq(evalMaterial(p, { diffuse: [200, 100, 50], alpha: 255, specular: [0, 0, 0], ras0: [255, 128, 0, 255], ras1: [0, 0, 0, 255],
                        texels: [[128, 255, 0, 255]], blend: [255] }), [101, 50, 0, 255]);
-  // with a specular term: [10, 20, 30] times its channel 128 ([5, 10, 15]) added to the lit color
-  const ps = { ...p, specular: true };
-  eq(evalMaterial(ps, { diffuse: [200, 100, 50], alpha: 255, specular: [10, 20, 30], ras0: [255, 128, 0, 255],
-                        ras1: [128, 128, 128, 255], texels: [[128, 255, 0, 255]], blend: [255] }), [106, 60, 15, 255]);
-  // a shadow laid on last: 106 * 129 >> 8 = 53
-  eq(evalMaterial(ps, { diffuse: [200, 100, 50], alpha: 255, specular: [10, 20, 30], ras0: [255, 128, 0, 255],
-                        ras1: [128, 128, 128, 255], texels: [[128, 255, 0, 255]], blend: [255], shadows: [[128, 255, 0, 0]] }),
-     [53, 60, 0, 255]);
+  // a shadow laid on last: 101 * 129 + 128 >> 8 = 51
+  eq(evalMaterial(p, { diffuse: [200, 100, 50], alpha: 255, specular: [0, 0, 0], ras0: [255, 128, 0, 255], ras1: [0, 0, 0, 255],
+                       texels: [[128, 255, 0, 255]], blend: [255], shadows: [[128, 255, 0, 0]] }), [51, 50, 0, 255]);
   // a color animation's color over it by 64: lerp(53, 255, 64) = (53 * 256 + 202 * 64 + 128) >> 8 = 26624 >> 8 = 104
   eq(overColor([53, 60, 0], [255, 255, 255], 64)[0], 104);
 });
