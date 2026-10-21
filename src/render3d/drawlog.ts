@@ -131,10 +131,15 @@ export function imageId(a: Archive, img: Image): string | null {
   return gxHash(a.u8.subarray(img.dataOff, img.dataOff + size));
 }
 
-/** a palette's identity: as many entries as the game loads (whole 16s) and the format reads */
+/** the bytes of a palette its identity is made over: its entries in whole 16s, as many as the format reads */
+export function tlutBytes(t: Tlut, format: number): number {
+  return Math.min(Math.ceil(t.count / 16) * 16, TLUT_ENTRIES[format] ?? 256) * 2;
+}
+
+/** a palette's identity: its entries (whole 16s) as far as the format reads (the game may load more, which the
+ *  decoder hashes in steps of 32 bytes) */
 export function tlutId(a: Archive, t: Tlut, format: number): string | null {
-  const need = TLUT_ENTRIES[format] ?? 256;
-  const n = Math.min(Math.ceil(t.count / 16) * 16, need) * 2;
+  const n = tlutBytes(t, format);
   if (t.dataOff + n > a.u8.length) return null;
   return gxHash(a.u8.subarray(t.dataOff, t.dataOff + n));
 }
@@ -219,6 +224,7 @@ export class DrawLog {
   private inputs = probes();
   private prims = new WeakMap<PObj, [string, number, string][]>();
   private images = new WeakMap<Image, string | null>();
+  private spriteIds = new WeakMap<object, string | null>();
   private restore: (() => void) | null = null;
 
   constructor(private r: Renderer) {}
@@ -456,7 +462,10 @@ export class DrawLog {
       lod_bias: o.lod ? rnd(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
       mtx: [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map((v) => rnd(v))), blending: rnd(t.blending),
     };
-    if (t.tlut) rec.tlut = tlutId(a, t.tlut, t.image.format);
+    if (t.tlut) {
+      rec.tlut = tlutId(a, t.tlut, t.image.format);
+      rec.tlut_bytes = tlutBytes(t.tlut, t.image.format);
+    }
     return rec;
   }
 
@@ -514,8 +523,13 @@ export class DrawLog {
           x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
         }
       }
+      // (the sprite's identity as the game's texture's: its image's bytes in the effect file)
+      const src = b.sprite?.src;
+      let id = src ? this.spriteIds.get(src) : undefined;
+      if (src && id === undefined) this.spriteIds.set(src, (id = imageId(src.archive, src.image)));
       this.add({
         kind: "particles", quads: b.count, sprite: b.sprite ? { key: b.sprite.key, w: b.sprite.w, h: b.sprite.h } : null,
+        ...(id ? { tex_id: id } : {}),
         blend: { on: true, src: "srcalpha", dst: b.additive ? "one" : "invsrcalpha", sub: false, logic: null },
         z: { test: true, func: b.nozcomp ? "always" : "lequal", write: b.zwrite }, near: b.near,
         overlay: s.overlayVP !== null,
@@ -525,7 +539,8 @@ export class DrawLog {
   }
 }
 
-interface Batch { sprite: { key: string; w: number; h: number } | null; additive: boolean; near: boolean; zwrite: boolean;
+interface Batch { sprite: { key: string; w: number; h: number; src?: { archive: Archive; image: Image } } | null; additive: boolean;
+                  near: boolean; zwrite: boolean;
                   nozcomp: boolean; first: number; count: number }
 
 // ---------------------------------------------------------------- the debug handle's entry

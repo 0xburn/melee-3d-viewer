@@ -11,6 +11,9 @@
 import { Archive, Image, decodeImage, parseArchive, ptr } from "../hsd";
 import { Prop, effectOverAll } from "../prop";
 
+/** a particle texture decoded (RGBA8), and where its bytes are in the file (the draw log's identity of it) */
+export interface Sprite { key: string; w: number; h: number; rgba: Uint8Array; src?: { archive: Archive; image: Image } }
+
 /** a generator's description (HSD_PSCmdList) */
 export interface CmdList {
   type: number;
@@ -44,7 +47,7 @@ export interface TexGroup {
   tlutFmt: number;
   palOffsets: number[];
   /** each image as a particle's sprite, once asked for (EffectBank.image) */
-  sprites?: { key: string; w: number; h: number; rgba: Uint8Array }[];
+  sprites?: Sprite[];
 }
 
 export interface ModelDesc {
@@ -187,7 +190,7 @@ export class EffectBank {
   }
 
   /** a particle texture as RGBA8, decoded once */
-  image(group: number, pose: number): { key: string; w: number; h: number; rgba: Uint8Array } | null {
+  image(group: number, pose: number): Sprite | null {
     const tg = this.texGroups[group];
     if (!tg || !tg.offsets.length) return null;
     const i = Math.min(pose, tg.offsets.length - 1);
@@ -204,7 +207,10 @@ export class EffectBank {
     // (the same object each time: the particles' batches compare them)
     const made = (tg.sprites ??= [])[i];
     if (made && made.rgba === px) return made;
-    return (tg.sprites[i] = { key: `bank${this.id}:${group}:${i}`, w: tg.width, h: tg.height, rgba: px });
+    // (`src`: where its bytes are in the file, for the draw log's identity of it)
+    return (tg.sprites[i] = { key: `bank${this.id}:${group}:${i}`, w: tg.width, h: tg.height, rgba: px,
+                              src: { archive: this.archive, image: { offset: tg.offsets[i], dataOff: tg.offsets[i], width: tg.width,
+                                                                     height: tg.height, format: tg.fmt } } });
   }
 
   private ptcl = new Map<number, PtclKey[]>();
