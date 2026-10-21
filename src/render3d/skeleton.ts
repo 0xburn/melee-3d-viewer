@@ -9,7 +9,7 @@ import {
   aobjFrame, decodePObj, sample, splineAt,
 } from "./hsd";
 import { Mat, ident, invert, mul, srt } from "./math";
-import { HSD_MtxInverseConcat, HSD_MtxSRT, PSMTXConcat, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
+import { HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, concatGL, madd, mtxFromGL, mtxToGL } from "./gxmath";
 
 /** what a texture animation can change, per TObj */
 export interface TexState {
@@ -119,16 +119,19 @@ export function setBillboardView(view: Float32Array) {
  *  scale and place kept, and carried back */
 const nodeX = new Float32Array(12), nodeM = new Float32Array(12), nodeE = new Float32Array(12);
 
-/** the node matrix of an envelope mesh on joint m whose skeleton joint (HSD_JObjFindSkeleton) is x, another joint
- *  (_HSD_mkEnvelopeModelNodeMtx): inverse(x's matrix) times m's - x's matrix taken with its envelope matrix first
- *  when x is a SKELETON joint (`envX`), alone when it is the SKELETON_ROOT (null) - HSD_MtxInverseConcat, in
- *  float32. Column-major 4 x 4s at offsets; into out (16) */
+/** the node matrix of an envelope mesh on joint m whose skeleton joint (HSD_JObjFindSkeleton) is x, another joint:
+ *  x's matrix - taken with its envelope matrix when x is a SKELETON joint (`envX`), alone when it is the
+ *  SKELETON_ROOT (null) - times the inverse of m's, in float32 (PSMTXConcat, PSMTXInverse). This is the order the
+ *  game's draws show in its recordings; read literally, _HSD_mkEnvelopeModelNodeMtx's HSD_MtxInverseConcat(x, m)
+ *  would be the other one (inverse(x) times m), and the recordings say it is not. Column-major 4 x 4s at offsets;
+ *  into out (16) */
 export function envelopeNodeMtx(out: Float32Array, wx: Float32Array, xo: number, wm: Float32Array, mo: number,
                                 envX: Float32Array | null): Float32Array {
   mtxFromGL(wx, nodeX, xo);
   if (envX) { mtxFromGL(envX, nodeE, 0); PSMTXConcat(nodeX, nodeE, nodeX); }
-  mtxFromGL(wm, nodeM, mo);
-  HSD_MtxInverseConcat(nodeX, nodeM, nodeM);
+  mtxFromGL(wm, nodeE, mo);
+  if (!PSMTXInverse(nodeE, nodeM)) PSMTXIdentity(nodeM);
+  PSMTXConcat(nodeX, nodeM, nodeM);
   return mtxToGL(nodeM, out);
 }
 
@@ -431,6 +434,10 @@ export class Skeleton {
       let ps: Float32Array | null = null;
       if (p >= 0) { if (this.hasScl[p]) { tmpRS[0] = A[p * 3]; tmpRS[1] = A[p * 3 + 1]; tmpRS[2] = A[p * 3 + 2]; ps = tmpRS; } }
       else if (rs) { tmpRS[0] = rs[0]; tmpRS[1] = rs[1]; tmpRS[2] = rs[2]; ps = tmpRS; }
+      // (a parent scale with a 0 in it - or one not a number - would make HSD_MtxSRT's 1.0 / scale infinite and
+      // the joint NaN; the game's draws in its recordings have no such joints, so the turn is made without the
+      // parent's scale taken out, as for a joint without one)
+      const psOk = !!ps && ps[0] !== 0 && ps[1] !== 0 && ps[2] !== 0 && Number.isFinite(ps[0] + ps[1] + ps[2]);
       if (this.flags[i] & JOBJ.CLASSICAL_SCALE) {
         if (ps) { A[r] = ps[0]; A[r + 1] = ps[1]; A[r + 2] = ps[2]; }
         this.hasScl[i] = ps ? 1 : 0;
@@ -440,7 +447,7 @@ export class Skeleton {
         this.hasScl[i] = 1;
       }
       for (let k = 0; k < 3; k++) { tmpS3[k] = Sc[r + k]; tmpR3[k] = R[r + k]; tmpT3[k] = T[r + k]; }
-      HSD_MtxSRT(L, tmpS3, tmpR3, tmpT3, ps);
+      HSD_MtxSRT(L, tmpS3, tmpR3, tmpT3, psOk ? ps : null);
       const o = i * 16;
       if (p >= 0) { mtxFromGL(W, P, p * 16); PSMTXConcat(P, L, L); }
       else if (parentWorld) { mtxFromGL(parentWorld, P, 0); PSMTXConcat(P, L, L); }

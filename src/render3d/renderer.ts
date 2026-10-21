@@ -1758,6 +1758,8 @@ void main() {
                                            M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6],
                                            M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10]));
     }
+    // (a matrix that is not all numbers is drawn as GX would draw it: never culled - the plane tests are false for NaN)
+    for (let k = 0; k < n * 4; k++) if (!Number.isFinite(W[k])) return false;
     for (let q = 0; q < 24; q += 4) {
       let out = true;
       for (let k = 0; k < n && out; k++) {
