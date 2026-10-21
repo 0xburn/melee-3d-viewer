@@ -31,17 +31,17 @@ export function hsdFloat(state: number): number {
   return (state >>> 16) / 65536;
 }
 
-/** the random numbers the particles draw. With the game's own state for the
- *  frame (set(), from a viewer track's "rng") they are the game's, draw for
- *  draw; without one (free()), a seeded stand-in stream of its own, so a
- *  moment still looks the same each time it is played. */
+/** the random numbers the particles draw: one stream, the game's (HSD_Randf: state * 214013 + 2531011, its
+ *  high 16 bits over 65536). With the game's own state for the frame (set(), from a viewer track's "rng") they
+ *  are the game's, draw for draw; without one (free()), the same stream from a seed of its own, so a moment
+ *  still looks the same each time it is played. */
 export class Rng {
   /** the game's state, and whether the draws are from it */
   private h = 0;
   private game = false;
   constructor(private s = 0x1234567) {}
   /** the stand-in stream's seed */
-  seed(v: number) { this.s = (v | 0) || 1; }
+  seed(v: number) { this.s = v >>> 0; }
   /** draw from the game's state from here on */
   set(state: number) { this.h = state >>> 0; this.game = true; if (this.trace) this.trace.push(9, 0, -1, this.h); }
   /** back to the stand-in stream */
@@ -65,10 +65,8 @@ export class Rng {
       if (this.trace) this.trace.push(this.phase, this.kind, this.cmd, this.h);
       return hsdFloat(this.h);
     }
-    let x = this.s;
-    x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
-    this.s = x | 0;
-    return ((x >>> 0) % 0x1000000) / 0x1000000;
+    this.s = hsdNext(this.s);
+    return hsdFloat(this.s);
   }
 }
 
