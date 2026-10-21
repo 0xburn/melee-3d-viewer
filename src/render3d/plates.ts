@@ -60,11 +60,21 @@ const memo = new WeakMap<ArrayBuffer, PlateFont | null>();
 export function plateFontFromDol(buf: ArrayBuffer): PlateFont | null {
   if (memo.has(buf)) return memo.get(buf)!;
   let font: PlateFont | null = null;
-  try {
-    const common = parseSisCommon(textFontFromDol(buf));
-    if (common) font = { common, pairs: pairTable(common), atlas: null };
-  } catch { /* not the version the addresses are for: the canvas letters */ }
+  try { font = plateFontFromText(textFontFromDol(buf)); } catch { /* not the version the addresses are for: the canvas letters */ }
   memo.set(buf, font);
+  return font;
+}
+
+/** The font from the executable's text tables as textFontFromDol made them (files.ts keeps those in the
+ *  browser, so the executable is not read again), made once per buffer; null when they are no font. */
+export function plateFontFromText(text: ArrayBuffer): PlateFont | null {
+  if (memo.has(text)) return memo.get(text)!;
+  let font: PlateFont | null = null;
+  try {
+    const common = parseSisCommon(text);
+    if (common) font = { common, pairs: pairTable(common), atlas: null };
+  } catch { /* the canvas letters */ }
+  memo.set(text, font);
   return font;
 }
 

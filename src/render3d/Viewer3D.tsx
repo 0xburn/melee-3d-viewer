@@ -1383,6 +1383,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (p.nanaState) actors.push({ st: p.nanaState, inputs: p.nanaInputs ?? undefined, costume: s?.costumeIndex ?? 0, player: p.playerIndex, nana: true });
     }
     if (!actors.length) return;
+    mark("drawStarted");
 
     // the camera follows the fighters, as the game's and the SVG viewer's do:
     // the ones on screen (not one waiting to come back off the top), and
@@ -2132,6 +2133,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     r.finish();
     prof.mark("rest");
     const t1 = performance.now();
+    mark("frameDrawn");
     frames++;
     lastDraws = r.draws;
     lastCulled = r.culled;
