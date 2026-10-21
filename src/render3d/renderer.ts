@@ -195,8 +195,9 @@ uniform float uPointSize; // a point list's points, pixels across (GX's point si
 ${MAT_DECL}
 // the lights (lightset.ts): the ambient, then each light's place (w 1) or
 // the way to it (w 0), axis, color, angle attenuation (w: 1 diffuse, 2
-// specular) and distance attenuation
+// specular, 4 alpha) and distance attenuation
 uniform vec3 uAmbLight;
+uniform float uAmbA; // the ambient light's alpha when it has LOBJ_ALPHA, else -1
 uniform int uNumLights;
 uniform vec4 uLPos[8]; uniform vec4 uLAxis[8]; uniform vec4 uLCol[8]; uniform vec4 uLA[8]; uniform vec4 uLK[8];
 uniform vec3 uEye;    // the camera, world space
@@ -275,25 +276,55 @@ vec3 chanOut(ivec3 acc) { ivec3 l = clamp(acc, 0, 255); return vec3((255 * (l + 
 // infinite one 2^20 out - its way to the vertex normalized, its spot attenuation by that way and its axis, its
 // distance attenuation by the distance)
 vec3 toLightV(vec3 p, vec3 V, out float dist) { vec3 v = p - V; dist = length(v); return v / max(dist, 1e-30); }
+// (a diffuse light's angle and distance attenuation times the normal's turn to it)
+float diffuseTurn(int k, vec3 V, vec3 N) {
+  vec4 a = uLA[k];
+  float dist;
+  vec3 ld = toLightV(uLPosV[k].xyz, V, dist);
+  float c = max(dot(ld, uLAxisV[k].xyz), 0.0);
+  vec3 kk = uLK[k].xyz;
+  float att = max(a.x + a.y * c + a.z * c * c, 0.0) / (kk.x + kk.y * dist + kk.z * dist * dist);
+  return att * max(dot(N, ld), 0.0);
+}
 vec3 diffuseLights(vec3 V, vec3 N) {
   ivec3 L = (bytes3(uAmbLight) * bytes3(uMatF[1].rgb)) / 255;
   bool first = firstLightOnly();
   for (int k = 0; k < 8; k++) {
     if (k >= uNumLights || (first && k > 0)) break;
-    vec4 a = uLA[k];
-    if ((int(a.w) & 1) == 0 || uOverMode == 2) continue;
-    float dist;
-    vec3 ld = toLightV(uLPosV[k].xyz, V, dist);
-    float c = max(dot(ld, uLAxisV[k].xyz), 0.0);
-    vec3 kk = uLK[k].xyz;
-    float att = max(a.x + a.y * c + a.z * c * c, 0.0) / (kk.x + kk.y * dist + kk.z * dist * dist);
-    L += term(att * max(dot(N, ld), 0.0), uLCol[k].rgb);
+    if ((int(uLA[k].w) & 1) == 0 || uOverMode == 2) continue;
+    L += term(diffuseTurn(k, V, N), uLCol[k].rgb);
   }
   float od;
   vec3 ol = toLightV(uOverPosV, V, od);
   if (uOverMode == 2) L += term(max(dot(N, ol), 0.0), uOverLight.rgb);
   else if (uOverMode == 1 && !first) L += term(max(dot(N, ol), 0.0), vec3(1.0));
   return chanOut(L);
+}
+
+// the alpha channel (gx.ts alphaChannel; HSD_SetupChannelMode's lit case, HSD_State_80405A38_90): lit when the
+// ambient light has LOBJ_ALPHA (its alpha the ambient register's) or a light is in HSD_LObjGetLightMaskAlpha (w 4,
+// ambient alpha 0) - each such light's alpha by its attenuation and turn, rounded, as the color's terms, the sum
+// clamped, times the register's 255 - else unlit (HSD_State_80405A38_C0): 255
+// (a color animation's added light has LOBJ_ALPHA, ftCo_8009F5AC, and is in the mask with the set's own; while it
+// lights alone, or for a see-through material whose channels are set with the ambient and x588 alone, x588 has it
+// cleared, ftCo_8009F75C(fp, false): the mask is empty)
+float alphaLights(vec3 V, vec3 N) {
+  bool lit = uAmbA >= 0.0;
+  int A = lit ? bytes3(vec3(uAmbA)).x : 0;
+  bool own = uOverMode == 0 || (uOverMode == 1 && !firstLightOnly());
+  for (int k = 0; k < 8; k++) {
+    if (k >= uNumLights || !own) break;
+    if ((int(uLA[k].w) & 4) == 0) continue;
+    lit = true;
+    A += term(diffuseTurn(k, V, N), vec3(uLCol[k].a)).x;
+  }
+  if (own && uOverMode == 1) {
+    float od;
+    vec3 ol = toLightV(uOverPosV, V, od);
+    lit = true;
+    A += term(max(dot(N, ol), 0.0), vec3(uOverLight.a)).x;
+  }
+  return lit ? chanOut(ivec3(A)).x : 1.0;
 }
 
 // the specular channel: each specular light aimed along the half-way vector
@@ -334,15 +365,12 @@ void main() {
   ivec4 m0 = uMatI[0];
   vRas0 = vec4(1.0);
   if (m0.y == 1) vRas0 = aClr;
-  else if (m0.y == 2) vRas0 = vec4(diffuseLights(pv, nv), 1.0);
+  else if (m0.y == 2) vRas0 = vec4(diffuseLights(pv, nv), alphaLights(pv, nv));
   vRas1 = (m0.z & 4) != 0 ? specularLights(pv, nv) : vec3(0.0);
-  // (the added color is the light's times the rasterized alpha, GX_CC_RASA: a lit material's alpha channel is
-  // lit by the added light alone (LOBJ_ALPHA); an unlit one's is its vertex alpha or its material's)
-  // (the alpha channel's byte: the light's alpha by the turn, through the channel; the fragment shader adds
-  // the light's color times it, ftMaterial_800BF534's stage)
-  float od;
-  vec3 ol = toLightV(uOverPosV, pv, od);
-  float rasA = m0.y == 2 ? chanOut(term(max(dot(nv, ol), 0.0), vec3(uOverLight.a))).x : m0.y == 1 ? aClr.a : uMatF[0].a;
+  // (the added color is the light's times the rasterized alpha, GX_CC_RASA: a lit material's alpha channel -
+  // the added light's alpha by the turn with the set's alpha lights', alphaLights; an unlit one's is its vertex
+  // alpha or its material's; the fragment shader adds the light's color times it, ftMaterial_800BF534's stage)
+  float rasA = m0.y == 2 ? vRas0.a : m0.y == 1 ? aClr.a : uMatF[0].a;
   vOverA = uOverMode == 1 ? rasA : -1.0;
   // (and that lit alpha is the rasterized alpha the material's alpha stage takes, lerp(0, alpha, ras.a), as it
   // is the color's: while the light adds, a lit material's alpha is its alpha times the light's alpha by the turn)
@@ -516,7 +544,7 @@ export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS, TEV_GLSL, TEV_PROG_GL
 // the model programs' attribute slots (the meshes' vertex arrays serve both),
 // the uniforms looked up once they are linked, and the particles' slots
 const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
-const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uNumLights", "uLPos", "uLAxis",
+const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uAmbA", "uNumLights", "uLPos", "uLAxis",
                   "uLCol", "uLA", "uLK", "uEye", "uNrm", "uLPosV", "uLAxisV", "uLSpecV", "uOverPosV", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
                   "uFogI", "uFogF", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
@@ -1568,6 +1596,7 @@ void main() {
     const gl = this.gl;
     this.litVersion.set(p, l.version);
     gl.uniform3fv(loc.uAmbLight, l.ambient);
+    gl.uniform1f(loc.uAmbA, l.ambientAlpha ?? -1);
     gl.uniform1i(loc.uNumLights, l.n);
     gl.uniform4fv(loc.uLPos, l.pos);
     gl.uniform4fv(loc.uLAxis, l.axis);
