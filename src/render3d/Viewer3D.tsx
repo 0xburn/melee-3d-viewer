@@ -1924,8 +1924,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (st?.shyGuy) drawShyGuys(r, st.shyGuy, frame.items ?? [], fno);
     prof.mark("fighters2");
     let projectiles = 0;
+    // (a chain's item is drawn as its own model too - the hookshot in Link's hand - its links from "lm" below)
     for (const it of layersOff.items ? [] : frame.items ?? []) {
-      if (trackChains.has(it.spawnId)) continue;
       if (drawArticleTracked(r, data, fs, it, fno, jointOf, partJoint, turnOf, heldShake, itemPose)) projectiles++;
     }
     // one Yoshi laid in an egg: hidden, the egg (his articles' slot 3) worn
