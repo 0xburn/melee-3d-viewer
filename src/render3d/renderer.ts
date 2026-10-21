@@ -882,6 +882,8 @@ export class Renderer {
     pend?: WebGLTexture; pendFrame?: number;
     /** the frame the shown picture was settled for (liveAdvance) */
     shownFor?: number;
+    /** the frame the screen was blacked for (liveAdvance): its first drawing's copy is shown from its second */
+    jumpedAt?: number;
   }>();
 
   /** show this picture where the file has the image (a render target), from now on */
@@ -937,14 +939,19 @@ export class Renderer {
    *  game copies the picture after the screen is drawn - and never the one made on this frame, however many times
    *  this frame is drawn. Call this before drawing frame `frame` with `shows` for whether the screen shows the match:
    *  the copy of the frame before is promoted, a redraw leaves what is shown as it is, and a frame that is not the
-   *  next (the first, a jump) has the screen black. */
-  liveAdvance(image: Image, frame: number, shows: boolean, w: number, h: number) {
+   *  next (the first, a jump) has the screen black while this frame is first drawn, and true is returned: the frame is
+   *  to be drawn again, the copy of its first drawing (made at its end) then shown, so the picture is the same
+   *  whatever the number of draws that follow. */
+  liveAdvance(image: Image, frame: number, shows: boolean, w: number, h: number): boolean {
     const l = this.live.get(image);
-    if (!l?.tex || !shows || l.shownFor === frame || l.pendFrame === frame) return;
+    if (!l?.tex || !shows || l.shownFor === frame || l.pendFrame === frame) return false;
     l.shownFor = frame;
+    let jump = false;
     if (l.pend && l.pendFrame === frame - 1) {
       [l.tex, l.pend] = [l.pend, l.tex];
     } else {
+      jump = true;
+      l.jumpedAt = frame;
       const gl = this.gl, t = this.targetOf(l, l.tex, w, h);
       gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
       gl.viewport(0, 0, w, h);
@@ -956,6 +963,7 @@ export class Renderer {
     this.bound.fill(null);
     this.imageEpoch++;
     this.dirty();
+    return jump;
   }
 
   /** A part of the picture drawn so far into a live image's texture (w x
@@ -1020,6 +1028,12 @@ export class Renderer {
     gl.enable(gl.DEPTH_TEST);
     gl.useProgram(this.prog);
     this.bound.fill(null);
+    // (the first drawing of a frame the screen was blacked for: its copy is what the second shows)
+    if (frame !== undefined && l.jumpedAt === frame && l.pend) {
+      [l.tex, l.pend] = [l.pend, l.tex];
+      l.jumpedAt = undefined;
+      this.imageEpoch++;
+    }
     this.dirty();
   }
   private cap: { prog: WebGLProgram; fbo: WebGLFramebuffer; tex: WebGLTexture; w: number; h: number;

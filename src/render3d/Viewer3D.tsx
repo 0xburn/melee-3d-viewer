@@ -1379,7 +1379,14 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     schedule();
   });
 
+  // (Stadium's screen, when the frame has no copy of the frame before to show: drawn a second time, with its own copy on the screen)
+  let screenAgain = false;
   const draw = () => {
+    screenAgain = false;
+    drawPass();
+    if (screenAgain) { screenAgain = false; drawPass(); }
+  };
+  const drawPass = () => {
     const data = rawData();
     const fno = benchFrame ?? replayStore.frame;
     const ghosts = rawGhosts();
@@ -1474,7 +1481,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         scene.screen.draw(fno);
         r.liveImage(st.screen.image, scene.screen.canvas, scene.screen.version);
         // (the match's copy is the frame before's, whatever the number of draws of this frame)
-        r.liveAdvance(st.screen.image, fno, scene.screen.mode === 7 || scene.screen.mode === 8, scene.screen.size[0], scene.screen.size[1]);
+        if (r.liveAdvance(st.screen.image, fno, scene.screen.mode === 7 || scene.screen.mode === 8, scene.screen.size[0], scene.screen.size[1])) screenAgain = true;
         // (a copy of the match is shown in the screen's constant green, the rest in its vertex colors)
         const m = scene.screen.mode;
         for (const s of st.setScreenConstant(m === 7 || m === 8, scene.screen.tint)) r.forgetMaterial(s);
