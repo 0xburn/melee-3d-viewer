@@ -149,8 +149,11 @@ export interface Generator {
   radius: number; angle: number; random: number;
   count: number;
   aux: number[];
-  /** where it follows a joint: a function giving that joint's world matrix */
-  follow: (() => Float32Array | null) | null;
+  /** where it follows a joint: a function giving that joint's world matrix (handed the generator itself, so
+   *  what it reads is the generator's own and stays so in a copy of the world) */
+  follow: ((g: Generator) => Float32Array | null) | null;
+  /** the joint a model's key generator last found (FxWorld.keyJoint), kept once the model has run out */
+  keptJoint?: Float32Array | null;
   /** the turn of the joint it was made on, which its emission takes (a
    *  stage's, hsd_8039EFAC's type 0x400): row-major 3x3, or none */
   rot?: number[] | null;
@@ -359,7 +362,7 @@ export class ParticleSystem {
 
   private follow(g: Generator) {
     if (!g.follow) return;
-    const m = g.follow();
+    const m = g.follow(g);
     if (!m) return;
     if (g.srt && g.srt.follow) { g.srt.tx = m[12]; g.srt.ty = m[13]; g.srt.tz = m[14]; }
     else if (g.type & 0x200) { g.px = m[12]; g.py = m[13]; g.pz = m[14]; }
@@ -607,7 +610,7 @@ export class ParticleSystem {
     // (made on a joint: the joint's turn, then the frame along the velocity)
     let r = g.rot;
     if (!r && g.follow && (g.type & 0x500) === 0x500 && !(g.kind & 0x30000)) {
-      const w = g.follow();
+      const w = g.follow(g);
       if (w) r = turnOf(w);
     }
     if (r && !(g.kind & 0x30000)) {

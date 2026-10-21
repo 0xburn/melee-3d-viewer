@@ -23,6 +23,9 @@
  *   ["fd", f, phase, r, g, b, frames]          Final Destination's
  *   ["hook", f, port, sub, tip_x, tip_y, x1, y1, ...]   a hookshot's (or a
  *       grapple beam's) tip and links, every frame it is out
+ *   ["hookon", f, port, sub, on0, on1, ...]    for each point of that frame's
+ *       "hook", whether its link is up (ItemLink x2C_b0: it_802A24A0 draws a
+ *       link only while it is); without it every link is drawn
  *   ["irot", f, spawn_id, rx, ry, rz]           a thrown item's turn
  *   ["ij", f, spawn_id, joint, ox, oy, oz, m00, m01, m02, m10, ..., m22]
  *       an item's joint something is made on (a "gen" or an "fxp" names it:

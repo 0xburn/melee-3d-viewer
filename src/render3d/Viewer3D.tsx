@@ -44,7 +44,7 @@ import { GuardFrame, guardTilt } from "./guard";
 import { ENTRY, ENTRY_END, ENTRY_START, entryPose, standScale } from "./entry";
 import { copiesFromReplay, HAT_JOINT, KIRBY, KIRBY_ITEMS, KirbyCopy, KirbyHat, poseSkin, yoshiHatAnim } from "./kirby";
 import { onAngelPlatform, runNumber, shineAt, SHY_GUY } from "~/common/effects";
-import { ActorFrame, FxWorld, type LearnedFx, type LearnedPiece, NO_WORLD, stepThrough } from "./fx/world";
+import { ActorFrame, FxWorld, type FxSnapshot, type LearnedFx, type LearnedPiece, NO_WORLD, stepThrough } from "./fx/world";
 import { buildParticles } from "./fx/draw";
 import { srtApply } from "./fx/particles";
 import { Before, hitSparks, powershielded } from "./fx/contact";
@@ -1639,7 +1639,11 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (!fxw.colTables && ek.colAnims) fxw.colTables = ek.colAnims;
       // (a skip or a jump steps the frames between, posing the fighters
       // for each: posed again for this one, to be drawn)
-      if (advance(fxw, data, fs, fno, frameActors)) for (const { f: fi, a } of posed) poseActor(fi, a);
+      // (checkpoints ahead first, in a little of the frame's time - not while the frame is timed - the stage and the
+      // fighters posed for this frame again after)
+      const filled = benchFrame === null && fillChecks(fxw, data, fs, FILL_MS);
+      if (filled && st && stageInWorld(tr)) st.update(fno, stageFrame(data, fno));
+      if (advance(fxw, data, fs, fno, frameActors) || filled) for (const { f: fi, a } of posed) poseActor(fi, a);
       // (the swinging chains are stepped to this frame now: those with them posed again)
       for (const { f: fi, a } of posed) {
         const key = actorKey(a.player, a.nana);
@@ -1938,7 +1942,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const own = c.itemType === undefined ? undefined
           : (frame.items ?? []).find((it) => it.owner === a.player && c.itemType === it.typeId);
         const item = own ? { state: own.state, age: itemLife(data, fno, own) } : null;
-        if (v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item, pass);
+        const on = trNow?.has("hookon") ? trNow.exact("hookon", `${a.player}:${a.nana ? 1 : 0}`, fno - 123) : null;
+        if (v && v.length >= 2) drawChain(r, f, a.st.internalCharacterId, v.map(Number), item, pass, on ? on.map(Number) : null);
         // its glow, held at the arm the whole time, fired or not (Item_8026AB54
         // with ThrowN's number, which ftLib_80086630 takes as the fighter's own
         // part slot, not through the named-part table: Samus's joint 51, her cannon)
@@ -2624,25 +2629,109 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   // a small skip, rebuilt from a little before after a jump. True when it
   // posed the fighters for frames before this one (they share their models
   // with this frame's: posed again before they are drawn)
-  const advance = (w: FxWorld, data: ReplayData, fs: Map<string, Fighter>, f: number, now: ActorFrame[]): boolean => {
-    if (f === w.frame) return false;
-    const jump = !(f - w.frame > 0 && f - w.frame <= 8);
-    if (jump) fxPercent.clear();
+  // The effect world after a jump made exactly as playing to the frame makes it: the world is the same frame for
+  // frame from the same state (the track's events and random states, the replay's poses), so it is kept as it
+  // stood every CHECK_EVERY frames (FxWorld.save), as playing passes them and, in the time a frame leaves,
+  // ahead to the replay's end; a jump loads the nearest one at or before the frame and steps on from there.
+  // Only while none is within CATCH_UP frames (a far jump soon after opening) is it warmed up from WARM frames
+  // back as before, and made exact on the first frame drawn after one is
+  const CHECK_EVERY = 240, CATCH_UP = 1200, FILL_MS = 2;
+  // (with each the hit sparks' record of the fighters' percents, which the world's steps read and keep: fxPercent)
+  type Check = { frame: number; snap: FxSnapshot; percent: [string, Before][] };
+  type Checks = { snaps: Check[]; key: unknown[]; exact: boolean; bytes: number; ahead?: Check };
+  const saveCheck = (w: FxWorld): Check => {
+    const snap = w.save();
+    return { frame: snap.frame, snap, percent: [...fxPercent].map(([k, v]) => [k, { ...v }]) };
+  };
+  const loadCheck = (w: FxWorld, c: Check) => {
+    w.load(c.snap);
+    fxPercent.clear();
+    for (const [k, v] of c.percent) fxPercent.set(k, { ...v });
+  };
+  const checksOf = new WeakMap<FxWorld, Checks>();
+  /** the world's checkpoints, made again when what its steps read changes (files and tables that came late) */
+  const checks = (w: FxWorld): Checks => {
+    const key = [w.colTables, w.ko, w.banks.size];
+    let c = checksOf.get(w);
+    if (!c || c.key.some((k, i) => k !== key[i])) {
+      // (the first: the world as made, before any frame)
+      const now = saveCheck(w);
+      w.reset(0);
+      fxPercent.clear();
+      const first = saveCheck(w);
+      loadCheck(w, now);
+      checksOf.set(w, (c = { snaps: [first], key, exact: false, bytes: first.snap.bytes }));
+    }
+    return c;
+  };
+  const keepCheck = (c: Checks, w: FxWorld) => {
+    if (w.frame < 0 || w.frame % CHECK_EVERY !== 0 || c.snaps.some((x) => x.frame === w.frame)) return;
+    const snap = saveCheck(w);
+    c.snaps.push(snap);
+    c.snaps.sort((x, y) => x.frame - y.frame);
+    c.bytes += snap.snap.bytes;
+  };
+  /** one frame of the world, the stage and the fighters as they were on it (the dynamics too, unless ahead) */
+  const fxStepper = (w: FxWorld, data: ReplayData, fs: Map<string, Fighter>, f: number, now: ActorFrame[] | null, dyn: boolean) => {
     // (the stage as it was on each frame stepped, when its generators are the effect world's: they go
     // along its joints. The frame drawn is posed last, as the draw left it)
     const st = stageInWorld(viewerTrack()) ? stage() : null;
-    const pose = (g: number) => {
-      if (!st || (g === f && !posedOther)) return;
-      st.update(g, stageFrame(data, g));
-      posedOther = g !== f;
-    };
     let posedOther = false;
-    const one = (g: number) => {
-      const actors = g === f ? now : actorsAt(data, fs, g);
-      w.step(g, actors);
-      dynStep(g, actors, data);
+    const pose = (g: number) => {
+      if (!st || (g === f && now && !posedOther)) return;
+      st.update(g, stageFrame(data, g));
+      posedOther = g !== f || !now;
     };
-    return stepThrough(w, f, one, pose, st ? { frames: (g) => w.stageFrames(g), start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
+    const one = (g: number) => {
+      const actors = g === f && now ? now : actorsAt(data, fs, g);
+      w.step(g, actors);
+      if (dyn) dynStep(g, actors, data);
+    };
+    return { st, pose, one };
+  };
+  const advance = (w: FxWorld, data: ReplayData, fs: Map<string, Fighter>, f: number, now: ActorFrame[]): boolean => {
+    const c = checks(w);
+    const small = f - w.frame > 0 && f - w.frame <= 8;
+    let from = -1;
+    for (const x of c.snaps) if (x.frame <= f && x !== c.snaps[0]) from = Math.max(from, x.frame);
+    const reach = f - Math.max(from, 0) <= CATCH_UP;
+    if (f === w.frame && (c.exact || !reach)) return false;
+    if (!small || f === w.frame) fxPercent.clear();
+    const { st, pose, one } = fxStepper(w, data, fs, f, now, true);
+    if ((!small || !c.exact) && reach) {
+      // (exactly: from the nearest checkpoint, stepped on)
+      loadCheck(w, c.snaps.find((x) => (from < 0 ? x === c.snaps[0] : x.frame === from))!);
+      for (let g = from + 1; g <= f; g++) { pose(g); one(g); keepCheck(c, w); }
+      c.exact = true;
+      return from + 1 < f;
+    }
+    if (!small) {
+      c.exact = false;
+      return stepThrough(w, f, one, pose, st ? { frames: (g) => w.stageFrames(g), start: (g) => w.stageStart(g), step: (g) => w.stepStage(g) } : undefined);
+    }
+    const stepped = stepThrough(w, f, one, pose);
+    if (c.exact) keepCheck(c, w);
+    return stepped;
+  };
+  /** checkpoints ahead of the ones playing has made, in `ms` of a frame's spare time: the world as it stands is
+   *  kept, the furthest checkpoint loaded and stepped on (the dynamics left alone), and the world put back */
+  const fillChecks = (w: FxWorld, data: ReplayData, fs: Map<string, Fighter>, ms: number) => {
+    const c = checks(w);
+    const end = data.frames.length - 1;
+    // (where the stepping ahead stopped last time: carried on from, until it reaches the end)
+    const last = c.snaps[c.snaps.length - 1];
+    const from = c.ahead && c.ahead.frame >= last.frame ? c.ahead : last;
+    if (!c.exact || Math.max(from.frame, 0) >= end) return false;
+    const keep = saveCheck(w);
+    loadCheck(w, from);
+    const { pose, one } = fxStepper(w, data, fs, Number.NaN, null, false);
+    const t0 = performance.now();
+    for (let g = Math.max(from.frame + 1, 0); g <= end && performance.now() - t0 < ms; g++) {
+      pose(g); one(g); keepCheck(c, w);
+    }
+    c.ahead = saveCheck(w);
+    loadCheck(w, keep);
+    return true;
   };
 
   // the fighters' swinging chains (dynamics.ts): stepped with the effects, a
@@ -3067,6 +3156,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     },
     /** where the drawing time went since the last ask: milliseconds a frame, by section */
     sections: () => prof.read(),
+    /** the effect world's checkpoints: how many, to which frame, their bytes (roughly), and whether the world
+     *  drawn is the exact one */
+    fxChecks: () => {
+      const c = fxw ? checksOf.get(fxw) : undefined;
+      return c ? { count: c.snaps.length, last: c.snaps[c.snaps.length - 1].frame, bytes: c.bytes, exact: c.exact } : null;
+    },
     /** each frame drawn since the last ask: [when it started (ms), how long it took, the frame] */
     frameLog: () => { const out: number[][] = []; for (let i = 0; i + 2 < frameLog.length; i += 3) out.push([frameLog[i], frameLog[i + 1], frameLog[i + 2]]); frameLog.length = 0; return out; },
     /** the drawing alone, timed: frames from..from+n-1 drawn one after another,
@@ -3564,7 +3659,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     },
     /** the particles up on the last frame drawn: bank, kind, where, size, color */
     particles: () => (fxw?.ps.particles ?? []).map((p) => ({ file: p.bank.id, kind: p.kind, x: p.px, y: p.py, z: p.pz,
-      size: p.size, a: p.prim.a, life: p.life, pose: p.pose, env: [p.env.r, p.env.g, p.env.b, p.env.a] })),
+      size: p.size, a: p.prim.a, life: p.life, pose: p.pose, env: [p.env.r, p.env.g, p.env.b, p.env.a],
+      tex: p.texGroup, cmd: p.gen?.cmdId ?? null, made: p.gen?.made ?? null,
+      srt: p.srt ? [p.srt.sx, p.srt.sy, p.srt.sz, p.srt.rx, p.srt.ry, p.srt.rz, p.srt.view ? 1 : 0] : null })),
     /** where a point of the world lands on the canvas: 0..1 from the top left */
     project: (X: number, Y: number, Z: number) => {
       const m = viewProj;
@@ -4210,14 +4307,17 @@ function linkMatrix(out: Float32Array, at: [number, number, number], dir: [numbe
 const TRSP = { opa: 1 | 4, xlu: 2 } as const;
 
 function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { state: number; age: number } | null = null,
-                   pass: "opa" | "xlu" = "opa") {
+                   pass: "opa" | "xlu" = "opa", on: number[] | null = null) {
   const c = CHAINS[char];
   if (!c) return;
   const pts: [number, number, number][] = [];
   for (let i = 0; i + 1 < v.length; i += 2) pts.push([v[i], v[i + 1], 0]);
   if (!pts.length) return;
+  // (each point's link drawn while its x2C_b0 is set - it_802A24A0 asks it - when the track says which are:
+  // "hookon", a flag for each point of "hook"; the head, HSD_GObj_JObjCallback's, always)
+  const shown = pts.map((_, i) => !on || on[i] !== 0);
   // (from the hand to the head)
-  if (c.headFirst) pts.reverse();
+  if (c.headFirst) { pts.reverse(); shown.reverse(); }
   const head = pts[pts.length - 1];
   const scale = f.modelScale;
   const linkScale = scale * (c.linkSize !== undefined ? f.article(c.art, 0)?.special?.(c.linkSize) || 1 : 1);
@@ -4230,6 +4330,7 @@ function drawChain(r: Renderer, f: Fighter, char: number, v: number[], item: { s
     r.drawSkeletonTrsp(p.skeleton, TRSP[pass]);
   };
   for (let k = 0; k + 1 < pts.length; k++) {
+    if (!shown[k]) continue;
     const prev = k > 0 ? pts[k - 1] : pts[k], next = pts[k + 1];
     draw(c.links[k % c.links.length], pts[k], [prev[0] - next[0], prev[1] - next[1], prev[2] - next[2]], linkScale,
          c.linkAnims?.[k % c.links.length]);
