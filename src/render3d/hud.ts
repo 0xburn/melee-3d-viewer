@@ -528,7 +528,9 @@ export class Hud {
         // (not for one KO'd, asleep or coming back on the angel platform: ftLib_80086ED0)
         if (!a || !(a.magnify ?? a.drawn) || !a.bone || !p.lupe || a.st.actionStateId <= 13) continue;
         const [sx, sy, w] = toScreen(viewProj, a.bone, k);
-        if (w > 0 && sx >= 320 - 320 * k && sx < 320 + 320 * k && sy >= 0 && sy < 480) continue;
+        // (Camera_80030BBC: the point in whole pixels, cut toward zero, inside the scissor)
+        const px = Math.trunc(sx), py = Math.trunc(sy);
+        if (w > 0 && px >= 320 - 320 * k && px < 320 + 320 * k && py >= 0 && py < 480) continue;
         if (w <= 0) continue;
         if (!p.pic) {
           p.pic = r.target(PIC, PIC);
