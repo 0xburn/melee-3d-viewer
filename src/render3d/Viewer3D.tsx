@@ -3587,6 +3587,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     },
     /** the stage mirror's image and matrices (Fountain's pond) */
     mirror: () => renderer?.mirrorDebug() ?? null,
+    /** the fighters' shadow pictures on the last frame drawn: per fighter, the pixels its picture holds (renderer.shadowPictures) */
+    shadowPictures: () => renderer?.shadowPictures() ?? [],
+    /** the fighters' shadow light on the last frame drawn (shadow.ts), or null: no stage, or it has no such light */
+    shadowLight: () => stage()?.playerLighting.shadowLight(replayStore.frame) ?? null,
     /** the draw log (drawlog.ts): debug only, attached by { start: true } and never otherwise */
     drawLog: (cmd: Parameters<typeof drawLogCommand>[1]) => drawLogCommand(renderer, cmd),
     /** a pixel comparison: leave these groups out of the draws from now on (null:

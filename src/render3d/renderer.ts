@@ -1509,12 +1509,44 @@ void main() {
     return t;
   }
   private shadowTargets: RenderTarget[] = [];
+  /** what each shadow picture holds now (a debug aid, and the tests'): how many of its pixels are not
+   *  white - the fighter in it - and the box they fill (x0, y0, x1, y1); an empty picture is a fighter
+   *  that was not drawn into it */
+  shadowPictures(): { dark: number; box: number[] | null }[] {
+    const gl = this.gl, out: { dark: number; box: number[] | null }[] = [];
+    const px = new Uint8Array(SHADOW_SIZE * SHADOW_SIZE * 4);
+    for (const t of this.shadowTargets) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+      gl.readPixels(0, 0, SHADOW_SIZE, SHADOW_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let dark = 0, x0 = SHADOW_SIZE, y0 = SHADOW_SIZE, x1 = -1, y1 = -1;
+      for (let i = 0; i < SHADOW_SIZE * SHADOW_SIZE; i++) {
+        if (px[i * 4] >= 250) continue;
+        const x = i % SHADOW_SIZE, y = (i / SHADOW_SIZE) | 0;
+        dark++;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      out.push({ dark, box: dark ? [x0, y0, x1, y1] : null });
+    }
+    this.bindPicture();
+    return out;
+  }
   /** draws from here on make a shadow: into `t`, cleared white, through the
    *  shadow camera, every pixel the stage's shadow intensity (0..255) as the
    *  copy keeps it (shadowGray), two pixels in from each edge
    *  (HSD_ShadowStartRender); endShadow() puts the frame back */
   beginShadow(t: RenderTarget, viewProj: Mat, view: Mat, intensity: number) {
     const gl = this.gl;
+    // The frame before's pictures are still bound to the shadow units (setShadows),
+    // and the program's shadow samplers point at them: drawing into one of them is a
+    // feedback loop, which WebGL refuses (INVALID_OPERATION: every draw is dropped,
+    // the picture stays white, and the frame has no shadows - from the second frame
+    // on). The game binds a shadow's picture only for the draws that sample it.
+    for (let k = 0; k < MAX_SHADOWS; k++) {
+      gl.activeTexture(gl.TEXTURE0 + SHADOW_UNIT + k);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    this.unit = 0;
     this.overlay(viewProj, view, t, [1, 1, 1, 1]);
     this.casting = true;
     const gray = shadowGray(intensity);
