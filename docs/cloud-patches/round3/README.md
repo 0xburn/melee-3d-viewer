@@ -1,9 +1,9 @@
 # melee-sim-light patches, round 3 (stage joints, fighter joints, the yo-yo's string)
 
-Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Four commits, one change each, as one series:
+Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Five commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0004 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0005 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -72,3 +72,14 @@ So the links that are out form one run from the ball, which is `lm`'s link 0.
 The bug was in `hook`. It left a link out only when its place was still at the origin, which is how the hookshot and the grapple mark a link that isn't out yet. A yo-yo link that is not out keeps its spawn place or the hand's (nothing moves it), so the yo-yo's `hook` line drew the string through links the game does not draw. The yo-yo's links are now told by `x2C_b0`, which is what `it_802A24A0` draws by. The hookshot and the grapple are unchanged.
 
 **Needs game data:** `hook` is locked. A visual-state recording with Ness's yo-yo out will change its `hook` digest. Check that only such recordings differ, then re-record them with `python -m tools.validation.visual_state --write`. The viewer itself no longer reads `hook`: it draws chains from `lm`.
+
+## 0005 Viewer track: Fountain of Dreams' water columns stretched to the recorded height
+
+Fountain of Dreams' stage joints got worse with `sp` (stage2 draws from 1,021 to 7,884).
+
+- **Cause.** Each side platform stands on a water column, a copy of part 4 (numbered 4 and 1004 in `sp`). The game stretches the column's root joint (`sp` joint 1) to its platform's height whenever the platform moves (`grIzumi_801CC358`'s `r29` block: scale x `0.5 f + 0.5`, scale y `f`, where `f` is the height over the column's own, clamped to 0.01). When the recording gives the platform's height, the hosted build takes it (`msl_grizumi_apply_replay_platform_height`) and returns before that block. So the column kept its first frame's stretch, `sp` wrote it, and that replaced the viewer's stretch, which follows the height correctly.
+- **Fix.** In the track build only, and only with a track on, the replay branch now sets the same stretch from the recorded height, written as the source writes it. The game sets it whenever the platform moves, from the height it moved to, so it always matches the height. Setting it every frame from the recorded height gives the same values.
+- **Production.** `.text`, `.rodata` and `.data` of `make native` are byte-identical to the build after 0004. The file still differs, because the inserted lines move later line numbers in `grizumi.c`'s debug info, and the build ID follows them.
+- Also checked: the hosted build doesn't create part 2 (the platforms' shadows, `grIzumi_801CBCE8(2)`), so `sp` writes nothing for it and the viewer keeps its own. The column copies are numbered as the viewer names them (the left one 1004, the right one 4).
+
+**Needs game data.** Check stage2 against the game's draws. A visual-state lock that digests the column's joints or the effects at its keys may change on Fountain recordings.
