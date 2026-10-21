@@ -57,8 +57,9 @@ export class FaceTextures {
       for (const tr of s.anim.aobj?.tracks ?? []) {
         const v = sample(tr.keys, f);
         if (v === null) continue;
-        if (tr.type === 1) { const im = s.anim.images[Math.round(v)]; if (im) s.ts.image = im; }
-        else if (tr.type === 10) { const tl = s.anim.tluts[Math.round(v)]; if (tl) s.ts.tlut = tl; }
+        // (cut to a whole number, as TObjUpdateFunc's casts do)
+        if (tr.type === 1) { const im = s.anim.images[Math.trunc(v)]; if (im) s.ts.image = im; }
+        else if (tr.type === 10) { const tl = s.anim.tluts[Math.trunc(v) & 0xff]; if (tl) s.ts.tlut = tl; }
       }
     });
   }

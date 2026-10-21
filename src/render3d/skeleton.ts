@@ -646,8 +646,10 @@ export function applyMatAnim(s: MatState, ma: MatAnim, frame: number, loop: bool
       const v = sample(tr.keys, t);
       if (v === null) continue;
       switch (tr.type) {
-        case 1: { const img = ta.images[Math.round(v)]; if (img) ts.image = img; break; } // TIMG
-        case 10: { const tl = ta.tluts[Math.round(v)]; if (tl) ts.tlut = tl; break; } // TCLT
+        // (the image and the palette by the value cut to a whole number, not rounded: TObjUpdateFunc's
+        // (int) and (u8) casts)
+        case 1: { const img = ta.images[Math.trunc(v)]; if (img) ts.image = img; break; } // TIMG
+        case 10: { const tl = ta.tluts[Math.trunc(v) & 0xff]; if (tl) ts.tlut = tl; break; } // TCLT
         case 2: ts.translate[0] = v; break;
         case 3: ts.translate[1] = v; break;
         case 4: ts.scale[0] = v; break;
