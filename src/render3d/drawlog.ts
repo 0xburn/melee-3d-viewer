@@ -569,6 +569,13 @@ export class DrawLog {
       : !!ol || (!!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean));
     const anySpec = !first && !(ol && !ol.adds) && !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
     const addsOn = !!ol && ol.adds && !(s.mobj.renderMode & RENDER.XLU);
+    // (the alpha channel, HSD_SetupChannelMode: lit when the ambient light has LOBJ_ALPHA - its alpha the ambient -
+    // or HSD_LObjGetLightMaskAlpha has a light: the set's with LOBJ_ALPHA (w 4), the color animation's added one
+    // (ftCo_8009F5AC); not while it lights alone or for a see-through material's channels, set with x588 without
+    // it; else unlit, 255)
+    const ambA = l?.ambientAlpha ?? null;
+    const anyAlpha = !first && (ol ? ol.adds : !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 4) !== 0).some(Boolean));
+    const litA = ambA === null && !anyAlpha ? 255 : null;
     const B = (v: number[]) => v.map(byteOf);
     return this.inputs.map((q) => {
       // (every input as the bytes the TEV takes: a texel round(t * 255), the channels' integers)
@@ -579,14 +586,13 @@ export class DrawLog {
         return [0, 4, 8].map((o) => (c ? B(Array.from(c.subarray(o, o + 4))) : [0, 0, 0, 0]));
       });
       // (the lit channel: the ambient register, HSD_MulColor of the material's ambient and the ambient light, plus
-      // the probe's light sum, through the channel; its alpha 255)
+      // the probe's light sum, through the channel; its alpha the light sum's alpha with the ambient's the same way,
+      // when the alpha channel is lit)
       const ambReg = mulColor(B([s.ambient[0], s.ambient[1], s.ambient[2]]), B([amb[0], amb[1], amb[2]]));
       const sum0 = B(q.s[0]), sum1 = B(q.s[1]);
       const lit = [0, 1, 2].map((i) => chanColor(255, ambReg[i] + (anyDiffuse ? sum0[i] : 0)));
-      // (while the light adds, a lit material's alpha channel is lit by it: the light's alpha by the probe's turn,
-      // which the material's alpha stage takes as the rasterized alpha, as the shader does)
-      const litA = ol && ol.adds ? chanColor(255, byteOf(q.s[0][3])) : 255;
-      const ras0 = p.channel === 1 ? B(q.v[0]) : p.channel === 2 ? [...lit, litA] : [255, 255, 255, 255];
+      const alpha0 = litA ?? chanColor(255, (ambA === null ? 0 : byteOf(ambA)) + (anyAlpha ? sum0[3] : 0));
+      const ras0 = p.channel === 1 ? B(q.v[0]) : p.channel === 2 ? [...lit, alpha0] : [255, 255, 255, 255];
       const ras1 = [0, 1, 2].map((i) => chanColor(255, anySpec ? sum1[i] : 0)).concat([255]);
       const dif = s.override ?? s.diffuse;
       const out = evalMaterial(p, {
@@ -595,11 +601,10 @@ export class DrawLog {
         shadows: Array.from({ length: nShadow }, (_, k) => B(q.t[(p.textures.length + k) & 7])),
       });
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
-      // (its strength the rasterized alpha: the lit channel's - the light's alpha by the probe's turn - else the
-      // vertex alpha or the material's)
+      // (its strength the rasterized alpha: the lit alpha channel's - the probe's light sum's alpha, the added light's
+      // with the set's alpha lights' - else the vertex alpha or the material's)
       // (the probe's light sum is the lights' term already, color and all, as for the rgb: not the light's alpha again)
-      const rasA = p.channel === 2 && ol ? chanColor(255, byteOf(q.s[0][3]))
-        : p.channel === 1 ? byteOf(q.v[0][3]) : byteOf(s.alpha);
+      const rasA = p.channel === 2 ? alpha0 : p.channel === 1 ? byteOf(q.v[0][3]) : byteOf(s.alpha);
       if (addsOn) { const k = B(ol!.rgb); for (let i = 0; i < 3; i++) out[i] = tevStage(0, k[i], rasA, out[i], 0, 0, 0, true); }
       const tc = this.tint?.color;
       if (tc && tc[3] > 0) out.splice(0, 3, ...overColor(out.slice(0, 3), B(tc.slice(0, 3)), byteOf(tc[3])));

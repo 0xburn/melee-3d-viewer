@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import {
   DrawLog, RENDERER_NAMES, dlPrims, drawLogCommand, geoHash, gxHash, gxProjection, imageId, probes, tlutId, vertexSize,
 } from "../src/render3d/drawlog.ts";
-import { compileMaterial } from "../src/render3d/gx.ts";
+import { LOBJ, RENDER, compileMaterial } from "../src/render3d/gx.ts";
+import { LightSet } from "../src/render3d/lightset.ts";
 import type { Archive, MObj, PObj } from "../src/render3d/hsd.ts";
 import { perspective } from "../src/render3d/math.ts";
 
@@ -171,6 +172,33 @@ test("a mesh's record: its primitives, matrices, pixel engine and probe", () => 
   assertEquals(m.probe, probes().map(() => [128, 64, 255, 255]));
   // detached: the stand-in's own methods back, nothing on the instance
   for (const k of ["begin", "drawOne", "setFog"]) assert(any[k] === (before as Record<string, unknown>)[k], `${k} is the renderer's own again`);
+});
+
+test("a lit material's probe: its alpha the light sum's through the alpha channel when a light has LOBJ_ALPHA", () => {
+  const probeAlpha = (flags: number) => {
+    const r = standIn();
+    // deno-lint-ignore no-explicit-any
+    const any = r as any;
+    any.lighting = new LightSet([{ desc: 1, kind: "infinite", flags: LOBJ.INFINITE | LOBJ.DIFFUSE | flags,
+      color: [1, 1, 1, 1], position: [0, 0, 1], interest: null, raw: null, spot: null, dist: null, anim: null }]).at(0);
+    const dl = new Uint8Array(32);
+    dl.set(hex(TRI), 0);
+    const d = {
+      key: "f0:0:0:0", archive: archiveOf(dl), pobj: POBJ(0, 32), jobj: { index: 0 }, mats: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      nMats: 1, translucent: false, group: null,
+      state: { mobj: { ...MOBJ, renderMode: RENDER.DIFFUSE }, diffuse: new Float32Array([1, 1, 1, 1]), ambient: new Float32Array([0, 0, 0, 1]),
+               specular: new Float32Array([0, 0, 0, 1]), alpha: 1, tex: [], override: null, skip: null, mirror: null },
+    };
+    drawLogCommand(any, { start: true });
+    any.begin();
+    any.drawOne(d, null, null);
+    const frames = drawLogCommand(any, { take: true, stop: true }) as { draws: Record<string, unknown>[] }[];
+    return (frames[0].draws[1].probe as number[][])[0][3];
+  };
+  // (probe 0's light sum alpha 49: (255 * (49 + 0)) >> 8 = 48, HSD_State_80405A38_90 with ambient alpha 0)
+  assertEquals(probeAlpha(LOBJ.ALPHA), 48);
+  // (no light in HSD_LObjGetLightMaskAlpha: the unlit channel, HSD_State_80405A38_C0)
+  assertEquals(probeAlpha(0), 255);
 });
 
 test("nothing is logged without start, and particles keep their batches", () => {
