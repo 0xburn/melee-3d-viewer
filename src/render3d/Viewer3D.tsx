@@ -1473,6 +1473,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (scene.screen && st.screen) {
         scene.screen.draw(fno);
         r.liveImage(st.screen.image, scene.screen.canvas, scene.screen.version);
+        // (the match's copy is the frame before's, whatever the number of draws of this frame)
+        r.liveAdvance(st.screen.image, fno, scene.screen.mode === 7 || scene.screen.mode === 8, scene.screen.size[0], scene.screen.size[1]);
         // (a copy of the match is shown in the screen's constant green, the rest in its vertex colors)
         const m = scene.screen.mode;
         for (const s of st.setScreenConstant(m === 7 || m === 8, scene.screen.tint)) r.forgetMaterial(s);
@@ -2160,7 +2162,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         return [((m[0] * X + m[4] * Y + m[12]) / cw + 1) / 2, (1 - (m[1] * X + m[5] * Y + m[13]) / cw) / 2];
       });
       // (as it is: the screen's material lays its green on it, setScreenConstant)
-      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, [255, 255, 255]);
+      if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, [255, 255, 255], fno);
     }
     prof.mark("ghosts");
     // the game's HUD over it all (hud.ts)

@@ -874,7 +874,15 @@ export class Renderer {
   /** images the game renders into at run time (Pokemon Stadium's big
    *  screen): drawn from a picture the caller makes, uploaded when its
    *  version changes */
-  private live = new WeakMap<Image, { tex: WebGLTexture | null; version: number; source: TexImageSource | null; target?: RenderTarget }>();
+  private live = new WeakMap<Image, {
+    tex: WebGLTexture | null; version: number; source: TexImageSource | null;
+    /** the targets drawn into, by texture */
+    targets?: Map<WebGLTexture, RenderTarget>;
+    /** the copy made at the end of a frame (captureLive), and the frame it was made at: it is shown from the next */
+    pend?: WebGLTexture; pendFrame?: number;
+    /** the frame the shown picture was settled for (liveAdvance) */
+    shownFor?: number;
+  }>();
 
   /** show this picture where the file has the image (a render target), from now on */
   liveImage(image: Image, source: TexImageSource, version: number) {
@@ -905,18 +913,49 @@ export class Renderer {
   liveTarget(image: Image, w: number, h: number): RenderTarget | null {
     const l = this.live.get(image);
     if (!l?.tex) return null;
-    if (l.target && l.target.w === w && l.target.h === h) return l.target;
+    return this.targetOf(l, l.tex, w, h);
+  }
+  private targetOf(l: { targets?: Map<WebGLTexture, RenderTarget> }, tex: WebGLTexture, w: number, h: number): RenderTarget {
+    const had = l.targets?.get(tex);
+    if (had && had.w === w && had.h === h) return had;
     const gl = this.gl;
     const depth = gl.createRenderbuffer()!;
     gl.bindRenderbuffer(gl.RENDERBUFFER, depth);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, w, h);
     const fbo = gl.createFramebuffer()!;
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, l.tex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, depth);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.bound.fill(null);
-    return (l.target = { fbo, tex: l.tex, depth, w, h, erase: true });
+    const t = { fbo, tex, depth, w, h, erase: true };
+    (l.targets ??= new Map()).set(tex, t);
+    return t;
+  }
+
+  /** While the screen shows the match, it shows on a frame the copy made at the end of the frame before it - the
+   *  game copies the picture after the screen is drawn - and never the one made on this frame, however many times
+   *  this frame is drawn. Call this before drawing frame `frame` with `shows` for whether the screen shows the match:
+   *  the copy of the frame before is promoted, a redraw leaves what is shown as it is, and a frame that is not the
+   *  next (the first, a jump) has the screen black. */
+  liveAdvance(image: Image, frame: number, shows: boolean, w: number, h: number) {
+    const l = this.live.get(image);
+    if (!l?.tex || !shows || l.shownFor === frame || l.pendFrame === frame) return;
+    l.shownFor = frame;
+    if (l.pend && l.pendFrame === frame - 1) {
+      [l.tex, l.pend] = [l.pend, l.tex];
+    } else {
+      const gl = this.gl, t = this.targetOf(l, l.tex, w, h);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+      gl.viewport(0, 0, w, h);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.bindPicture();
+    }
+    this.bound.fill(null);
+    this.imageEpoch++;
+    this.dirty();
   }
 
   /** A part of the picture drawn so far into a live image's texture (w x
@@ -926,10 +965,25 @@ export class Renderer {
    *  copied out, then drawn into the texture. `rect`: fractions of the
    *  picture from its top left (x, y, w, h). The texture's first row is the
    *  top, as a canvas's upload has it. */
-  captureLive(image: Image, w: number, h: number, rect: [number, number, number, number], tint: [number, number, number]) {
+  captureLive(image: Image, w: number, h: number, rect: [number, number, number, number], tint: [number, number, number], frame?: number) {
     const gl = this.gl;
     const l = this.live.get(image);
     if (!l?.tex) return;
+    // (with a frame, the copy waits to be shown from the next: in a texture of its own)
+    let dst = l.tex;
+    if (frame !== undefined) {
+      if (!l.pend) {
+        l.pend = gl.createTexture()!;
+        gl.bindTexture(gl.TEXTURE_2D, l.pend);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      }
+      dst = l.pend;
+      l.pendFrame = frame;
+    }
     const [PW, PH] = this.look ? [LOOK_W, LOOK_H] : this.pic ? [this.pic.w, this.pic.h] : this.size;
     const sx = rect[0] * PW, sy = rect[1] * PH, sw = rect[2] * PW, sh = rect[3] * PH;
     // the picture's pixels under the part, bottom-up as GL counts its rows
@@ -951,7 +1005,7 @@ export class Renderer {
     // into the screen's texture: each of its pixels (x, y from the top) takes
     // the picture at (sx + (x + 0.5) sw / w, sy + (y + 0.5) sh / h)
     gl.bindFramebuffer(gl.FRAMEBUFFER, c.fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, l.tex, 0);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, dst, 0);
     gl.viewport(0, 0, w, h);
     gl.useProgram(c.prog);
     gl.uniform4f(c.uMap, sw / w / c.w, sx / c.w - x0 / c.w, -sh / h / c.h, (PH - sy - y0) / c.h);
