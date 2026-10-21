@@ -600,7 +600,10 @@ export class DrawLog {
       const ambReg = mulColor(B([s.ambient[0], s.ambient[1], s.ambient[2]]), B([amb[0], amb[1], amb[2]]));
       const sum0 = B(q.s[0]), sum1 = B(q.s[1]);
       const lit = [0, 1, 2].map((i) => chanColor(255, ambReg[i] + (anyDiffuse ? sum0[i] : 0)));
-      const ras0 = p.channel === 1 ? B(q.v[0]) : p.channel === 2 ? [...lit, 255] : [255, 255, 255, 255];
+      // (while the light adds, a lit material's alpha channel is lit by it: the light's alpha by the probe's turn,
+      // which the material's alpha stage takes as the rasterized alpha, as the shader does)
+      const litA = ol && ol.adds ? chanColor(255, byteOf(q.s[0][3])) : 255;
+      const ras0 = p.channel === 1 ? B(q.v[0]) : p.channel === 2 ? [...lit, litA] : [255, 255, 255, 255];
       const ras1 = [0, 1, 2].map((i) => chanColor(255, anySpec ? sum1[i] : 0)).concat([255]);
       const dif = s.override ?? s.diffuse;
       const out = evalMaterial(p, {
