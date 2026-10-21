@@ -49,7 +49,7 @@ import {
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
-import type { Mat } from "./math";
+import { invert, type Mat } from "./math";
 
 // ---------------------------------------------------------------- shared with the decoder
 
@@ -455,7 +455,7 @@ export class DrawLog {
       tex: safe("tex", () => {
         // (by the map the game binds each to, its number the map's)
         const maps = gameTexMaps(d.state.tex.map((t) => t?.tobj.flags ?? 0));
-        return p.textures.map((ti, n) => ({ ...this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n), map: maps[ti] }))
+        return p.textures.map((ti, n) => ({ ...this.texRec(d.archive, d.state.tex[ti], p.texGen[n], F, n, view), map: maps[ti] }))
           .sort((x, y) => x.map - y.map);
       }, []),
       shade: { channel: p.channel, vertexBase: p.vertexBase, lit: p.lit, specular: p.specular, bump: p.bump,
@@ -563,7 +563,7 @@ export class DrawLog {
     return out;
   }
 
-  private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0): Record<string, unknown> {
+  private texRec(a: Archive, t: TexState | undefined, gen: number, F?: Float32Array, n = 0, view?: Mat): Record<string, unknown> {
     if (!t) return { id: null };
     const o = t.tobj;
     let id = this.images.get(t.image);
@@ -573,6 +573,15 @@ export class DrawLog {
     else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
     const game = id === "mirror" ? MIRROR_GAME : id === "efb:live" ? liveGame.get(t.image) : undefined;
     const at = 24 + n * 12;
+    let mirrorPost: number[][] | null = null;
+    // (the mirror's: its three rows as the game's post-matrix has them, grIzumi_801CCEA0's texture_matrix times
+    // the inverse of the view - it takes the point in view space - and t from the top)
+    if (gen === 4 && view && F && F.length >= at + 12) {
+      const g = [F.subarray(at, at + 4), F.subarray(at + 4, at + 8).map((v, c) => F[at + 8 + c] - v), F.subarray(at + 8, at + 12)];
+      const vi = invert(new Float32Array(16), view);
+      const post = g.map((r) => [0, 1, 2, 3].map((c) => r[0] * vi[c * 4] + r[1] * vi[c * 4 + 1] + r[2] * vi[c * 4 + 2] + r[3] * vi[c * 4 + 3]));
+      mirrorPost = post.map((r) => r.map(this.num));
+    }
     const m = F && F.length >= at + 8 ? Array.from(F.subarray(at, at + 8))
       : textureMatrix([t.translate[0], t.translate[1], o.translate[2]], [t.scale[0], t.scale[1], o.scale[2]],
                       [t.rotX, t.rotY, t.rotate], o.repeatS, o.repeatT, o.wrapT);
@@ -581,7 +590,7 @@ export class DrawLog {
       wrap: [WRAP[o.wrapS] ?? String(o.wrapS), WRAP[o.wrapT] ?? String(o.wrapT)],
       mag: o.magFilt ? "linear" : "near", min: o.lod ? MIN[o.lod.minFilt] ?? String(o.lod.minFilt) : null,
       lod_bias: o.lod ? this.num(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
-      mtx: [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
+      mtx: mirrorPost ?? [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
     };
     if (t.tlut) {
       rec.tlut = tlutId(a, t.tlut, t.image.format);
