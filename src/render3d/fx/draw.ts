@@ -49,6 +49,9 @@ let scratch = new Float32Array(FLOATS * 4 * 256);
 // (the draw order's and a quad's scratch, and the batches, kept between frames: the caller draws them before
 // the next build)
 let order = new Int32Array(256), batchOf = new Int32Array(256);
+/** for each quad of the last build, 1 when it is under a transform (psDispSubAppSRT sends its corners in the
+ *  camera's space, through the billboard matrix): the debug draw log reads it */
+export let quadSrt = new Uint8Array(256);
 const pool: Batch[] = [];
 const CORNERS = new Float64Array(8);
 
@@ -106,6 +109,8 @@ export function buildParticles(list: Particle[],
   for (let qi = 0; qi < kept; qi++) {
     const p = list[order[qi]];
     const textured = groups[batchOf[qi]].sprite ? 1 : 0;
+    if (quadSrt.length < kept) quadSrt = new Uint8Array(kept * 2);
+    quadSrt[qi] = p.srt ? 1 : 0;
     // where it is, and how big, through its transform (psDispSubAppSRT): a quad as wide as the transform's x
     // scale times the size and as tall as its y scale times it; under a generator's own transform that only
     // follows (its kind's 0x20000: the game's xA2), the particle's place and motion are in the camera's axes

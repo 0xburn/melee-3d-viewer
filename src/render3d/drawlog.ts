@@ -36,6 +36,7 @@ import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
 import { RENDER, blockOf, evalMaterial, tevDescStep, tevScalar, textureMatrix } from "./gx";
 import { SHADOW_SIZE } from "./shadow";
+import { quadSrt } from "./fx/draw";
 import type { Lighting } from "./lightset";
 import type { Tint } from "./fx/colanim";
 import { Mat, invert, mul } from "./math";
@@ -546,6 +547,9 @@ export class DrawLog {
       // (each quad's own box, in the batch's order and the picture's pixels: the game draws each particle, and each
       // glyph, on its own; a lettering batch - the name plates' or Stadium's screen's - the picture's corner each reads too)
       const boxes: (number[] | null)[] = [];
+      // (and each quad's four corners in the world, as sent - float32, the buffer's own - and which are under a
+      // transform: the game sends those in the camera's space)
+      const corners: number[] | null = b.sprite?.src ? [] : null;
       const cells: { box: number[]; uv: number[] }[] | null = b.sprite && (b.sprite.key === "plate-font" || b.sprite.key.startsWith("screen-font")) ? [] : null;
       for (let q = b.first; q < b.first + b.count; q++) {
         let qx0 = Infinity, qy0 = Infinity, qx1 = -Infinity, qy1 = -Infinity;
@@ -562,6 +566,7 @@ export class DrawLog {
           const t = (q * 4 + 1) * 17;
           cells.push({ box: [qx0, qy0, qx1, qy1].map((v) => Math.round(v * 100) / 100), uv: [data[t + 3], data[t + 4]] });
         }
+        if (corners) for (let v = 0; v < 4; v++) { const o = (q * 4 + v) * 17; corners.push(data[o], data[o + 1], data[o + 2]); }
         if (!Number.isFinite(qx0)) { boxes.push(null); continue; }
         boxes.push([r1(qx0), r1(qy0), r1(qx1), r1(qy1)]);
         x0 = Math.min(x0, qx0); y0 = Math.min(y0, qy0); x1 = Math.max(x1, qx1); y1 = Math.max(y1, qy1);
@@ -577,6 +582,8 @@ export class DrawLog {
         z: { test: true, func: b.nozcomp ? "always" : "lequal", write: b.zwrite }, near: b.near,
         overlay: s.overlayVP !== null,
         bbox: Number.isFinite(x0) ? [x0, y0, x1, y1].map(r1) : null, boxes,
+        ...(corners ? { corners, srt: Array.from(quadSrt.subarray(b.first, b.first + b.count)).join(""),
+                        ...(s.overlayVP === null ? { view: [0, 1, 2].map((r) => [0, 1, 2, 3].map((c) => (s.shifted ? s.shiftView : s.camView)[c * 4 + r])) } : {}) } : {}),
         ...(cells ? { cells } : {}),
         ...(this.target ? { target: this.target } : {}),
       });

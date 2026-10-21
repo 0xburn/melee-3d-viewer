@@ -1386,8 +1386,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
 
   // (Stadium's screen, when the frame has no copy of the frame before to show: drawn a second time, with its own copy on the screen)
   let screenAgain = false;
+  let lastDrawAt = 0;
   const draw = () => {
     screenAgain = false;
+    lastDrawAt = performance.now();
     drawPass();
     if (screenAgain) { screenAgain = false; drawPass(); }
   };
@@ -2635,7 +2637,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   // ahead to the replay's end; a jump loads the nearest one at or before the frame and steps on from there.
   // Only while none is within CATCH_UP frames (a far jump soon after opening) is it warmed up from WARM frames
   // back as before, and made exact on the first frame drawn after one is
-  const CHECK_EVERY = 240, CATCH_UP = 1200, FILL_MS = 2;
+  const CHECK_EVERY = 240, CATCH_UP = 1200, FILL_MS = 2, IDLE_FILL_MS = 12;
   // (with each the hit sparks' record of the fighters' percents, which the world's steps read and keep: fxPercent)
   type Check = { frame: number; snap: FxSnapshot; percent: [string, Before][] };
   type Checks = { snaps: Check[]; key: unknown[]; exact: boolean; bytes: number; ahead?: Check };
@@ -2713,6 +2715,13 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     if (c.exact) keepCheck(c, w);
     return stepped;
   };
+  // (while nothing is drawn - paused, or between seeks - checkpoints are made ahead in longer turns)
+  const idleFill = setInterval(() => {
+    const data = replayStore.replayData;
+    if (!fxw || !data || benchFrame !== null || performance.now() - lastDrawAt < 50) return;
+    fillChecks(fxw, data, ready(), IDLE_FILL_MS);
+  }, 60);
+  onCleanup(() => clearInterval(idleFill));
   /** checkpoints ahead of the ones playing has made, in `ms` of a frame's spare time: the world as it stands is
    *  kept, the furthest checkpoint loaded and stepped on (the dynamics left alone), and the world put back */
   const fillChecks = (w: FxWorld, data: ReplayData, fs: Map<string, Fighter>, ms: number) => {
@@ -2721,7 +2730,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // (where the stepping ahead stopped last time: carried on from, until it reaches the end)
     const last = c.snaps[c.snaps.length - 1];
     const from = c.ahead && c.ahead.frame >= last.frame ? c.ahead : last;
-    if (!c.exact || Math.max(from.frame, 0) >= end) return false;
+    // (from a checkpoint, which is exact whatever the world drawn is; a far jump drawn warmed up is made exact
+    // by the first draw after one is within reach)
+    if (Math.max(from.frame, 0) >= end) return false;
     const keep = saveCheck(w);
     loadCheck(w, from);
     const { pose, one } = fxStepper(w, data, fs, Number.NaN, null, false);
@@ -3158,6 +3169,17 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     sections: () => prof.read(),
     /** the effect world's checkpoints: how many, to which frame, their bytes (roughly), and whether the world
      *  drawn is the exact one */
+    /** checkpoints made ahead to a frame now, at once (the checks', before a jump they measure) */
+    fxFill: (to: number) => {
+      const data = replayStore.replayData;
+      if (!fxw || !data) return null;
+      const c = checks(fxw);
+      for (let i = 0; i < 100000 && (c.ahead?.frame ?? c.snaps[c.snaps.length - 1].frame) < Math.min(to, data.frames.length - 1); i++) {
+        if (!fillChecks(fxw, data, ready(), 50)) break;
+      }
+      draw();
+      return true;
+    },
     fxChecks: () => {
       const c = fxw ? checksOf.get(fxw) : undefined;
       return c ? { count: c.snaps.length, last: c.snaps[c.snaps.length - 1].frame, bytes: c.bytes, exact: c.exact } : null;
