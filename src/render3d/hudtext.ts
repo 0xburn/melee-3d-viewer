@@ -9,9 +9,11 @@
  * picture as a quad over the match, into the same picture as everything else
  * (so the 480p look softens them as it does the rest).
  *
- * The game's own font is not in the files the player reads; the nametags
- * are set in a narrow sans in the game's cell spacing (12 pixels a letter at
- * 480 lines, capitals 14 tall), the plates in the bold sans they had before.
+ * The plates are lettered with the game's own font out of its executable
+ * (plates.ts); the picture here is their fallback when no executable can be
+ * read, a bold sans. The nametags are set in a narrow sans in the game's cell
+ * spacing (12 pixels a letter at 480 lines, capitals 14 tall), as the font
+ * is not in the files the nametags' draw reads.
  */
 import type { Batch } from "./fx/draw";
 

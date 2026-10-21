@@ -4,9 +4,10 @@
  * glyphs of 32 by 32 at 4 bits, see dol.ts) by the game's own text rules
  * (sistext.ts): the display name's Shift-JIS goes through the string
  * routine's table (HSD_SisLib_803A6B98 / 803A67EC), and the line is laid out
- * with kerning, a width the string routine's spacing ops do not change, and
- * centered on the plate. Each glyph is a quad of 1.000 by 1.035 units in the
- * HUD camera's space, white, its alpha the glyph's texel, drawn over the
+ * with kerning, a width the string routine's spacing ops do not change,
+ * centered on the plate and squeezed to 9 units when it runs wider (the text's
+ * own scale is 1.035, so a name of 288 text pixels or more has 1.000 by 1.035
+ * quads). Each glyph is a quad in the HUD camera's space, white, its alpha the glyph's texel, drawn over the
  * plate with the source-alpha blend, depth tested (lequal) without writing.
  *
  * Everything here is made once: the font from the executable, the glyph
@@ -16,8 +17,11 @@
 import { glyphAlpha, layoutSis, parseSisCommon, sisString, type SisCommon } from "./sistext";
 import { textFontFromDol } from "./dol";
 
-/** a glyph quad's size in the HUD camera's units, and the pixels of text it is made of */
-const GLYPH_W = 1.0, GLYPH_H = 1.035, GLYPH_PX = 32;
+/** a glyph is 32 pixels of text, and a pixel of text is 1/32 of a unit in the HUD camera's space */
+const GLYPH_PX = 32;
+/** the plate text's own scale (both ways: a quad 1.035 units tall), and the width it is fitted to when it
+ *  runs wider, in pixels of text (9 units) */
+const TEXT_SCALE = 1.035, TEXT_BOX = 288;
 
 // The plate's width follows the name: the sum of (20 - left trim) over its
 // glyphs, held to 60..144, times 0.0146 (the plate model's x scale).
@@ -128,22 +132,21 @@ export function plateText(font: PlateFont, name: string): PlateText {
   const had = m.get(name);
   if (had) return had;
   const c = font.common;
-  // the string routine's ops, laid out as the plate's text is: kerned, dynamic, centered on its middle
-  const ops = Uint8Array.from(sisString(nameBytes(name, font), 0, 0, [255, 255, 255], [1, 1], c));
-  const glyphs = layoutSis(ops, { align: 1, boxW: 0, kern: true, dynamic: true, scale: [1, 1] }, null, c.font);
+  // the string routine's ops, laid out as the plate's text is: at the text's own scale, kerned, dynamic,
+  // centered on its middle and squeezed to the box when it runs wider
+  const ops = Uint8Array.from(sisString(nameBytes(name, font), 0, 0, [255, 255, 255], null, c));
+  const glyphs = layoutSis(ops, { align: 1, boxW: TEXT_BOX, fit: true, kern: true, dynamic: true, scale: [TEXT_SCALE, TEXT_SCALE] },
+                           null, c.font);
   const atlas = glyphAtlas(font);
   const quads = new Float32Array(glyphs.length * 8);
   let sum = 0;
   glyphs.forEach((g, k) => {
     sum += SUM_BASE - c.font.kern[g.index * 2];
     const o = k * 8;
-    // (measured: the glyph's left is its pen's place less the trim's step times the quad's height factor,
-    // where layoutSis steps by the width factor, 1; the pen itself advances by the width factor)
-    const left = g.x + (c.font.kern[g.index * 2] - 1) * (1 - GLYPH_H / GLYPH_W);
-    quads[o] = left / GLYPH_PX * GLYPH_W;
-    quads[o + 1] = -g.y / GLYPH_PX * GLYPH_H;
-    quads[o + 2] = (left + g.w) / GLYPH_PX * GLYPH_W;
-    quads[o + 3] = -(g.y + g.h) / GLYPH_PX * GLYPH_H;
+    quads[o] = g.x / GLYPH_PX;
+    quads[o + 1] = -g.y / GLYPH_PX;
+    quads[o + 2] = (g.x + g.w) / GLYPH_PX;
+    quads[o + 3] = -(g.y + g.h) / GLYPH_PX;
     quads.set(atlas.uv.subarray(g.index * 4, g.index * 4 + 4), o + 4);
   });
   const clamped = Math.min(SUM_MAX, Math.max(SUM_MIN, sum));

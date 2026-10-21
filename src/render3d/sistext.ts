@@ -197,14 +197,15 @@ export function layoutSis(bytes: Uint8Array, o: SisTextOpts, file: SisFont | nul
 
 /** A string the code writes in (HSD_SisLib_803A6B98): at (x, y), in the
  *  text's color and scale, its characters as the common font's codes
- *  (HSD_SisLib_803A67EC): ASCII is turned to full-width Shift-JIS, a space,
+ *  (HSD_SisLib_803A67EC; `scale` null: none written, the text's own stands): ASCII is turned to full-width Shift-JIS, a space,
  *  a period or a colon pulls the letters 12 closer until a letter, quote,
  *  apostrophe, comma or hyphen puts the spacing back; anything else is taken
  *  as a Shift-JIS pair. */
-export function sisString(s: Uint8Array, x: number, y: number, color: [number, number, number], scale: [number, number], c: SisCommon): number[] {
+export function sisString(s: Uint8Array, x: number, y: number, color: [number, number, number], scale: [number, number] | null, c: SisCommon): number[] {
   const out: number[] = [7, ...be16(Math.trunc(x)), ...be16(Math.trunc(y)), 0x0c, ...color];
   const fix = (v: number) => [Math.trunc(v) & 0xff, Math.trunc(v * 256) & 0xff];
-  out.push(0x0e, ...fix(scale[0]), ...fix(scale[1]));
+  // (no scale: the text's own, in layoutSis's options, stands)
+  if (scale) out.push(0x0e, ...fix(scale[0]), ...fix(scale[1]));
   let narrow = 0;
   for (let k = 0; k < s.length && k < 128; k++) {
     const ch = s[k];
@@ -228,7 +229,8 @@ export function sisString(s: Uint8Array, x: number, y: number, color: [number, n
     }
   }
   if (narrow) out.push(0x0b);
-  out.push(0x0f, 0x0d);
+  if (scale) out.push(0x0f);
+  out.push(0x0d);
   return out;
 }
 

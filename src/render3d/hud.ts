@@ -11,8 +11,11 @@
  * fighter drawn into a texture each frame, as the game draws it. What it
  * shows at a frame is worked out in hudlogic.ts. The words - Slippi's plates
  * with the display names under the percentages, a console game's nametags
- * over the fighters - are pictures of the page's own text (hudtext.ts,
- * Hud3D.tsx), so demo mode swaps them and the 480p look softens them.
+ * over the fighters - come from the page's own text (Hud3D.tsx), so demo
+ * mode swaps them. The plates' names are lettered with the game's own font
+ * (plates.ts: one quad a glyph); the nametags, and the plates without an
+ * executable to read, are pictures of text (hudtext.ts). All of them are
+ * drawn into the same picture as the rest, so the 480p look softens them.
  *
  * The HUD has cameras of its own: a perspective one the file gives
  * (ScInfDmg_scene_data), a flat 640 x 480 one for the tags, and the

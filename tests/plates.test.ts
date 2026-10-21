@@ -24,20 +24,30 @@ function tiny(trims: Record<number, [number, number]>): PlateFont {
 
 const near = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} is not ${b}`);
 
-test("a name's quads: 1.000 by 1.035 units, a glyph's pen advancing by (34 - right - next left) / 32", () => {
+test("a name's quads: the text's scale is 1.035, a glyph's pen advancing by that times (34 - right - next left) / 32", () => {
   // 'a' trims 3 and 6, 'b' 4 and 2
   const t = plateText(tiny({ 1: [3, 6], 2: [4, 2] }), "ab");
   assert.equal(t.count, 2);
   for (let k = 0; k < 2; k++) {
-    near(t.quads[k * 8 + 2] - t.quads[k * 8], 1);
+    near(t.quads[k * 8 + 2] - t.quads[k * 8], 1.035);
     near(t.quads[k * 8 + 1] - t.quads[k * 8 + 3], 1.035);
   }
-  // (the lefts: a step of the left trims at the quad's height factor, the pen at the width factor)
-  near(t.quads[8] - t.quads[0], (34 - 6 - 4) / 32 - (4 - 3) * 0.035 / 32, 1e-6);
-  // the line is centered: its pen width (32 per glyph less each one's trims less two) about 0, the first glyph's
-  // left that far less its trim's step
-  const pen = (32 - (3 + 6 - 2)) + (32 - (4 + 2 - 2));
-  near(t.quads[0], -pen / 2 / 32 - (3 - 1) * 1.035 / 32);
+  // (a glyph is drawn its left trim less one, times the scale, left of its pen: the lefts step by (34 - right - next left))
+  near(t.quads[8] - t.quads[0], 1.035 * (34 - 6 - 4) / 32);
+  // the line is centered: its pen width about 0, the first glyph's left that far less its trim's step
+  const pen = 1.035 * ((32 - (3 + 6 - 2)) + (32 - (4 + 2 - 2)));
+  near(t.quads[0], -pen / 2 / 32 - 1.035 * (3 - 1) / 32);
+});
+
+test("a line wider than 288 text pixels is squeezed to it (the glyphs too), a narrower one is not", () => {
+  // twelve 'a's of 32 pixels a glyph less their trims (1, 1): 12 x 32 x 1.035 = 397 text pixels
+  const t = plateText(tiny({}), "aaaaaaaaaaaa");
+  const fit = 288 / (12 * 32 * 1.035);
+  near(t.quads[2] - t.quads[0], 1.035 * fit);
+  // (the twelve fill the 9 units)
+  near(t.quads[11 * 8 + 2] - t.quads[0], 9);
+  const one = plateText(tiny({}), "aa");
+  near(one.quads[2] - one.quads[0], 1.035);
 });
 
 test("a name's bytes: ASCII as it is, another character by the font's Shift-JIS pair, what the font lacks left out", () => {
@@ -87,14 +97,34 @@ function executable(): ArrayBuffer {
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
 }
 
+// "Platinum Player" and "Master Player" in the same captures: the lefts of the game's glyph quads in screen pixels
+// (to 0.1) of the 640 wide picture, the line's middle at -20.2 and -6.2 units; the first is squeezed to the box
+// (0.983 a glyph wide), the second runs on at 1.035
+const PLATINUM_PX = [50.6, 56.5, 61.6, 68.2, 73.2, 78.9, 85.9, 95.3, 103.8, 110.5, 116.4, 121.5, 128.8, 135.8, 141.7];
+const MASTER_PX = [207.6, 216.7, 223.7, 230.4, 236.7, 243.0, 249.0, 256.0, 262.3, 267.5, 275.2, 282.6, 288.9];
+// (the HUD camera: 41.539 degrees over, aspect 1.217, 64 away)
+const HALF = 64 * Math.tan(41.539 * Math.PI / 360) * 1.217;
+const px = (x: number) => 320 + x / HALF * 320;
+
 test("the game's font and layout put 'Diamond Player' where the game's quads are", withGameFiles, () => {
   const font = plateFontFromDol(executable())!;
   assert.ok(font);
-  assert.equal(plateFontFromDol(executable()) === font, false); // (a copy of the file is a new font: kept by the buffer)
   const t = plateText(font, "Diamond Player");
   assert.equal(t.count, 14);
   for (let k = 0; k < 14; k++) near(t.quads[k * 8], DIAMOND_LEFTS[k], 2e-5);
-  // (the plate for a name this long is the cap)
+  // (a name this long is exactly the box's 288 pixels, its glyphs 1.000 wide, and the plate for it the cap)
+  near(t.quads[2] - t.quads[0], 1);
   near(t.width, 144 * 0.0146);
   assert.ok(font.pairs.size >= 280);
+});
+
+test("the game's font squeezes 'Platinum Player' to the box and lets 'Master Player' run on, as its quads do", withGameFiles, () => {
+  const font = plateFontFromDol(executable())!;
+  const p = plateText(font, "Platinum Player"), m = plateText(font, "Master Player");
+  assert.equal(p.count, 15);
+  assert.equal(m.count, 13);
+  for (let k = 0; k < 15; k++) near(px(-20.2 + p.quads[k * 8]), PLATINUM_PX[k], 0.1);
+  for (let k = 0; k < 13; k++) near(px(-6.2 + m.quads[k * 8]), MASTER_PX[k], 0.1);
+  near(p.quads[2] - p.quads[0], 288 / 293);
+  near(m.quads[2] - m.quads[0], 1.035, 1e-6);
 });
