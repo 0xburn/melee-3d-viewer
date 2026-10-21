@@ -95,3 +95,13 @@ Fountain of Dreams' stage joints got worse with `sp` (stage2 draws from 1,021 to
 - **Production.** `.text`, `.rodata` and `.data` are identical to the build after 0005.
 
 **Needs game data.** stage2 should come back to about the 1,021 draws it had before `sp`. Yoshi's Story (stage8) should not get worse.
+
+## 0007 Viewer track: fj leaves out the joints of chains the track build does not solve
+
+Peach (f9: 3,362 to 10,959 draws with round 3) and Zelda (f19: 7,781 to 12,064) did not move with the dynamics-counts fix in front.
+
+- **Cause.** The track build does not solve Peach's and Zelda's dress and hair chains, or Donkey Kong's tie. `msl_viewer_track_keep_dynamics` prunes their links as without a track (solved in the simulator they came out further from the game than the viewer's own solve). Their joints stay live, though, at the animation's pose, unsolved. `fj` writes every live part, so it wrote those unsolved joints over the viewer's own solve. That is also why the driven-joint counts changed nothing: those chains are not solved here at all.
+- **Fix.** `fj` leaves out every joint of a chain whose links were pruned (its `dyn_desc.data` is `NULL`). The chain is found as `ftCo_8009CF84` links it: `lb_8000FD48` from the chain's bone down its first children, for the chain's count. The viewer keeps its own solve for those joints, as before `fj`. Chains the track build keeps (Fox's tail, Jigglypuff's body, every chain on the other fighters) are still written. The mask is a scratch array allocated once with the track.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+
+**Needs game data.** Peach and Zelda should come back to at least their numbers before `fj`, and the rest of the fighters should not change. Then regenerate the four visual-state locks.
