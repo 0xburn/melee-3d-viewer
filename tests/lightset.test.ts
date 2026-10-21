@@ -17,16 +17,17 @@ function light(anim: Light["anim"]): Light {
            raw: [1, 0, 0, 1, 0, 0], spot: null, dist: null, anim };
 }
 
-// (the packed colors are 32-bit floats)
-const red = (set: LightSet, f: number) => Math.round(set.at(f).color[0] * 1e6) / 1e6;
+// (an animated color is kept as a byte: the red one, 0..255)
+const red = (set: LightSet, f: number) => Math.round(set.at(f).color[0] * 255);
 
 test("a light's color: held at its end, looping when its set loops, and on the set's clock", () => {
   const l = light({ offset: 10, aobj: aobj([ramp(9)]), position: null, interest: null });
-  assert.equal(red(new LightSet([l]), 40), 0.4);
-  assert.equal(red(new LightSet([l]), 150), 1);
-  assert.equal(red(new LightSet([l], 1, new Set(), { loopAll: true }), 150), 0.5);
-  assert.equal(red(new LightSet([l], 1, new Set([10])), 150), 0.5);
-  assert.equal(red(new LightSet([l], 1, new Set(), { ahead: 3 }), 40), 0.43);
+  // (255 x 0.4 = 102; 255 x 0.5 = 127.5, kept as 127; 255 x 0.43 = 109.65, kept as 109)
+  assert.equal(red(new LightSet([l]), 40), 102);
+  assert.equal(red(new LightSet([l]), 150), 255);
+  assert.equal(red(new LightSet([l], 1, new Set(), { loopAll: true }), 150), 127);
+  assert.equal(red(new LightSet([l], 1, new Set([10])), 150), 127);
+  assert.equal(red(new LightSet([l], 1, new Set(), { ahead: 3 }), 40), 109);
 });
 
 test("a place along a spline is in the spline joint's space", () => {
