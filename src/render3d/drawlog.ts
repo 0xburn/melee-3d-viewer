@@ -44,7 +44,7 @@ import type { Fog, MatProgram } from "./gx";
 import { type FogRegs, fogDecoded } from "./fog";
 import type { ViewLights } from "./gxlights";
 import {
-  RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevDescStep, tevStage, textureMatrix,
+  RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevStage, textureMatrix,
 } from "./gx";
 import { SHADOW_SIZE } from "./shadow";
 import type { Lighting } from "./lightset";
@@ -572,14 +572,11 @@ export class DrawLog {
     const B = (v: number[]) => v.map(byteOf);
     return this.inputs.map((q) => {
       // (every input as the bytes the TEV takes: a texel round(t * 255), the channels' integers)
-      const texels = p.textures.map((ti) => {
-        const t = s.tex[ti];
-        const raw = B(q.t[t.tobj.id & 7]);
-        const tv = t.tobj.tev, c = t.tevColors;
-        if (!tv) return raw;
-        const k = c ? B(Array.from(c.subarray(0, 4))) : [0, 0, 0, 0], t0 = c ? B(Array.from(c.subarray(4, 8))) : [0, 0, 0, 0];
-        const t1 = c ? B(Array.from(c.subarray(8, 12))) : [0, 0, 0, 0];
-        return tevDescStep(tv, k, t0, t1, raw);
+      const texels = p.textures.map((ti) => B(q.t[s.tex[ti].tobj.id & 7]));
+      // (each texture's own TEV colors, konst, tev0, tev1: its stages read them as constants)
+      const tevColors = p.textures.map((ti) => {
+        const c = s.tex[ti].tevColors;
+        return [0, 4, 8].map((o) => (c ? B(Array.from(c.subarray(o, o + 4))) : [0, 0, 0, 0]));
       });
       // (the lit channel: the ambient register, HSD_MulColor of the material's ambient and the ambient light, plus
       // the probe's light sum, through the channel; its alpha 255)
@@ -593,8 +590,8 @@ export class DrawLog {
       const ras1 = [0, 1, 2].map((i) => chanColor(255, anySpec ? sum1[i] : 0)).concat([255]);
       const dif = s.override ?? s.diffuse;
       const out = evalMaterial(p, {
-        diffuse: B([dif[0], dif[1], dif[2]]), alpha: byteOf(s.alpha), specular: B([s.specular[0], s.specular[1], s.specular[2]]),
-        ras0, ras1, texels, blend: p.textures.map((ti) => tevByte(s.tex[ti].blending)),
+        diffuse: B([dif[0], dif[1], dif[2]]), alpha: tevByte(s.alpha), specular: B([s.specular[0], s.specular[1], s.specular[2]]),
+        ras0, ras1, texels, tevColors, blend: p.textures.map((ti) => tevByte(s.tex[ti].blending)),
         shadows: Array.from({ length: nShadow }, (_, k) => B(q.t[(p.textures.length + k) & 7])),
       });
       // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
