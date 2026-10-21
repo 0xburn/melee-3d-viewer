@@ -172,7 +172,9 @@ export class LightSet {
       for (const tr of an.aobj.tracks) {
         const v = sample(tr.keys, t);
         if (v === null) continue;
-        const c = Math.min(Math.max(v, 0), 1);
+        // (LObjUpdateFunc keeps the color as bytes: 255.0 times the track's
+        // value, cut to a whole number as it is stored)
+        const c = Math.floor(255 * Math.fround(Math.min(Math.max(v, 0), 1))) / 255;
         if (tr.type >= 9 && tr.type <= 11) out.color[tr.type - 9] = c; // LITC_R, G, B
         else if (tr.type === 22) out.color[3] = c; // LITC_A
         else if (tr.type === 12) out.flags = v < 0.5 ? out.flags & ~LOBJ.HIDDEN : out.flags | LOBJ.HIDDEN; // VIS

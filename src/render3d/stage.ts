@@ -430,17 +430,17 @@ export class Stage {
     // The two sets' clocks, as their light objects are made: the stage's
     // (Ground_801C466C) steps its animations once as it is made
     // (HSD_LObjAnimAll), so they stand one frame ahead of the stage's own; the
-    // fighters' (ftCo_8009F4A4, from Fighter_800679B0) are made earlier in
-    // the match's setup and stand three ahead at the replay's first frame (as
-    // the game's recorded lights show: Fountain's colors and places, exact on
-    // both). Fountain's code makes every animation of the fighters' set loop
-    // (grIzumi_OnLoad)
+    // fighters' (ftCo_8009F4A4) starts at frame 0 (HSD_LObjReqAnimAll) and is
+    // stepped once a frame by its own proc (ftCo_8009F480), so it stands at
+    // the replay's frame (the game's recorded light colors show both, exact
+    // on every frame recorded on Fountain). Fountain's code makes every
+    // animation of the fighters' set loop (grIzumi_OnLoad)
     const list = part(info.lightsPart, 0x18);
     this.lighting = new LightSet(list === null ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, list), overrides), this.scale, loops,
                                  { ahead: 1 });
     const plit = a.publics.get("map_plit");
     this.playerLighting = new LightSet(plit === undefined ? DEFAULT_LIGHTS : applyOverrides(loadLights(a, plit), overrides), this.scale,
-                                       new Set(), { ahead: 3, loopAll: info.file === "GrIz" });
+                                       new Set(), { ahead: 0, loopAll: info.file === "GrIz" });
     const fog = part(info.fogPart, 0x1c);
     if (fog !== null) {
       this.fog = { type: d.getUint32(fog), start: d.getFloat32(fog + 8) * this.scale, end: d.getFloat32(fog + 12) * this.scale,
