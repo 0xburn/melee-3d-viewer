@@ -8,7 +8,7 @@ import { jointInView, lightsInView, newViewLights, specularDirs } from "../src/r
 import { packLighting } from "../src/render3d/lightset.ts";
 import { type GxLight, diffuseChannel } from "../src/render3d/gx.ts";
 import { HSD_MtxInverseTranspose, PSVECNormalize, mtxToGL3 } from "../src/render3d/gxmath.ts";
-import { SHADERS } from "../src/render3d/renderer.ts";
+import { MATF, MATI, SHADERS } from "../src/render3d/renderer.ts";
 import { browser, runPage } from "./webgl.ts";
 
 const f = Math.fround;
@@ -104,7 +104,7 @@ gl.uniform4fv(U("uLA"), ${JSON.stringify(Array.from(L.attnA))});
 gl.uniform4fv(U("uLK"), ${JSON.stringify(Array.from(L.attnK))});
 gl.uniform1i(U("uOverMode"), 0);
 // the material block: its ambient (uMatF[1]), the lit channel (uMatI[0].y = 2), no textures
-const blk = new ArrayBuffer((30 + 8) * 16), F = new Float32Array(blk, 0, 120), I = new Int32Array(blk, 480, 32);
+const blk = new ArrayBuffer((${MATF} + ${MATI}) * 16), F = new Float32Array(blk, 0, ${MATF * 4}), I = new Int32Array(blk, ${MATF * 16}, ${MATI * 4});
 F.set([1, 1, 1, 1], 0); F.set([...${JSON.stringify(matAmb)}, 50], 4);
 I[1] = 2; for (let k = 4; k < 8; k++) I[k] = -1;
 const ubo = gl.createBuffer(); gl.bindBuffer(gl.UNIFORM_BUFFER, ubo); gl.bufferData(gl.UNIFORM_BUFFER, blk, gl.STATIC_DRAW);

@@ -491,6 +491,48 @@ export function HSD_MtxSRTQuat(m: Mtx, scale: Vec, q: Vec, trans: Vec, parentSca
   return m;
 }
 
+/** HSD_MkRotationMtx: a turn by x, then y, then z (a texture's), no move */
+export function HSD_MkRotationMtx(m: Mtx, rot: Vec): Mtx {
+  const sinX = sinf(rot[0]), cosX = cosf(rot[0]);
+  const sinY = sinf(rot[1]), cosY = cosf(rot[1]);
+  const sinZ = sinf(rot[2]), cosZ = cosf(rot[2]);
+  const t1 = f32(sinX * sinY);
+  m[0] = f32(cosY * cosZ);
+  m[4] = f32(cosY * sinZ);
+  m[8] = -sinY;
+  const t2 = f32(cosX * sinY);
+  m[1] = msub(cosZ, t1, f32(cosX * sinZ));
+  m[5] = madd(sinZ, t1, f32(cosX * cosZ));
+  m[9] = f32(sinX * cosY);
+  m[2] = madd(cosZ, t2, f32(sinX * sinZ));
+  m[6] = msub(sinZ, t2, f32(sinX * cosZ));
+  m[10] = f32(cosX * cosY);
+  m[3] = 0; m[7] = 0; m[11] = 0;
+  return m;
+}
+
+const FLT_EPSILON = 1.1920928955078125e-7;
+const tmR = new Float32Array(12), tmS = new Float32Array(12), tmRot = [0, 0, 0];
+
+/** MakeTextureMtx (tobj.c): a texture's matrix, scale (repeat over scale) times turn (z negated) times move
+ *  (minus the translation, and a mirrored-in-t texture's one repeat more), each step PSMTXConcat's */
+export function MakeTextureMtx(m: Mtx, translate: Vec, scale: Vec, rotate: Vec, repeatS: number, repeatT: number,
+                               wrapT: number): Mtx {
+  const sx = f32(scale[0]), sy = f32(scale[1]);
+  const kx = Math.abs(sx) < FLT_EPSILON ? 0 : f32(repeatS / sx);
+  const ky = Math.abs(sy) < FLT_EPSILON ? 0 : f32(repeatT / sy);
+  tmRot[0] = f32(rotate[0]); tmRot[1] = f32(rotate[1]); tmRot[2] = -f32(rotate[2]);
+  const tx = -f32(translate[0]);
+  // (GX_MIRROR: 1.0F / (repeat_t / scale.y), a float32 quotient each)
+  const ty = -f32(f32(translate[1]) + (wrapT === 2 ? f32(1 / f32(repeatT / sy)) : 0));
+  PSMTXTrans(m, tx, ty, translate[2]);
+  HSD_MkRotationMtx(tmR, tmRot);
+  PSMTXConcat(tmR, m, m);
+  PSMTXScale(tmS, kx, ky, scale[2]);
+  PSMTXConcat(tmS, m, m);
+  return m;
+}
+
 /** HSD_MtxScaledAdd: out = acc + k * m, each one fused multiply-add (an envelope's weighted sum) */
 export function HSD_MtxScaledAdd(m: Mtx, acc: Mtx, out: Mtx, k: number): Mtx {
   for (let i = 0; i < 12; i++) out[i] = madd(k, m[i], acc[i]);
@@ -608,6 +650,89 @@ export function HSD_MtxGetScale(m: Mtx, out: Vec): Vec {
   // (scale = -1.0, a double: each times it, back to a float - the same as negating)
   if (PSVECDotProduct(v1, v4) < 0.0) { out[0] = -out[0]; out[1] = -out[1]; out[2] = -out[2]; }
   return out;
+}
+
+// ---------------------------------------------------------------- billboards (displayfunc.c)
+
+/** HSD_MtxColMag: a column's length (its squares as the entries are read: not fused) */
+export function HSD_MtxColMag(m: Mtx, col: number): number {
+  const a = m[col], b = m[4 + col], c = m[8 + col];
+  return sqrtf(f32(f32(f32(a * a) + f32(b * b)) + f32(c * c)));
+}
+
+const bbAx = [0, 0, 0], bbAy = [0, 0, 0], bbAz = [0, 0, 0], bbPos = [0, 0, 0], bbUy = [0, 0, 0];
+const Z_ONE = [0, 0, 1], Y_ONE = [0, 1, 0];
+const bbRot = new Float32Array(12), bbScl = new Float32Array(12);
+const colOf = (m: Mtx, c: number, v: number[]) => { v[0] = m[c]; v[1] = m[4 + c]; v[2] = m[8 + c]; return v; };
+const setCol = (m: Mtx, c: number, v: Vec, k?: number) => {
+  if (k === undefined) { m[c] = v[0]; m[4 + c] = v[1]; m[8 + c] = v[2]; }
+  else { m[c] = f32(k * v[0]); m[4 + c] = f32(k * v[1]); m[8 + c] = f32(k * v[2]); }
+};
+
+/** HSD_JObjMakePositionMtx's billboards on src (the view times the joint's matrix: a modelview) into dst: kind
+ *  JOBJ_BILLBOARD 0x200 (mkBillBoardMtx), VBILLBOARD 0x400 (mkVBillBoardMtx), HBILLBOARD 0x600
+ *  (mkHBillBoardMtx), RBILLBOARD 0x800 (mkRBillBoardMtx: turned by the joint's z rotation `rotZ`); `persp`:
+ *  JOBJ_PBILLBOARD (facing the eye, not the screen) */
+export function mkBillBoardMtx(kind: number, persp: boolean, rotZ: number, src: Mtx, dst: Mtx): Mtx {
+  const ax = bbAx, ay = bbAy, pos = bbPos;
+  if (kind === 0x200) {
+    let sx = HSD_MtxColMag(src, 0), sz = HSD_MtxColMag(src, 2);
+    colOf(src, 1, ay);
+    let sy = PSVECMag(ay);
+    colOf(src, 3, pos);
+    let az: number[];
+    if (persp) {
+      PSVECCrossProduct(pos, ay, ax);
+      PSVECCrossProduct(ax, pos, ay);
+      az = pos;
+      sz = f32(sz / -PSVECMag(az));
+    } else {
+      PSVECCrossProduct(ay, Z_ONE, ax);
+      PSVECCrossProduct(Z_ONE, ax, ay);
+      az = Z_ONE;
+      sz = f32(sz / PSVECMag(Z_ONE));
+    }
+    sx = f32(sx / PSVECMag(ax));
+    sy = f32(sy / PSVECMag(ay));
+    setCol(dst, 0, ax, sx); setCol(dst, 1, ay, sy); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else if (kind === 0x400) {
+    const az = bbAz;
+    colOf(src, 3, pos);
+    colOf(src, 1, ay);
+    let sx = HSD_MtxColMag(src, 0), sz = HSD_MtxColMag(src, 2);
+    if (persp) PSVECCrossProduct(pos, ay, ax);
+    else PSVECCrossProduct(ay, Z_ONE, ax);
+    PSVECCrossProduct(ax, ay, az);
+    sx = f32(sx / PSVECMag(ax));
+    sz = f32(sz / PSVECMag(az));
+    setCol(dst, 0, ax, sx); setCol(dst, 1, ay); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else if (kind === 0x600) {
+    const az = bbAz, uy = bbUy;
+    colOf(src, 3, pos);
+    colOf(src, 0, ax);
+    let sy = HSD_MtxColMag(src, 1), sz = HSD_MtxColMag(src, 2);
+    if (persp) {
+      // (the struct's fields squared as read: not fused)
+      uy[1] = sqrtf(f32(f32(pos[0] * pos[0]) + f32(pos[2] * pos[2])));
+      uy[0] = f32(f32(-pos[1] / uy[1]) * pos[0]);
+      uy[2] = f32(f32(-pos[1] / uy[1]) * pos[2]);
+      PSVECCrossProduct(ax, uy, az);
+    } else PSVECCrossProduct(ax, Y_ONE, az);
+    PSVECCrossProduct(az, ax, ay);
+    sy = f32(sy / PSVECMag(ay));
+    sz = f32(sz / PSVECMag(az));
+    setCol(dst, 0, ax); setCol(dst, 1, ay, sy); setCol(dst, 2, az, sz); setCol(dst, 3, pos);
+  } else {
+    const sx = HSD_MtxColMag(src, 0), sy = HSD_MtxColMag(src, 1), sz = HSD_MtxColMag(src, 2);
+    PSMTXScale(bbScl, sx, sy, sz);
+    // (MTXRotRad about z: PSMTXRotTrig with MSL's sinf and cosf)
+    const sn = sinf(rotZ), cs = cosf(rotZ);
+    PSMTXIdentity(bbRot);
+    bbRot[0] = cs; bbRot[1] = -sn; bbRot[4] = sn; bbRot[5] = cs;
+    bbRot[3] = src[3]; bbRot[7] = src[7]; bbRot[11] = src[11];
+    PSMTXConcat(bbRot, bbScl, dst);
+  }
+  return dst;
 }
 
 // ---------------------------------------------------------------- the camera (cobj.c)

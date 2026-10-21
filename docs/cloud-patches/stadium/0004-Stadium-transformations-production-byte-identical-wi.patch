@@ -1,7 +1,7 @@
 From 324f0821362fabd3120e34e2f748f858b88b0e93 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 08:01:12 +0000
-Subject: [PATCH 4/4] Stadium transformations: production byte-identical with
+Subject: [PATCH 4/8] Stadium transformations: production byte-identical with
  them off and on frozen Stadium
 
 Checked with game data, this series changed production output on every Pokemon Stadium game of the 92,

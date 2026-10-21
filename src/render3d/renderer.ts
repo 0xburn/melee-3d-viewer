@@ -14,7 +14,7 @@
  * are filtered as the file says, with the file's own mip levels.
  */
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
-import { DrawGroup, Drawable, MatState, Skeleton, TexState } from "./skeleton";
+import { DrawGroup, Drawable, MatState, Skeleton, TexState, billboardViewOf } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
 import { HSD_MtxInverseTranspose, concatGL, mtxFromGL, mtxToGL3 } from "./gxmath";
 import { type ViewLights, jointInView, lightsInView, newViewLights, specularDirs } from "./gxlights";
@@ -25,6 +25,7 @@ import {
   ALPHA_MAP_IN, COLOR_MAP_IN, Fog, MatProgram, RENDER, compileMaterial, defaultAlphaTest, minFilter, mipLevels, tevScalar,
   textureMatrix,
 } from "./gx";
+import { CNST_ALPHA, CNST_BLEND, CNST_DIFFUSE, CNST_SPECULAR, CNST_TEXREG, IN_CNST, IN_RAS, IN_STAGE, IN_TEX, IN_VALUE, type TevProgram, compileTExp, packTev } from "./texp";
 import { DEFAULT_LIGHTS, LightSet, Lighting } from "./lightset";
 import { LOOK_H, LOOK_W, Look480 } from "./look480";
 import { GamePicture, type PictureOptions } from "./picture";
@@ -41,15 +42,27 @@ const MAX_SHADOWS = 4, SHADOW_UNIT = 4;
 
 // uMatF (vec4s): 0 diffuse.rgb alpha | 1 ambient.rgb shininess | 2 specular.rgb
 //   | 3 each sampler's blend | 4 each sampler's LOD bias | 5 alpha test refs
-//   (0..255) | 6..17 each sampler's texture matrix (3 rows) | 18..29 each
-//   sampler's own TEV colors: konst, tev0, tev1
+//   (0..255), the alpha's TEV byte / 255 | 6..17 each sampler's texture
+//   matrix (3 rows) | 18..29 each sampler's own TEV colors: konst, tev0, tev1
 // uMatI (ivec4s): 0 stages, channel, flags (1 vertex base, 2 lit, 4
 //   specular), alpha test (comp0 | comp1 << 3 | op << 6) | 1 each sampler's
-//   coordinates (TexGen, -1 unused) | 2..5 each sampler's own TEV: color
-//   inputs a..d (a byte each), alpha inputs, color mode, alpha mode (op |
-//   bias << 4 | scale << 6 | clamp << 8 | on << 9) | 6, 7 the stages (tex |
-//   color map << 2 | (alpha map + 1) << 6 | phase << 10)
-const MATF = 30, MATI = 8;
+//   coordinates (TexGen, -1 unused) | 2 the TEV program's stage count, its
+//   output stage, the textures modulated after it (count, samplers 2 bits
+//   each) | 3.. its stages, three each (texp.ts packTev): the color inputs,
+//   the alpha inputs, (color mode, alpha mode, sampler, channel)
+const MAX_TEV = 16;
+/** the material block's size: its vec4s and its ivec4s */
+export const MATF = 30, MATI = 3 + MAX_TEV * 3;
+// the programs of the materials that are no material's own: the diffuse color as it is, or lit
+const PLAIN_TEV = compileTExp({ renderMode: 0 } as MObj, [], () => -1);
+const LIT_TEV = compileTExp({ renderMode: RENDER.DIFFUSE } as MObj, [], () => -1);
+/** a TEV program into a material block's integers (uMatI 2..) */
+function putTev(I: Int32Array, p: TevProgram): number {
+  const n = packTev(p, I, 12, MAX_TEV);
+  I[8] = n;
+  I[9] = Math.max(0, Math.min(p.out, n - 1));
+  return n;
+}
 // (a uniform block: each material keeps its own buffer of them, sent again
 // only when something in it changes, and a draw only binds it)
 const MAT_DECL = `layout(std140) uniform Mat {\n  vec4 uMatF[${MATF}];\n  ivec4 uMatI[${MATI}];\n};`;
@@ -111,6 +124,59 @@ bool cmpI(int f, int a, int r) {
 bool alphaPass(int a, int comp0, int ref0, int op, int comp1, int ref1) {
   bool p = cmpI(comp0, a, ref0), q = cmpI(comp1, a, ref1);
   return op == 0 ? (p && q) : op == 1 ? (p || q) : op == 2 ? (p != q) : (p == q);
+}`;
+
+// A material's TEV program (texp.ts compileTExp, runTev: the same table, run the same way): each stage's inputs
+// fetched by their codes (kind | part << 3 | index << 6), its color and alpha through tev4 / tevCmp, the result of
+// each kept for the stages after. Reads uMatI and uMatF (MAT_DECL), and tevTx (each sampler's texel) and tevRas
+// (the two rasterized colors), set before it runs.
+const TEV_PROG_GLSL = `
+ivec4 tevTx[4];
+ivec4 tevRas[2];
+ivec4 tevRes[${MAX_TEV}];
+// a constant (texp.ts CNST_*): the diffuse color, the alpha, the specular color, a sampler's blend, its own TEV colors
+ivec4 tevCnst(int id) {
+  if (id == ${CNST_DIFFUSE}) return ivec4(bytes(uMatF[0]).rgb, 255);
+  if (id == ${CNST_ALPHA}) return ivec4(bytes1(uMatF[5].z));
+  if (id == ${CNST_SPECULAR}) return ivec4(bytes(uMatF[2]).rgb, 255);
+  if (id < ${CNST_TEXREG}) return ivec4(bytes1(uMatF[3][id - ${CNST_BLEND}]));
+  return bytes(uMatF[18 + id - ${CNST_TEXREG}]);
+}
+ivec4 tevIn(int x, int tex, int chan) {
+  int kind = x & 7, part = (x >> 3) & 7, idx = x >> 6;
+  ivec4 v;
+  if (kind == ${IN_VALUE}) return ivec4(idx);
+  else if (kind == ${IN_TEX}) v = tex >= 0 ? tevTx[tex] : ivec4(0);
+  else if (kind == ${IN_RAS}) v = chan >= 0 ? tevRas[chan] : ivec4(0);
+  else if (kind == ${IN_CNST}) v = tevCnst(idx);
+  else if (kind == ${IN_STAGE}) v = tevRes[idx];
+  else return ivec4(0);
+  if (part == 0) return v;
+  return ivec4(part == 1 ? v.r : part == 2 ? v.g : part == 3 ? v.b : v.a);
+}
+ivec4 tevProgram() {
+  ivec4 h = uMatI[2];
+  for (int k = 0; k < ${MAX_TEV}; k++) {
+    if (k >= h.x) break;
+    ivec4 ci = uMatI[3 + k * 3], ai = uMatI[4 + k * 3], md = uMatI[5 + k * 3];
+    int tex = md.z, ch = md.w, cm = md.x, am = md.y;
+    ivec4 A = tevIn(ci.x, tex, ch), B = tevIn(ci.y, tex, ch), C = tevIn(ci.z, tex, ch), D = tevIn(ci.w, tex, ch);
+    ivec4 o = ivec4(0);
+    if ((cm & 512) != 0) {
+      int op = cm & 15;
+      bool cl = (cm & 256) != 0;
+      o.rgb = op >= 8 ? tevCmp(op, A, B, C, D, false, cl).rgb : tev4(A, B, C, D, ivec4(op), (cm >> 4) & 3, (cm >> 6) & 3, cl).rgb;
+    }
+    if ((am & 512) != 0) {
+      ivec4 a = tevIn(ai.x, tex, ch), b = tevIn(ai.y, tex, ch), c = tevIn(ai.z, tex, ch), d = tevIn(ai.w, tex, ch);
+      int op = am & 15;
+      bool cl = (am & 256) != 0;
+      o.a = op >= 8 ? tevCmp(op, ivec4(A.rgb, a.a), ivec4(B.rgb, b.a), ivec4(0, 0, 0, c.a), ivec4(0, 0, 0, d.a), true, cl).a
+                    : tev4(a, b, c, d, ivec4(op), (am >> 4) & 3, (am >> 6) & 3, cl).a;
+    }
+    tevRes[k] = o;
+  }
+  return h.x > 0 ? tevRes[h.y] : ivec4(0);
 }`;
 
 const VS = `#version 300 es
@@ -278,6 +344,9 @@ void main() {
   vec3 ol = toLightV(uOverPosV, pv, od);
   float rasA = m0.y == 2 ? chanOut(term(max(dot(nv, ol), 0.0), vec3(uOverLight.a))).x : m0.y == 1 ? aClr.a : uMatF[0].a;
   vOverA = uOverMode == 1 ? rasA : -1.0;
+  // (and that lit alpha is the rasterized alpha the material's alpha stage takes, lerp(0, alpha, ras.a), as it
+  // is the color's: while the light adds, a lit material's alpha is its alpha times the light's alpha by the turn)
+  if (m0.y == 2 && uOverMode == 1) vRas0.a = rasA;
   vT0 = texGen(0, aUv0, aUv1, nv, w);
   vT1 = texGen(1, aUv0, aUv1, nv, w);
   vT2 = texGen(2, aUv0, aUv1, nv, w);
@@ -329,61 +398,8 @@ ${FOG_GLSL}
 out vec4 outColor;
 
 ${TEV_GLSL}
-// a texture's own TEV stage (HSD_TObjTevDesc, gx.ts tevDescStep): GX_CC_* /
-// GX_CA_* inputs, or TOBJ_TEV_* picks of its konst, tev0 and tev1 colors
-ivec3 tevC(int code, ivec4 t, int i) {
-  if (code == 8) return t.rgb;
-  if (code == 9) return ivec3(t.a);
-  if (code == 12) return ivec3(255);
-  if (code == 13) return ivec3(128);
-  if (code < 0x80) return ivec3(0);
-  ivec4 k = bytes(uMatF[18 + i * 3]), r0 = bytes(uMatF[19 + i * 3]), r1 = bytes(uMatF[20 + i * 3]);
-  if (code == 0x80) return k.rgb;
-  if (code == 0x81) return ivec3(k.r);
-  if (code == 0x82) return ivec3(k.g);
-  if (code == 0x83) return ivec3(k.b);
-  if (code == 0x84) return ivec3(k.a);
-  if (code == 0x85) return r0.rgb;
-  if (code == 0x86) return ivec3(r0.a);
-  if (code == 0x87) return r1.rgb;
-  if (code == 0x88) return ivec3(r1.a);
-  return ivec3(0);
-}
-int tevA(int code, ivec4 t, int i) {
-  if (code == 4) return t.a;
-  if (code < 0x40) return 0;
-  ivec4 k = bytes(uMatF[18 + i * 3]), r0 = bytes(uMatF[19 + i * 3]), r1 = bytes(uMatF[20 + i * 3]);
-  if (code == 0x40) return k.r;
-  if (code == 0x41) return k.g;
-  if (code == 0x42) return k.b;
-  if (code == 0x43) return k.a;
-  if (code == 0x44) return r0.a;
-  if (code == 0x45) return r1.a;
-  return 0;
-}
-int byteAt(int v, int b) { return (v >> (8 * b)) & 0xff; }
-ivec4 tevPre(int i, ivec4 t) {
-  int cm = uMatI[4][i], am = uMatI[5][i];
-  ivec4 o = t;
-  int ci = uMatI[2][i];
-  ivec3 ca = tevC(byteAt(ci, 0), t, i), cb = tevC(byteAt(ci, 1), t, i);
-  if (((cm >> 9) & 1) != 0) {
-    ivec4 a = ivec4(ca, 0), b = ivec4(cb, 0), c = ivec4(tevC(byteAt(ci, 2), t, i), 0), d = ivec4(tevC(byteAt(ci, 3), t, i), 0);
-    int op = cm & 15;
-    bool cl = ((cm >> 8) & 1) != 0;
-    o.rgb = op >= 8 ? tevCmp(op, a, b, c, d, false, cl).rgb : tev4(a, b, c, d, ivec4(op), (cm >> 4) & 3, (cm >> 6) & 3, cl).rgb;
-  }
-  if (((am >> 9) & 1) != 0) {
-    int ai = uMatI[3][i];
-    int a = tevA(byteAt(ai, 0), t, i), b = tevA(byteAt(ai, 1), t, i), c = tevA(byteAt(ai, 2), t, i), d = tevA(byteAt(ai, 3), t, i);
-    int op = am & 15;
-    bool cl = ((am >> 8) & 1) != 0;
-    o.a = op >= 8 ? tevCmp(op, ivec4(ca, a), ivec4(cb, b), ivec4(0, 0, 0, c), ivec4(0, 0, 0, d), true, cl).a
-                  : tev4(ivec4(a), ivec4(b), ivec4(c), ivec4(d), ivec4(op), (am >> 4) & 3, (am >> 6) & 3, cl).a;
-  }
-  return o;
-}
-// a texel as the TEV takes it: round(t * 255), through its texture's own stage
+${TEV_PROG_GLSL}
+// a texel as the TEV takes it: round(t * 255)
 ivec4 sampleTex(int i) {
   float bias = uMatF[4][i];
   vec4 t;
@@ -391,52 +407,32 @@ ivec4 sampleTex(int i) {
   else if (i == 1) t = texture(uTex1, vT1.xy / vT1.z, bias);
   else if (i == 2) t = texture(uTex2, vT2.xy / vT2.z, bias);
   else t = texture(uTex3, vT3.xy / vT3.z, bias);
-  return tevPre(i, bytes(t));
+  return bytes(t);
 }
 void main() {
   if (uCast.a > 0.0) { outColor = vec4(uCast.rgb, 1.0); return; }
   ivec4 m0 = uMatI[0];
-  int nSt = m0.x, flags = m0.z;
-  ivec4 tx[4];
-  for (int i = 0; i < 4; i++) tx[i] = uMatI[1][i] >= 0 ? sampleTex(i) : ivec4(0);
-  // (the TEV, MObjMakeTExp's stages in bytes: gx.ts evalMaterial)
-  ivec4 r0 = bytes(vRas0), r1 = ivec4(bytes(vec4(vRas1, 1.0)).rgb, 255);
-  ivec4 dif = bytes(uMatF[0]);
-  ivec3 ci = (flags & 1) != 0 ? r0.rgb : dif.rgb;
-  int ai = (flags & 1) != 0 ? r0.a : dif.a;
-  ivec3 spi = bytes(vec4(uMatF[2].rgb, 1.0)).rgb;
-  for (int phase = 0; phase < 4; phase++) {
-    if (phase == 1 && (flags & 4) == 0) continue;
-    for (int s = 0; s < 8; s++) {
-      if (s >= nSt) break;
-      int d = s < 4 ? uMatI[6][s] : uMatI[7][s - 4];
-      if (((d >> 10) & 3) != phase) continue;
-      int i = d & 3;
-      ivec4 t = tx[i];
-      int b = phase == 3 ? 255 : bytes1(uMatF[3][i]);
-      int am = ((d >> 6) & 15) - 1;
-      if (phase == 1) spi = colorMap((d >> 2) & 15, spi, t, b);
-      else ci = colorMap((d >> 2) & 15, ci, t, b);
-      if (am >= 0) ai = alphaMap(am, ai, t.a, b);
-    }
-    // after the diffuse textures, the lit color: lerp(0, color, channel)
-    if (phase == 0 && (flags & 2) != 0) {
-      ivec4 l = tev4(ivec4(0), ivec4(ci, ai), r0, ivec4(0), ivec4(0), 0, 0, true);
-      ci = l.rgb; ai = l.a;
-    }
-    // after the specular ones, the specular color times its channel, added
-    if (phase == 1) {
-      spi = tev4(ivec4(0), ivec4(spi, 0), r1, ivec4(0), ivec4(0), 0, 0, true).rgb;
-      ci = tev4(ivec4(spi, 0), ivec4(0), ivec4(0), ivec4(ci, 0), ivec4(0), 0, 0, true).rgb;
-    }
-    // after everything HSD compiled, the emboss (SetupEmbossBumpTev): plus the
-    // map times the lit color unclamped, minus the map shifted toward the light
-    int bs = ((flags >> 4) & 7) - 1;
-    if (phase == 2 && bs >= 0) {
-      vec4 u = bs == 0 ? texture(uTex0, vBump) : bs == 1 ? texture(uTex1, vBump) : bs == 2 ? texture(uTex2, vBump) : texture(uTex3, vBump);
-      ci = tev4(ivec4(0), ivec4(tx[bs].rgb, 0), r0, ivec4(ci, 0), ivec4(0), 0, 0, false).rgb;
-      ci = tev4(ivec4(0), ivec4(bytes(u).rgb, 0), r0, ivec4(ci, 0), ivec4(1), 0, 0, true).rgb;
-    }
+  int flags = m0.z;
+  for (int i = 0; i < 4; i++) tevTx[i] = uMatI[1][i] >= 0 ? sampleTex(i) : ivec4(0);
+  // (the TEV, HSD_TExpCompile's stages in bytes: gx.ts evalMaterial)
+  ivec4 r0 = bytes(vRas0);
+  tevRas[0] = r0; tevRas[1] = ivec4(bytes(vec4(vRas1, 1.0)).rgb, 255);
+  ivec4 res = tevProgram();
+  ivec3 ci = res.rgb;
+  int ai = res.a;
+  // after everything HSD compiled, the emboss (SetupEmbossBumpTev): plus the
+  // map times the lit color unclamped, minus the map shifted toward the light
+  int bs = ((flags >> 4) & 7) - 1;
+  if (bs >= 0) {
+    vec4 u = bs == 0 ? texture(uTex0, vBump) : bs == 1 ? texture(uTex1, vBump) : bs == 2 ? texture(uTex2, vBump) : texture(uTex3, vBump);
+    ci = tev4(ivec4(0), ivec4(tevTx[bs].rgb, 0), r0, ivec4(ci, 0), ivec4(0), 0, 0, false).rgb;
+    ci = tev4(ivec4(0), ivec4(bytes(u).rgb, 0), r0, ivec4(ci, 0), ivec4(1), 0, 0, true).rgb;
+  }
+  // a texture the game made a shadow-style projection of: the color times its texel (the stages' phase 3)
+  ivec4 h = uMatI[2];
+  for (int s = 0; s < 4; s++) {
+    if (s >= h.z) break;
+    ci = tev4(ivec4(0), ivec4(ci, 0), tevTx[(h.w >> (s * 2)) & 3], ivec4(0), ivec4(0), 0, 0, true).rgb;
   }
   // the shadows, after all of the material's own stages: its color times
   // each one's texel (HSD_TObjSetupVolatileTev's TObjSetupTevModulateShadow)
@@ -458,13 +454,15 @@ void main() {
     ci = tev4(ivec4(ci, 0), ivec4(bytes(uOverColor).rgb, 0), ivec4(bytes1(uOverColor.a)), ivec4(0), ivec4(0), 0, 0, true).rgb;
   if (uOutline.a > 0.0)
     ci = tev4(ivec4(ci, 0), ivec4(bytes(uOutline).rgb, 0), ivec4(bytes1(uOutline.a)), ivec4(0), ivec4(0), 0, 0, true).rgb;
+  // what leaves the last stage for the pixel engine: the register's low 8 bits
+  ci &= 255; ai &= 255;
   // the alpha test, on the alpha's byte
   int at = m0.w;
   if (!alphaPass(ai, at & 7, int(uMatF[5].x + 0.5), (at >> 6) & 3, (at >> 3) & 7, int(uMatF[5].y + 0.5))) discard;
   // the fog, on the 8-bit color at the pixel's 24-bit depth (fog.ts)
-  ci = gxFogI(clamp(ci, 0, 255));
+  ci = gxFogI(ci);
   vec3 c = vec3(ci) / 255.0;
-  float a = float(clamp(ai, 0, 255)) / 255.0;
+  float a = float(ai) / 255.0;
   if (uFlat.a > 0.0) { outColor = uFlat; return; }
   // (an outline's color was laid on in the TEV; nothing after it but the fog)
   if (uOutline.a > 0.0) { outColor = vec4(c, a); return; }
@@ -513,7 +511,7 @@ void main() {
 }`;
 
 /** the programs' sources (the tests compile them in a browser) */
-export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS, TEV_GLSL };
+export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS, TEV_GLSL, TEV_PROG_GLSL, MAT_DECL, MATF, MATI };
 
 // the model programs' attribute slots (the meshes' vertex arrays serve both),
 // the uniforms looked up once they are linked, and the particles' slots
@@ -1430,6 +1428,7 @@ void main() {
     this.camera(this.viewProj, this.view, this.proj);
     this.setCull(this.viewProj);
     this.culled = 0;
+    this.bbFrame = billboardViewOf(this.view);
     invert(tmpM, view);
     this.eye = [tmpM[12], tmpM[13], tmpM[14]];
     gl.useProgram(this.prog);
@@ -1887,9 +1886,10 @@ void main() {
   private plainMaterial() {
     const F = this.matF, I = this.matI;
     F.fill(0); I.fill(0);
-    F[0] = F[1] = F[2] = F[3] = 1;
+    F[0] = F[1] = F[2] = F[3] = F[22] = 1;
     I[4] = I[5] = I[6] = I[7] = -1;
     I[3] = 7 | (7 << 3);
+    I[0] = putTev(I, PLAIN_TEV);
     this.uploadMaterial();
   }
 
@@ -1906,16 +1906,20 @@ void main() {
     if (same) return;
     // only the ones it has: a vertex picks among its own (a rigid part's all
     // pick the first)
-    this.uploadMats(M, d.nMats);
+    this.uploadMats(M, d.nMats, d);
     if (n <= L.length) L.set(M.subarray(0, n));
   }
   /** model matrices (world) and their modelviews under the camera drawn through now, into the shader: each
    *  PSMTXConcat(vmtx, model) in float32, as HSD_JObjDisp and SetupEnvelopeModelMtx make what GX is loaded with */
-  private uploadMats(M: Float32Array, count: number) {
+  private uploadMats(M: Float32Array, count: number, d: Drawable | null = null) {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
+    // (a billboard drawn through the view it was made under: its modelview as the game made it - every slot but a
+    // shared-vertex skin's second joint's)
+    const bb = d && d.bbMV && d.bbMVView === this.bbFrame && !this.shifted && this.camView === this.view ? d.bbMV : null;
     const N = this.nrmBuf, T = this.nrmTmp;
     for (let k = 0; k < count; k++) {
-      concatGL(MV, k * 16, V, 0, M, k * 16);
+      if (bb && !(k === 1 && d!.second >= 0)) MV.set(bb, k * 16);
+      else concatGL(MV, k * 16, V, 0, M, k * 16);
       // (and its normal matrix: HSD_MtxInverseTranspose of the modelview, as SetupRigidModelMtx loads it)
       mtxToGL3(HSD_MtxInverseTranspose(mtxFromGL(MV, T, k * 16), T), N, k * 9);
     }
@@ -1928,6 +1932,8 @@ void main() {
   private lastMats = new Float32Array(32);
   private lastMatsN = 0;
   private lastMatsView = -1;
+  /** the billboard view (skeleton.ts) when it is the frame's view, else -1 */
+  private bbFrame = -1;
   /** the modelviews last uploaded (uMV), the drawable's own: view times each of its matrices */
   private mvBuf = new Float32Array(160);
   /** and their normal matrices (uNrm: 3 x 3s, column major) */
@@ -2228,26 +2234,18 @@ void main() {
     const bytes = new Uint8Array(MAT_BYTES);
     const F = new Float32Array(bytes.buffer, 0, MATF * 4), I = new Int32Array(bytes.buffer, MATF * 16, MATI * 4);
     I[4] = I[5] = I[6] = I[7] = -1;
-    const pack = (x: number[]) => (x[0] | (x[1] << 8) | (x[2] << 16) | (x[3] << 24)) | 0;
-    const md = (op: number, b: number, sc: number, clamp: number, on: boolean) =>
-      (op & 15) | ((b & 3) << 4) | ((sc & 3) << 6) | (clamp ? 1 << 8 : 0) | (on ? 1 << 9 : 0);
     p.textures.forEach((ti, n) => {
       const t = s.tex[ti].tobj;
       I[4 + n] = p.texGen[n];
       F[16 + n] = t.lod ? t.lod.bias : 0;
-      const tv = t.tev;
-      if (!tv) return;
-      I[8 + n] = pack(tv.colorIn);
-      I[12 + n] = pack(tv.alphaIn);
-      I[16 + n] = md(tv.colorOp, tv.colorBias, tv.colorScale, tv.colorClamp, (tv.active & 0x40000000) !== 0);
-      I[20 + n] = md(tv.alphaOp, tv.alphaBias, tv.alphaScale, tv.alphaClamp, (tv.active & 0x80000000) !== 0);
     });
-    const st = p.stages;
-    for (let k = 0; k < st.length && k < 8; k++) {
-      const q = st[k];
-      I[24 + k] = q.tex | (q.colorMap << 2) | ((q.alphaMap + 1) << 6) | (q.phase << 10);
-    }
-    I[0] = Math.min(st.length, 8);
+    // the TEV program, as texp.ts packs it, and the textures modulated after it (the stages' phase 3)
+    const nTev = putTev(I, p.tev);
+    if (nTev < p.tev.stages.length) console.warn(`a material's TEV has ${p.tev.stages.length} stages: ${MAX_TEV} run`);
+    const late = p.stages.filter((q) => q.phase === 3).slice(0, 4);
+    I[10] = late.length;
+    I[11] = late.reduce((m, q, k) => m | ((q.tex & 3) << (k * 2)), 0);
+    I[0] = nTev;
     I[1] = p.channel;
     I[2] = (p.vertexBase ? 1 : 0) | (p.lit ? 2 : 0) | (p.specular ? 4 : 0) | ((p.bump + 1) << 4) |
            (s.mobj.renderMode & RENDER.SHADOW ? 256 : 0) | (s.mobj.renderMode & RENDER.XLU ? 512 : 0);
@@ -2290,6 +2288,9 @@ void main() {
     if (F[2] !== dif[2]) { F[2] = dif[2]; ch = true; }
     const al = Math.fround(s.alpha);
     if (F[3] !== al) { F[3] = al; ch = true; }
+    // (the alpha as the TEV takes it: HSD_TExpSetReg's byte)
+    const ab = Math.fround(tevScalar(s.alpha));
+    if (F[22] !== ab) { F[22] = ab; ch = true; }
     if (F[4] !== amb[0]) { F[4] = amb[0]; ch = true; }
     if (F[5] !== amb[1]) { F[5] = amb[1]; ch = true; }
     if (F[6] !== amb[2]) { F[6] = amb[2]; ch = true; }
@@ -2373,10 +2374,11 @@ void main() {
     this.viewLights();
     const F = this.matF, I = this.matI;
     F.fill(0); I.fill(0);
-    F[0] = color[0]; F[1] = color[1]; F[2] = color[2]; F[3] = alpha;
+    F[0] = color[0]; F[1] = color[1]; F[2] = color[2]; F[3] = alpha; F[22] = tevScalar(alpha);
     F[4] = F[5] = F[6] = 1;
     I[4] = I[5] = I[6] = I[7] = -1;
     I[1] = 2; I[2] = 2; I[3] = 7 | (7 << 3);
+    I[0] = putTev(I, LIT_TEV);
     this.uploadMaterial();
     this.specKey[3] = -1;
     gl.enable(gl.BLEND);

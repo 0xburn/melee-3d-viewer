@@ -137,6 +137,24 @@ test("HSD_MtxSRT, HSD_MtxSRTQuat, HSD_MtxScaledAdd, HSD_MtxGetScale, HSD_MtxInve
        (a) => Array.from(G.HSD_MtxInverseConcat(M(a), M(a, 12), new Float32Array(12))));
 });
 
+test("HSD_MkRotationMtx and MakeTextureMtx (a texture's matrix)", { skip }, () => {
+  same("mkrot", Array.from({ length: N }, () => vec(3, -7, 7)), (a) => Array.from(G.HSD_MkRotationMtx(new Float32Array(12), a)));
+  // (scales near 0 too, repeats 1 to 8, wrap clamp, repeat or mirror)
+  const tex = Array.from({ length: N }, () => [...vec(3, -3, 3), f(-4, 4), rnd() < 0.05 ? 0 : f(-4, 4), f(0.5, 2), ...vec(3, -7, 7),
+                                               1 + Math.floor(rnd() * 8), 1 + Math.floor(rnd() * 8), Math.floor(rnd() * 3)]);
+  same("texmtx", tex, (a) => Array.from(G.MakeTextureMtx(new Float32Array(12), a.slice(0, 3), a.slice(3, 6), a.slice(6, 9), a[9], a[10], a[11])));
+});
+
+test("the billboards: mkBillBoardMtx, mkVBillBoardMtx, mkHBillBoardMtx, mkRBillBoardMtx", { skip }, () => {
+  // (a modelview: the joint in front of the camera, z negative)
+  const ins = Array.from({ length: N }, () => {
+    const m = mtx();
+    m[11] = f(-500, -20);
+    return [...m, [0x200, 0x400, 0x600, 0x800][Math.floor(rnd() * 4)], rnd() < 0.5 ? 1 : 0, f(-7, 7)];
+  });
+  same("billboard", ins, (a) => Array.from(G.mkBillBoardMtx(a[12], !!a[13], a[14], M(a), new Float32Array(12))));
+});
+
 test("the matrices move to and from GL's column-major 4 x 4s unchanged", () => {
   const m = Float32Array.from(mtx());
   const gl = G.mtxToGL(m, new Float32Array(16));
