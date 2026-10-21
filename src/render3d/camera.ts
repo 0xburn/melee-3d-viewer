@@ -91,7 +91,26 @@ export const CAM_STRIDE = 7;
 /** the camera on each frame: eye x y z, interest x y z, vertical field of
  *  view in degrees */
 export function runCamera(st: StageCamera, frames: CamActor[][]): Float32Array {
-  const out = new Float32Array(frames.length * CAM_STRIDE);
+  const run = cameraRun(st, (f) => frames[f], frames.length);
+  run.advance(frames.length);
+  return run.out;
+}
+
+/** a camera run that goes on as far as it is asked: the frames' fighters come from `actorsAt` one frame at a time,
+ *  `advance(to)` runs the frames up to `to` (the game's camera is a state from one frame to the next, so they are
+ *  run in order, from the first), and `out` is the whole track, filled as far as `done`. `fixed`: the first frames
+ *  of a track the game's own camera made, which replace what the run makes for them (the run goes on from its own
+ *  state, as it always did). */
+export interface CameraRun {
+  readonly out: Float32Array;
+  readonly total: number;
+  readonly done: number;
+  advance(to: number): void;
+}
+export function cameraRun(st: StageCamera, actorsAt: (f: number) => CamActor[], total: number,
+                          fixed?: { track: Float32Array; frames: number }): CameraRun {
+  const out = new Float32Array(total * CAM_STRIDE);
+  let done = 0;
   const subjects = new Map<string, Subject>();
   let quake: { kind: number; from: number } | null = null;
   // where the game's camera starts (its scene's camera)
@@ -101,9 +120,9 @@ export function runCamera(st: StageCamera, frames: CamActor[][]): Float32Array {
   const inside = (x: number, y: number) => ({
     x: Math.min(st.right, Math.max(st.left, x)), y: Math.min(st.top, Math.max(st.bottom, y)),
   });
-  for (let f = 0; f < frames.length; f++) {
+  const step = (f: number) => {
     // the subjects: each fighter's box, as its state has it
-    for (const a of frames[f]) {
+    for (const a of actorsAt(f)) {
       const box = a.box ?? DEFAULT_BOX, k = a.scale;
       const t = a.facing >= 0
         ? [box.back * k, box.ahead * k * st.fixedZoom, box.v[0] * k, box.v[1] * k, box.v[2] * k]
@@ -240,8 +259,17 @@ export function runCamera(st: StageCamera, frames: CamActor[][]): Float32Array {
       }
     }
     out.set([pos[0] + qx, pos[1] + qy, pos[2], interest[0] + qx, interest[1] + qy, interest[2], fov], f * CAM_STRIDE);
-  }
-  return out;
+    if (fixed && f < fixed.frames) out.set(fixed.track.subarray(f * CAM_STRIDE, (f + 1) * CAM_STRIDE), f * CAM_STRIDE);
+  };
+  return {
+    out,
+    total,
+    get done() { return done; },
+    advance(to: number) {
+      const end = Math.min(total, to);
+      while (done < end) step(done++);
+    },
+  };
 }
 
 // the picture's four corners, cast onto the stage's plane: if one reaches

@@ -25,7 +25,7 @@ import * as files from "./files";
 import { Hud3D } from "./Hud3D";
 import { CRT_LOOKS, type CrtPreset, isCrtPreset, tubeOutline, unbend } from "./crt";
 import { invert, lookAt, mat, perspective, translation, mul } from "./math";
-import { CAM_STRIDE, CamActor, playerScales, runCamera } from "./camera";
+import { CAM_STRIDE, CamActor, CameraRun, cameraRun, playerScales } from "./camera";
 import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf } from "./hitlag";
 import { setBillboardView } from "./skeleton";
 import { DEFAULT_LIGHTING, Renderer } from "./renderer";
@@ -877,7 +877,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const playerScale = playerScales(data.settings.playerSettings);
     // (the quakes the fighters' hits and bounces start: hitlag.ts)
     const hf = kit()?.hitFeel ?? HIT_FEEL;
-    const frames: CamActor[][] = data.frames.map((fr, i) => {
+    // (each frame's fighters as the run asks for them, not all of the replay's up front)
+    const actorsAt = (i: number): CamActor[] => {
+      const fr = data.frames[i];
       const out: CamActor[] = [];
       const add = (key: string, s: PlayerState, costume: number, at?: [number, number], before?: PlayerState) => {
         const f = fs.get(`${s.internalCharacterId}:${costume}`);
@@ -915,16 +917,33 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         }
       });
       return out;
-    });
-    const own = runCamera(st.camera, frames);
-    if (fromTrack) own.set(fromTrack.subarray(0, Math.max(0, Math.min(data.frames.length, tr!.until + 123)) * CAM_STRIDE));
-    return own;
+    };
+    const run = cameraRun(st.camera, actorsAt, data.frames.length,
+                          fromTrack ? { track: fromTrack, frames: Math.max(0, Math.min(data.frames.length, tr!.until + 123)) } : undefined);
+    camRun = run;
+    return run.out;
   });
+  // (the run goes on as far as the picture needs: camTrackTo; the rest in the page's idle time once the player is up)
+  let camRun: CameraRun | null = null;
+  const camTrackTo = (f: number): Float32Array | null => {
+    const t = camTrack();
+    if (t && camRun && camRun.out === t) camRun.advance(f + 1);
+    return t;
+  };
+  const camFill = () => {
+    const run = camRun;
+    if (!run || run.done >= run.total) return;
+    idle((left) => {
+      if (camRun !== run) return;
+      while (run.done < run.total && left() > 1) run.advance(run.done + 250);
+      camFill();
+    });
+  };
   // the game camera's inverse view at a frame (a screen KO is placed by
   // it: the game's own, not the page's closer look), or null without it
   const camInvScratch = mat(), camViewScratch = mat();
   const camInvAt = (f: number): Float32Array | null => {
-    const track = camTrack();
+    const track = camTrackTo(f);
     if (!track || (f + 1) * CAM_STRIDE > track.length) return null;
     const t = f * CAM_STRIDE;
     lookAt(camViewScratch, [track[t], track[t + 1], track[t + 2]], [track[t + 3], track[t + 4], track[t + 5]]);
@@ -1175,6 +1194,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   /** the warm-up's steps done so far (the watch's: still moving) */
   let warmSteps = 0;
   const [warm, setWarm] = createSignal(false);
+  createEffect(() => { if (warm()) { camTrack(); untrack(camFill); } });
   // (each new start of the warm-up: the effect below starts it again even
   // when the warm-up under way was not done - runs put over the replay while
   // it loads used to stop it for good)
@@ -1408,7 +1428,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const dist = halfH / Math.tan(FOVY / 2) / Math.max(0.05, replayStore.zoom);
     const k = cam.dist === 0 || !replayStore.running ? 1 : 0.08;
     cam.x += (cx - cam.x) * k; cam.y += (cy - cam.y) * k; cam.dist += (dist - cam.dist) * k;
-    const track = camTrack();
+    const track = camTrackTo(fno);
     if (track && (fno + 1) * CAM_STRIDE <= track.length) {
       // the game's own camera (camera.ts), run for this replay; a closer
       // look (the page's zoom) brings the eye toward what it looks at
@@ -2808,7 +2828,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     swords: () => fxw?.swords.debug() ?? null,
     /** the match camera at a replay index (the track's when there is one): eye, interest, field of view */
     camera: (f: number) => {
-      const t = camTrack();
+      const t = camTrackTo(f);
       if (!t || (f + 1) * CAM_STRIDE > t.length) return null;
       return Array.from(t.subarray(f * CAM_STRIDE, (f + 1) * CAM_STRIDE)).map((v) => Math.round(v * 100) / 100);
     },
@@ -3244,7 +3264,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const vs = { tint: { frames: 0, same: 0 }, tex: { frames: 0, same: 0 }, cam: { frames: 0, eye: [] as number[], aim: [] as number[] },
                    // (model parts: every part's every frame, and the frames either has one switched)
                    part: { frames: 0, same: 0, switched: 0, switchedSame: 0, by: {} as Record<string, [number, number, Record<string, number>]> } };
-      const own = ag ? camTrack() : null, theirs = ag?.has("cam") ? camFromTrack(ag, data.frames.length) : null;
+      const own = ag ? camTrackTo(data.frames.length) : null, theirs = ag?.has("cam") ? camFromTrack(ag, data.frames.length) : null;
       const tfaces = ag ? trackFacesOf(ag) : null;
       // (the stage's code, with the track and without it: each frame the
       // parts it has up, the animation each is on and from when, and the

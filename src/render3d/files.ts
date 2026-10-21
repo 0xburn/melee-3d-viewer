@@ -127,6 +127,19 @@ export function status(): Promise<Status> {
 // (the page's: every player on it fetches a file once - bytes nobody changes)
 const files = pageCache<Promise<ArrayBuffer>>("gameFiles");
 
+const discKeys = new WeakMap<FileSource, Promise<string | null>>();
+/** this source's disc key: the SHA-256 of its PlCo.dat (another disc, another version of the game's files, another
+ *  mod: a different file; every replay reads it); null where it cannot be made */
+function discKey(): Promise<string | null> {
+  const src = currentSource();
+  let p = discKeys.get(src);
+  if (!p) {
+    p = file("PlCo.dat").then(sha256).catch(() => null);
+    discKeys.set(src, p);
+  }
+  return p;
+}
+
 export function file(name: string): Promise<ArrayBuffer> {
   sourceUsed = true;
   const p = sharedPromise(files, name, () => {
@@ -254,12 +267,9 @@ interface ExecutableRecord extends ExecutableInfo { v: 1; key: string }
 async function executableKey(): Promise<string | null> {
   const src = currentSource();
   if (!src.identity) return null;
-  const [id, plco] = await Promise.all([
-    src.identity("Start.dol").then((x) => x ?? src.identity!("main.dol")),
-    file("PlCo.dat"),
-  ]);
-  const hash = await sha256(plco);
-  return id && hash ? `${id}|${hash}` : null;
+  const [start, main, disc] = await Promise.all([src.identity("Start.dol"), src.identity("main.dol"), discKey()]);
+  const id = start ?? main;
+  return id && disc ? `${id}|${disc}` : null;
 }
 
 /** The action table and the font, once per page. The browser keeps them (gamecache.ts)

@@ -661,27 +661,35 @@ export function decodePObj(a: Archive, p: PObj): Mesh {
 
 // ---------------------------------------------------------------- textures
 
+// (the 5, 6 and 3 bit channels spread over 0-255, as rgb565 and rgb5a3 below do: a lookup, not a sum a pixel)
+const E5 = Uint8Array.from({ length: 32 }, (_, v) => v * 255 / 31 | 0);
+const E6 = Uint8Array.from({ length: 64 }, (_, v) => v * 255 / 63 | 0);
+const E3 = Uint8Array.from({ length: 8 }, (_, v) => v * 255 / 7 | 0);
+
 /** Decode a GX texture to RGBA8. A color-indexed image needs its palette;
  * an index past the palette's end reads as transparent black. */
 export function decodeImage(a: Archive, img: Image, tlut: Tlut | null): Uint8Array {
   const { width: w, height: h, format: f } = img;
   const d = a.data;
   const out = new Uint8Array(w * h * 4);
-  const put = (x: number, y: number, r: number, g: number, b: number, al: number) => {
-    if (x >= w || y >= h) return;
-    const i = (y * w + x) * 4;
-    out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = al;
-  };
-  const pal: number[][] = [];
+  // the palette, four bytes an entry
+  const palN = tlut ? tlut.count : 0;
+  const pal = new Uint8Array(palN * 4);
   if (tlut) {
-    for (let i = 0; i < tlut.count; i++) pal.push(paletteColor(d.getUint16(tlut.dataOff + i * 2), tlut.format));
+    for (let i = 0; i < palN; i++) {
+      const v = d.getUint16(tlut.dataOff + i * 2), at = i * 4;
+      if (tlut.format === 0) { pal[at] = pal[at + 1] = pal[at + 2] = v & 0xff; pal[at + 3] = v >> 8; } // IA8
+      else if (tlut.format === 1) { pal[at] = E5[(v >> 11) & 31]; pal[at + 1] = E6[(v >> 5) & 63]; pal[at + 2] = E5[v & 31]; pal[at + 3] = 255; }
+      else rgb5a3Into(pal, at, v);
+    }
   }
-  const none = [0, 0, 0, 0];
   const bw = [8, 8, 8, 4, 4, 4, 4, 0, 8, 8, 4, 0, 0, 0, 8][f];
   const bh = [8, 4, 4, 4, 4, 4, 4, 0, 8, 4, 4, 0, 0, 0, 8][f];
   if (!bw) throw new Error(`texture format ${f} is not a GX format`);
   let o = img.dataOff;
   const limit = d.byteLength;
+  // (a pixel outside the picture - a size that is not a whole number of blocks - is read and left out)
+  const cs = new Uint8Array(16);
   for (let by = 0; by < h; by += bh) {
     for (let bx = 0; bx < w; bx += bw) {
       if (o >= limit) return out;
@@ -690,19 +698,25 @@ export function decodeImage(a: Archive, img: Image, tlut: Tlut | null): Uint8Arr
         for (let s = 0; s < 4; s++) {
           const sx = bx + (s & 1) * 4, sy = by + (s >> 1) * 4;
           const c0 = d.getUint16(o), c1 = d.getUint16(o + 2);
-          const cs = [rgb565(c0), rgb565(c1)];
+          const r0 = E5[(c0 >> 11) & 31], g0 = E6[(c0 >> 5) & 63], b0 = E5[c0 & 31];
+          const r1 = E5[(c1 >> 11) & 31], g1 = E6[(c1 >> 5) & 63], b1 = E5[c1 & 31];
+          cs[0] = r0; cs[1] = g0; cs[2] = b0; cs[3] = 255;
+          cs[4] = r1; cs[5] = g1; cs[6] = b1; cs[7] = 255;
           if (c0 > c1) {
-            cs.push(cs[0].map((v, i) => (2 * v + cs[1][i]) / 3 | 0));
-            cs.push(cs[0].map((v, i) => (v + 2 * cs[1][i]) / 3 | 0));
+            cs[8] = (2 * r0 + r1) / 3 | 0; cs[9] = (2 * g0 + g1) / 3 | 0; cs[10] = (2 * b0 + b1) / 3 | 0; cs[11] = 255;
+            cs[12] = (r0 + 2 * r1) / 3 | 0; cs[13] = (g0 + 2 * g1) / 3 | 0; cs[14] = (b0 + 2 * b1) / 3 | 0; cs[15] = 255;
           } else {
-            cs.push(cs[0].map((v, i) => (v + cs[1][i]) / 2 | 0));
-            cs.push([0, 0, 0, 0]);
+            cs[8] = (r0 + r1) / 2 | 0; cs[9] = (g0 + g1) / 2 | 0; cs[10] = (b0 + b1) / 2 | 0; cs[11] = 255;
+            cs[12] = cs[13] = cs[14] = cs[15] = 0;
           }
           for (let y = 0; y < 4; y++) {
             const row = d.getUint8(o + 4 + y);
+            const Y = sy + y;
             for (let x = 0; x < 4; x++) {
-              const c = cs[(row >> (6 - x * 2)) & 3];
-              put(sx + x, sy + y, c[0], c[1], c[2], c.length > 3 ? c[3] : 255);
+              const X = sx + x;
+              if (X >= w || Y >= h) continue;
+              const c = ((row >> (6 - x * 2)) & 3) * 4, i = (Y * w + X) * 4;
+              out[i] = cs[c]; out[i + 1] = cs[c + 1]; out[i + 2] = cs[c + 2]; out[i + 3] = cs[c + 3];
             }
           }
           o += 8;
@@ -712,46 +726,63 @@ export function decodeImage(a: Archive, img: Image, tlut: Tlut | null): Uint8Arr
       if (f === 6) {
         // RGBA8: AR plane then GB plane
         for (let i = 0; i < 16; i++) {
-          const x = bx + (i & 3), y = by + (i >> 2);
-          put(x, y, d.getUint8(o + i * 2 + 1), d.getUint8(o + 32 + i * 2), d.getUint8(o + 32 + i * 2 + 1), d.getUint8(o + i * 2));
+          const X = bx + (i & 3), Y = by + (i >> 2);
+          const r = d.getUint8(o + i * 2 + 1), g = d.getUint8(o + 32 + i * 2), b = d.getUint8(o + 32 + i * 2 + 1), al = d.getUint8(o + i * 2);
+          if (X >= w || Y >= h) continue;
+          const j = (Y * w + X) * 4;
+          out[j] = r; out[j + 1] = g; out[j + 2] = b; out[j + 3] = al;
         }
         o += 64;
         continue;
       }
       for (let y = 0; y < bh; y++) {
+        const Y = by + y;
         for (let x = 0; x < bw; x++) {
-          const X = bx + x, Y = by + y;
+          const X = bx + x;
+          let r = 0, g = 0, b = 0, al = 0;
           switch (f) {
             case 0: { // I4
-              const b = d.getUint8(o + ((y * bw + x) >> 1));
-              const v = ((x & 1) ? b & 15 : b >> 4) * 17;
-              put(X, Y, v, v, v, v);
+              const c = d.getUint8(o + ((y * bw + x) >> 1));
+              r = g = b = al = ((x & 1) ? c & 15 : c >> 4) * 17;
               break;
             }
-            case 1: { const v = d.getUint8(o + y * bw + x); put(X, Y, v, v, v, v); break; }
+            case 1: r = g = b = al = d.getUint8(o + y * bw + x); break;
             case 2: { // IA4
-              const b = d.getUint8(o + y * bw + x);
-              const i4 = (b & 15) * 17;
-              put(X, Y, i4, i4, i4, (b >> 4) * 17);
+              const c = d.getUint8(o + y * bw + x);
+              r = g = b = (c & 15) * 17; al = (c >> 4) * 17;
               break;
             }
             case 3: { // IA8
               const at = o + (y * bw + x) * 2;
-              const i8 = d.getUint8(at + 1);
-              put(X, Y, i8, i8, i8, d.getUint8(at));
+              r = g = b = d.getUint8(at + 1); al = d.getUint8(at);
               break;
             }
-            case 4: { const c = rgb565(d.getUint16(o + (y * bw + x) * 2)); put(X, Y, c[0], c[1], c[2], 255); break; }
-            case 5: { const c = rgb5a3(d.getUint16(o + (y * bw + x) * 2)); put(X, Y, c[0], c[1], c[2], c[3]); break; }
+            case 4: { const v = d.getUint16(o + (y * bw + x) * 2); r = E5[(v >> 11) & 31]; g = E6[(v >> 5) & 63]; b = E5[v & 31]; al = 255; break; }
+            case 5: {
+              const v = d.getUint16(o + (y * bw + x) * 2);
+              if (v & 0x8000) { r = E5[(v >> 10) & 31]; g = E5[(v >> 5) & 31]; b = E5[v & 31]; al = 255; }
+              else { r = ((v >> 8) & 15) * 17; g = ((v >> 4) & 15) * 17; b = (v & 15) * 17; al = E3[(v >> 12) & 7]; }
+              break;
+            }
             case 8: { // CI4
-              const b = d.getUint8(o + ((y * bw + x) >> 1));
-              const c = pal[(x & 1) ? b & 15 : b >> 4] ?? none;
-              put(X, Y, c[0], c[1], c[2], c[3]);
+              const c = d.getUint8(o + ((y * bw + x) >> 1)), idx = (x & 1) ? c & 15 : c >> 4;
+              if (idx < palN) { const at = idx * 4; r = pal[at]; g = pal[at + 1]; b = pal[at + 2]; al = pal[at + 3]; }
               break;
             }
-            case 9: { const c = pal[d.getUint8(o + y * bw + x)] ?? none; put(X, Y, c[0], c[1], c[2], c[3]); break; }
-            case 10: { const c = pal[d.getUint16(o + (y * bw + x) * 2) & 0x3fff] ?? none; put(X, Y, c[0], c[1], c[2], c[3]); break; }
+            case 9: { // CI8
+              const idx = d.getUint8(o + y * bw + x);
+              if (idx < palN) { const at = idx * 4; r = pal[at]; g = pal[at + 1]; b = pal[at + 2]; al = pal[at + 3]; }
+              break;
+            }
+            case 10: { // CI14
+              const idx = d.getUint16(o + (y * bw + x) * 2) & 0x3fff;
+              if (idx < palN) { const at = idx * 4; r = pal[at]; g = pal[at + 1]; b = pal[at + 2]; al = pal[at + 3]; }
+              break;
+            }
           }
+          if (X >= w || Y >= h) continue;
+          const i = (Y * w + X) * 4;
+          out[i] = r; out[i + 1] = g; out[i + 2] = b; out[i + 3] = al;
         }
       }
       o += 32;
@@ -760,19 +791,10 @@ export function decodeImage(a: Archive, img: Image, tlut: Tlut | null): Uint8Arr
   return out;
 }
 
-function rgb565(v: number): number[] {
-  return [((v >> 11) & 31) * 255 / 31 | 0, ((v >> 5) & 63) * 255 / 63 | 0, (v & 31) * 255 / 31 | 0, 255];
-}
-
-function rgb5a3(v: number): number[] {
-  if (v & 0x8000) return [((v >> 10) & 31) * 255 / 31 | 0, ((v >> 5) & 31) * 255 / 31 | 0, (v & 31) * 255 / 31 | 0, 255];
-  return [((v >> 8) & 15) * 17, ((v >> 4) & 15) * 17, (v & 15) * 17, ((v >> 12) & 7) * 255 / 7 | 0];
-}
-
-function paletteColor(v: number, format: number): number[] {
-  if (format === 0) return [v & 0xff, v & 0xff, v & 0xff, v >> 8]; // IA8
-  if (format === 1) return rgb565(v);
-  return rgb5a3(v);
+/** an RGB5A3 color into four bytes of `out` at `at` */
+function rgb5a3Into(out: Uint8Array, at: number, v: number) {
+  if (v & 0x8000) { out[at] = E5[(v >> 10) & 31]; out[at + 1] = E5[(v >> 5) & 31]; out[at + 2] = E5[v & 31]; out[at + 3] = 255; }
+  else { out[at] = ((v >> 8) & 15) * 17; out[at + 1] = ((v >> 4) & 15) * 17; out[at + 2] = (v & 15) * 17; out[at + 3] = E3[(v >> 12) & 7]; }
 }
 
 // ---------------------------------------------------------------- animation
