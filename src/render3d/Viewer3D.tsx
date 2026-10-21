@@ -4633,7 +4633,8 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   // (Samus's bomb: the way it last rolled, and its joints' faster clock near the end of its fuse, from its
   // special attributes +4 and +8: item-facing.ts)
   const bomb = it.typeId === 0x5d;
-  const rotationY = bomb ? samusBombRotation(data, frame, it) : facing * Math.PI / 2;
+  // (turned to face its way only when its attributes say so: HSD_JObjSetFacingDirItem)
+  const rotationY = bomb ? samusBombRotation(data, frame, it) : art.facingTurn === false ? 0 : facing * Math.PI / 2;
   const clock = bomb && art.special ? samusBombClocks(data, frame, it, art.special(4), art.special(8)) : null;
   // a thrown item's turn, as the game has it (the viewer track's: a
   // tumbling bomb), else the way it faces and flies

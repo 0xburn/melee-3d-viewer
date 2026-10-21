@@ -105,7 +105,10 @@ export interface Article { prop: Prop; scale: number; special: ((o: number) => n
                           /** how a hand holds it (its attributes' first byte, the low three bits:
                            *  itGetHoldKind) and whether it is a heavy one (the top bit: itIsHeavy) -
                            *  itemhold.ts */
-                          hold?: number; heavy?: boolean }
+                          hold?: number; heavy?: boolean;
+                          /** whether the game turns it to face its way (its attributes' second byte, 0x20: x1_3, which
+                           *  Item_80268E5C's HSD_JObjSetFacingDirItem asks) */
+                          facingTurn?: boolean }
 
 /** An article (an item's description: attributes, special attributes, its
  *  states, its model) at `art` of an archive, in one of the item's states
@@ -145,7 +148,8 @@ export function loadArticle(a: Archive, art: number, state: number, tag: string)
   };
   return { prop, ptcl, scale: sc > 0.01 && sc < 20 ? sc : 1, special: special === null ? null : (o: number) => d.getFloat32(special + o),
            attach: attach >= 0 && attach < prop.skeleton.n ? attach : 0, modelAt,
-           hold: attr === null ? 0 : d.getUint8(attr) & 7, heavy: attr !== null && (d.getUint8(attr) & 0x80) !== 0 };
+           hold: attr === null ? 0 : d.getUint8(attr) & 7, heavy: attr !== null && (d.getUint8(attr) & 0x80) !== 0,
+           facingTurn: attr === null || (d.getUint8(attr + 1) & 0x20) !== 0 };
 }
 
 /** one of a fighter's hurtboxes: a capsule on a joint (ftData +0x30) */
