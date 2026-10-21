@@ -1,7 +1,7 @@
 From dcff4925bb09250f90f62985a3d675bf739aebee Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 08:53:41 +0000
-Subject: [PATCH 6/6] Restore the base unfrozen-stadium admission test, plus
+Subject: [PATCH 6/7] Restore the base unfrozen-stadium admission test, plus
  the explicit request
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>

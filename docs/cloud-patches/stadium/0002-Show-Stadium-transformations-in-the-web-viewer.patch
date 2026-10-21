@@ -1,7 +1,7 @@
 From 76ea35eaa538d9e91eaa1ae2aa9ad0d433c3ed1f Mon Sep 17 00:00:00 2001
 From: Kyle Havlovitz <kylehav@gmail.com>
 Date: Mon, 28 Sep 2026 18:46:28 -0700
-Subject: [PATCH 2/6] Show Stadium transformations in the web viewer
+Subject: [PATCH 2/7] Show Stadium transformations in the web viewer
 
 Add a seventh PS (unfrozen) stage button below the existing six. Keep the original PS selection frozen, preserve the selection across resets, and record the mode in exported trace metadata.
 

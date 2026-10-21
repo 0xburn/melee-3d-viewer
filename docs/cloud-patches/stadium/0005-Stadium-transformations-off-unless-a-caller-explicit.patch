@@ -1,7 +1,7 @@
 From 9f1a8884357f9cc69adeb1c11a35eeeaffca67f2 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Wed, 21 Oct 2026 08:53:31 +0000
-Subject: [PATCH 5/6] Stadium transformations: off unless a caller explicitly
+Subject: [PATCH 5/7] Stadium transformations: off unless a caller explicitly
  turns them on
 
 With the setting at its default, production output changed on the 15
