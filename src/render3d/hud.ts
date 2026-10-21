@@ -909,6 +909,29 @@ const CORNERS: number[][] = [
   [6, 6, 6, 6], [6, 7, 6, 7], [7, 8, 7, 8], [8, 8, 8, 8],
 ];
 
+/** ftLib_UpdateScreenVisibility, as ftDrawCommon_80080E18 asks it whether to draw a fighter: its camera bone on
+ *  the screen (Camera_80030BBC: in whole pixels, cut toward zero, inside the scissor), or else the point `r` from
+ *  the bone nearest the camera's line of sight (Camera_80030CFC: the camera box's size and 15), the line passing
+ *  within `r` counting too. `view` is the camera's (world to eye), `vp` its view-projection, k as toScreen's. */
+export function fighterShown(vp: Mat, view: Mat, bone: [number, number, number], r: number, k = 1): boolean {
+  const inside = (p: [number, number, number]) => {
+    const [sx, sy, w] = toScreen(vp, p, k);
+    if (w <= 0) return false;
+    const px = Math.trunc(sx), py = Math.trunc(sy);
+    return px >= 320 - 320 * k && px < 320 + 320 * k && py >= 0 && py < 480;
+  };
+  if (inside(bone)) return true;
+  // (the eye, and the way it looks: the view's rows are the eye's axes)
+  const eye = [0, 1, 2].map((c) => -(view[c * 4] * view[12] + view[c * 4 + 1] * view[13] + view[c * 4 + 2] * view[14]));
+  const dir = [-view[2], -view[6], -view[10]];
+  const len = Math.hypot(dir[0], dir[1], dir[2]) || 1;
+  const t = ((bone[0] - eye[0]) * dir[0] + (bone[1] - eye[1]) * dir[1] + (bone[2] - eye[2]) * dir[2]) / (len * len);
+  const d = [0, 1, 2].map((c) => eye[c] + dir[c] * t);
+  const dist = Math.hypot(bone[0] - d[0], bone[1] - d[1], bone[2] - d[2]);
+  if (dist < r) return true;
+  return inside([0, 1, 2].map((c) => bone[c] + ((d[c] - bone[c]) / dist) * r) as [number, number, number]);
+}
+
 /** a point of the world on the game's 640 x 480 screen (x right, y down), and its w */
 export function toScreen(vp: Mat, p: [number, number, number], k = 1): [number, number, number] {
   const [x, y, z] = p;

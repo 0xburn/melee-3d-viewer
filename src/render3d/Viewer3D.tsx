@@ -60,7 +60,7 @@ import { SHIELD_FX, trackFilesOf, trackShapes, type TrackShapes } from "./fx/dra
 import { type EggRoll, eggRollAt, YOSHI } from "./yoshiroll";
 import { kirbyStoneAt } from "./kirbystone";
 import { ROLLOUT_ATTRS, ROLLOUT_FIRST, rolloutAngle, rolloutAttrs } from "./rollout";
-import { Hud, HudActor, HudKit } from "./hud";
+import { fighterShown, Hud, HudActor, HudKit } from "./hud";
 import { drawLogCommand, setLiveGame } from "./drawlog";
 import { PoseLog, poseLogCommand } from "./poselog";
 import type { Tint as ColTint } from "./fx/colanim";
@@ -438,6 +438,21 @@ function fallLeanOf(data: ReplayData, fno: number, st: PlayerState, player: numb
   }
   if (taken < 0 || !(amount > 0)) return null;
   return { sub: which, amount: Math.min(1, amount), frame: takenAt + (fno - taken) + 1, first: taken === fno ? takenAt : undefined };
+}
+
+/** the fighters left out of this frame's draw (one set, made once) */
+const offScreenSet = new Set<unknown>();
+
+/** a fighter's camera bone (the camera box's bone_pos): its place in the fighter's bone list (ftLib_800866DC; the
+ *  model's joint past its part list's gaps, parts.ts) and the box's offset on it, world; without the joint, its
+ *  place and the box's lift */
+function cameraBone(fi: Fighter, st: PlayerState): [number, number, number] {
+  const joint = partToModelJoint(st.internalCharacterId, fi.cameraPart);
+  if (joint >= 0 && joint < fi.skeleton.n) {
+    const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
+    return [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]) as [number, number, number];
+  }
+  return [st.xPosition, st.yPosition + (fi.cameraBox?.lift ?? 8) * fi.modelScale, 0];
 }
 
 /** how far off the stage's plane a fighter stands, from the viewer track
@@ -1863,10 +1878,23 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     const hatsPosed = new Set<string>();
     // (`under`: the lights current while they are drawn, when not their own -
     // the pond's first draw, under the stage's)
+    // (the fighters the game's camera draws: ftDrawCommon_80080E18 leaves out one ftLib_UpdateScreenVisibility
+    // finds well off the screen; the mirror's and the shadows' draws, ftDrawCommon_80080C28, ask nothing)
+    const offScreen = offScreenSet;
+    offScreen.clear();
+    {
+      const sc = playerScales(data.settings.playerSettings), k = w / Math.max(1, h) / CAM_ASPECT;
+      for (const { f: fi, a } of posed) {
+        if (a.ko) continue;
+        const r = (fi.cameraBox?.v[2] ?? 8) * (sc[a.player] ?? 1) + 15;
+        if (!fighterShown(viewProj, view, cameraBone(fi, a.st), r, Math.abs(k - 1) < 0.01 ? 1 : k)) offScreen.add(a);
+      }
+    }
     const drawFighters = (pass: "opa" | "xlu", mirror = false, under: Lighting | null = null) => {
       if (layersOff.fighters) return;
       for (const { f: fi, a } of posed) {
         if (mirror && hideBits(a) & 4) continue;
+        if (!mirror && offScreen.has(a)) continue;
         const again = shared.has(fi);
         if (again) poseActor(fi, a);
         const akey = actorKey(a.player, a.nana);
@@ -2305,12 +2333,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         const magnify = drawn || (trackHidden(a) && !(hideBits(a) & 1) && !hidden(a.st));
         // (the camera bone: its place in the fighter's bone list, ftLib_800866DC; the model's joint past its
         // part list's gaps, parts.ts)
-        const joint = partToModelJoint(a.st.internalCharacterId, fi.cameraPart);
-        let bone: [number, number, number] | null = null;
-        if (magnify && joint >= 0 && joint < fi.skeleton.n) {
-          const W = fi.skeleton.world, o = fi.cameraOffset, k = joint * 16;
-          bone = [0, 1, 2].map((i) => W[k + i] * o[0] + W[k + 4 + i] * o[1] + W[k + 8 + i] * o[2] + W[k + 12 + i]) as [number, number, number];
-        } else if (magnify) bone = [a.st.xPosition, a.st.yPosition + (fi.cameraBox?.lift ?? 8) * fi.modelScale, 0];
+        const bone = magnify ? cameraBone(fi, a.st) : null;
         hudActors.push({
           player: a.player, st: a.st, drawn, magnify, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
           // (the magnifier's size: the camera box's target_ext.v.z, ftData +0x3C's last float times fp->x34_scale.y
