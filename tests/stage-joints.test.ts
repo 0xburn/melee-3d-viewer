@@ -1,7 +1,7 @@
 // A stage part's joints from the viewer track ("sp"): the track counts from
 // the joint the game puts above the file's root, so its joint 1 is the
-// part's joint 0; a value not sent is the file's rest, a joint not sent keeps
-// the viewer's own pose, and a part the track moves is no longer still.
+// part's joint 0; a value not sent, and a joint not sent, keep the viewer's
+// own pose, and a part the track moves is no longer still.
 //
 //   deno test --no-check --sloppy-imports tests/
 
@@ -18,7 +18,7 @@ function part(n: number): Part {
   return { index: 4, skeleton, joints, still: true } as unknown as Part;
 }
 
-test("a stage part's joints by the track's count, a value not sent at the file's rest", () => {
+test("a stage part's joints by the track's count, a value not sent the viewer's own", () => {
   const t = new ViewerTrack({
     version: 2, decoded: true,
     events: [
@@ -33,12 +33,12 @@ test("a stage part's joints by the track's count, a value not sent at the file's
   const p = part(3);
   layStageJoints(p, t.pose("sp", "4", 9)!.joints);
   const sk = p.skeleton;
-  assert.deepEqual([...sk.trans.subarray(0, 3)], [0, 25, 0]);
-  assert.deepEqual([...sk.rot.subarray(0, 3)], [0, 0, 0]);
-  assert.deepEqual([...sk.scale.subarray(0, 3)], [1, 1, 1]);
+  assert.deepEqual([...sk.trans.subarray(0, 3)], [7, 25, 7]);
+  assert.deepEqual([...sk.rot.subarray(0, 3)], [7, 7, 7]);
+  assert.deepEqual([...sk.scale.subarray(0, 3)], [7, 7, 7]);
   // (joint 1 was never sent: the viewer's own)
   assert.deepEqual([...sk.rot.subarray(3, 6)], [7, 7, 7]);
-  assert.deepEqual([...sk.rot.subarray(6, 9)], [2, 0, 1.5]);
-  assert.deepEqual([...sk.trans.subarray(6, 9)], [0, 20, 0]);
+  assert.deepEqual([...sk.rot.subarray(6, 9)], [7, 7, 1.5]);
+  assert.deepEqual([...sk.trans.subarray(6, 9)], [7, 7, 7]);
   assert.equal(p.still, false);
 });

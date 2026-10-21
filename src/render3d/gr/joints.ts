@@ -5,9 +5,13 @@
  * code left them at the frame's end: Fountain of Dreams' platforms, Yoshi's
  * Story's, Pokemon Stadium's, the backgrounds. With them the parts stand as
  * the game had them, over what the viewer plays and works out itself. A
- * value of a joint sent is at its file's rest until it is sent itself; a
- * joint never sent (still at rest in the game, or one the simulator does not
- * write: a quaternion's) keeps the viewer's own pose. The track counts a
+ * value the track sends stands until it sends another; a value of a joint
+ * never sent - nor the joint itself (still at rest in the game, one the
+ * simulator does not write: a quaternion's, or one on a part whose animation
+ * the simulator does not play) - keeps the viewer's own pose. (Where the
+ * simulator plays the part's animation, a value never sent is the file's
+ * rest there, which the viewer's own animation of the same file gives too;
+ * where it does not, the viewer's own is the game's, not the rest.) The track counts a
  * part's joints from the joint the game puts above the file's root
  * (Ground_801C14D0's scale joint, the part's place here): the file's root,
  * the part's joint 0 here, is its 1.
@@ -40,17 +44,16 @@ export class TrackJoints implements StageLogic {
   }
 }
 
-/** a part's joints from the track's (by its count, the file's root 1), a value not sent at the file's rest */
+/** a part's joints from the track's (by its count, the file's root 1), a value not sent the viewer's own */
 export function layStageJoints(part: Part, joints: Map<number, Float32Array>) {
   const sk = part.skeleton;
   for (const [j, v] of joints) {
     const i = j - 1;
     if (i < 0 || i >= sk.n) continue;
-    const rest = part.joints[i];
     for (let k = 0; k < 3; k++) {
-      sk.rot[i * 3 + k] = Number.isNaN(v[k]) ? rest.rot[k] : v[k];
-      sk.scale[i * 3 + k] = Number.isNaN(v[3 + k]) ? rest.scale[k] : v[3 + k];
-      sk.trans[i * 3 + k] = Number.isNaN(v[6 + k]) ? rest.trans[k] : v[6 + k];
+      if (!Number.isNaN(v[k])) sk.rot[i * 3 + k] = v[k];
+      if (!Number.isNaN(v[3 + k])) sk.scale[i * 3 + k] = v[3 + k];
+      if (!Number.isNaN(v[6 + k])) sk.trans[i * 3 + k] = v[6 + k];
     }
   }
   // (a part the file has no animation for stands still, unless the game moves it)
