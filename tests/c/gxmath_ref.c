@@ -437,6 +437,28 @@ static float det3x4(Mtx m)
     return d;
 }
 
+static void HSD_MtxInverseTranspose(Mtx src, Mtx dest)
+{
+    float det = det3x4(src);
+    Mtx o;
+    if (fabsf(det) < 0.0000000001f) {
+        memcpy(dest, src, sizeof(Mtx));
+        return;
+    }
+    det = 1.0f / det;
+    o[0][0] = fmaf(src[1][1], src[2][2], -(src[2][1] * src[1][2])) * det;
+    o[1][0] = -fmaf(src[0][1], src[2][2], -(src[2][1] * src[0][2])) * det;
+    o[2][0] = fmaf(src[0][1], src[1][2], -(src[1][1] * src[0][2])) * det;
+    o[0][1] = -fmaf(src[1][0], src[2][2], -(src[2][0] * src[1][2])) * det;
+    o[1][1] = fmaf(src[0][0], src[2][2], -(src[2][0] * src[0][2])) * det;
+    o[2][1] = -fmaf(src[0][0], src[1][2], -(src[1][0] * src[0][2])) * det;
+    o[0][2] = fmaf(src[1][0], src[2][1], -(src[2][0] * src[1][1])) * det;
+    o[1][2] = -fmaf(src[0][0], src[2][1], -(src[2][0] * src[0][1])) * det;
+    o[2][2] = fmaf(src[0][0], src[1][1], -(src[1][0] * src[0][1])) * det;
+    o[0][3] = 0; o[1][3] = 0; o[2][3] = 0;
+    memcpy(dest, o, sizeof(Mtx));
+}
+
 /* p * q +- r: the left product fused, the right one rounded first */
 #define MSUB(p, q, r) fmaf((p), (q), -(r))
 #define MADD(p, q, r) fmaf((p), (q), (r))
@@ -514,7 +536,7 @@ int main(int argc, char** argv)
         { "quat", 4, 12 }, { "rotaxis", 4, 12 }, { "normalize", 3, 3 }, { "mag", 3, 1 }, { "cross", 6, 3 }, { "dot", 6, 1 },
         { "lookat", 9, 12 }, { "perspective", 4, 16 }, { "frustum", 6, 16 }, { "ortho", 6, 16 }, { "srt", 13, 12 },
         { "srtquat", 14, 12 }, { "scaledadd", 25, 12 }, { "invconcat", 24, 12 }, { "sqrtf", 1, 1 }, { "sinf", 1, 1 },
-        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 },
+        { "cosf", 1, 1 }, { "tanf", 1, 1 }, { "frsqrte", 1, 2 }, { "fres", 1, 1 }, { "view", 7, 12 }, { "invxpose", 12, 12 },
     };
     int k = -1;
     for (int i = 0; i < (int) (sizeof F / sizeof F[0]); i++) if (!strcmp(F[i].name, fn)) k = i;
@@ -550,6 +572,7 @@ int main(int argc, char** argv)
                    memcpy(r, w, 8); break; }
         case 24: r[0] = (float) fres(a[0]); break;
         case 25: cobjViewingMtx(C, a, a + 3, a[6]); memcpy(r, C, 48); break;
+        case 26: memcpy(A, a, 48); HSD_MtxInverseTranspose(A, C); memcpy(r, C, 48); break;
         }
         fwrite(r, 4, F[k].nout, out);
     }

@@ -42,7 +42,7 @@ import type { Drawable, Skeleton, TexState } from "./skeleton";
 import type { Renderer } from "./renderer";
 import type { Fog, MatProgram } from "./gx";
 import { type FogRegs, fogDecoded } from "./fog";
-import { PSMTXMultVec, PSMTXMultVecSR, PSVECNormalize, PSVECSubtract, mtxFromGL } from "./gxmath";
+import type { ViewLights } from "./gxlights";
 import {
   RENDER, blockOf, byteOf, chanColor, evalMaterial, mulColor, overColor, tevByte, tevDescStep, tevStage, textureMatrix,
 } from "./gx";
@@ -212,6 +212,8 @@ interface Inner {
   camView: Mat; camVP: Mat; camProj: Mat; camGx: Float32Array | null; shiftView: Mat; shiftVP: Mat; shifted: boolean;
   /** the modelviews the last draw uploaded */
   mvBuf: Float32Array;
+  /** the lights as uploaded in view space (gxlights.ts) */
+  lightV: ViewLights;
   /** the fog's registers as GXSetFog packs them, as uploaded (fog.ts) */
   fogRegs: FogRegs;
   mirrored: boolean;
@@ -224,7 +226,7 @@ interface Inner {
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
-export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "fogRegs", "shiftView", "shiftVP",
+export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "lightV", "fogRegs", "shiftView", "shiftVP",
                                "shifted", "mirrored",
                                "lighting",
                                "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
@@ -485,45 +487,29 @@ export class DrawLog {
    *  position 2^20 times its LObj's, as a point (setup_infinite_lightobj); a point or spot light's position
    *  (MTXMultVec), a spot's axis toward it (its light vector, interest - position, through PSMTXMultVecSR and
    *  PSVECNormalize, turned round) */
-  private lightsRec(view: Mat, first = false): Record<string, unknown>[] {
-    const l = this.inner.lighting;
-    if (!l) return [];
+  private lightsRec(_view: Mat, first = false): Record<string, unknown>[] {
+    const l = this.inner.lighting, v = this.inner.lightV;
+    if (!l || !v) return [];
     const out: Record<string, unknown>[] = [];
-    const V = mtxFromGL(view, new Float32Array(12));
-    const through = (x: number, y: number, z: number, w: number) => {
-      const v = [Math.fround(x), Math.fround(y), Math.fround(z)];
-      if (w === 0) { v[0] = Math.fround(v[0] * 1048576); v[1] = Math.fround(v[1] * 1048576); v[2] = Math.fround(v[2] * 1048576); }
-      return Array.from(PSMTXMultVec(V, v, [0, 0, 0]));
-    };
     // (a color animation's light, ftCo_8009F5AC's x588: added to the set (white, its alpha the strength), or
     // with the ambient light alone (its color): the renderer's uOverMode 1 and 2)
     const ol = this.tint?.light ?? null;
     for (let k = 0; k < (first ? Math.min(1, l.n) : l.n) && !(ol && !ol.adds); k++) {
-      const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4), Q = l.place.subarray(k * 4, k * 4 + 4);
-      const w = P[3];
-      const at = through(Q[0], Q[1], Q[2], w);
-      let ax = [0, 0, 0];
-      if (w !== 0) {
-        const I = l.interest.subarray(k * 4, k * 4 + 4);
-        const d = I[3] ? PSVECSubtract([I[0], I[1], I[2]], [Q[0], Q[1], Q[2]], [0, 0, 0]) : [-X[0], -X[1], -X[2]];
-        PSVECNormalize(d, d);
-        const v = PSVECNormalize(PSMTXMultVecSR(V, d, [0, 0, 0]), [0, 0, 0]);
-        ax = [-v[0], -v[1], -v[2]];
-      }
+      const w = l.pos[k * 4 + 3];
+      const at = Array.from(v.pos.subarray(k * 4, k * 4 + 3)), ax = Array.from(v.axis.subarray(k * 4, k * 4 + 3));
       const flags = l.attnA[k * 4 + 3];
       // (an infinite light's `at` its direction - the position GX holds, normalized - and `pos` that position)
       out.push({ k: out.length, at: (w === 0 ? unit(at) : at).map(this.num), ...(w === 0 ? { pos: at.map(this.num) } : {}),
                  infinite: w === 0, axis: ax.map(this.num),
-                 color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((v) => Math.round(v * 255)),
+                 color: Array.from(l.color.subarray(k * 4, k * 4 + 4)).map((c) => Math.round(c * 255)),
                  cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map(this.num),
                  distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map(this.num),
                  diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 && !first });
     }
     if (ol && !first) {
-      const D = ol.dir;
-      const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
+      const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((c) => Math.round(c * 255));
+      const op = Array.from(v.over.subarray(0, 3));
       // (the next light the game loads: after the set's, or the first when it is the ambient's alone)
-      const op = through(D[0], D[1], D[2], 0);
       out.push({ k: out.length, at: unit(op).map(this.num), pos: op.map(this.num), infinite: true, axis: [0, 0, 0],
                  color: [...rgb, Math.round(ol.a * 255)], cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false,
                  overlay: true });
