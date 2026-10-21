@@ -143,7 +143,10 @@ test("a mesh's record: its primitives, matrices, pixel engine and probe", () => 
   const frames = drawLogCommand(any, { take: true, stop: true }) as { frame: number; draws: Record<string, unknown>[] }[];
   assertEquals(frames.length, 1);
   assertEquals(frames[0].frame, 7);
-  const [m, g] = frames[0].draws;
+  // (the frame's picture is cleared first: the game's erase quad)
+  const [c, m, g] = frames[0].draws;
+  assertEquals(c, { kind: "clear", w: 640, h: 480, z: { test: false, func: "always", write: false },
+                    blend: { on: false, src: null, dst: null, sub: false, logic: null }, i: 0 });
   assertEquals(m.kind, "mesh");
   assertEquals(g.kind, "ghost");
   assertEquals(m.prims, [["tris", 3, "6ad436e3e6c11378"]]);
@@ -173,7 +176,7 @@ test("nothing is logged without start, and particles keep their batches", () => 
   const data = new Float32Array(17 * 4);
   for (let v = 0; v < 4; v++) { data[v * 17] = v & 1 ? 1 : -1; data[v * 17 + 1] = v & 2 ? 1 : -1; }
   any.drawParticles(data, [{ sprite: null, additive: true, near: false, zwrite: false, nozcomp: false, first: 0, count: 1 }]);
-  const [p] = log.take()[0].draws;
+  const [, p] = log.take()[0].draws;
   log.detach();
   assertEquals(p.kind, "particles");
   assertEquals((p.blend as { dst: string }).dst, "one");

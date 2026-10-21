@@ -64,9 +64,12 @@ uniform int uNumLights;
 uniform vec4 uLPos[8]; uniform vec4 uLAxis[8]; uniform vec4 uLCol[8]; uniform vec4 uLA[8]; uniform vec4 uLK[8];
 uniform vec3 uEye;    // the camera, world space
 uniform vec3 uSpecAt; // the drawn joint: the specular half-way vectors are aimed from it
-// a fighter's color animation (fx/colanim.ts): a light from uOverDir that
-// adds its color by its strength (mode 1) or lights the fighter as one more
-// light (mode 2)
+// a fighter's color animation (fx/colanim.ts): a light from uOverDir
+// (ftCo_8009F5AC's x588). Mode 1 (x7C_light_enable): a white light added to
+// the fighter's own (its alpha the strength, LOBJ_ALPHA), whose alpha channel
+// adds the color (ftMaterial_800BF534's stage); mode 2: the fighter lit by the
+// ambient light and it alone (HSD_LObjSetCurrentAll(lobj1): the set's first
+// ambient light, then x588 added), in its color
 uniform vec4 uOverLight;
 uniform vec3 uOverDir;
 uniform int uOverMode;
@@ -115,7 +118,7 @@ vec3 diffuseLights(vec3 W, vec3 N) {
   for (int k = 0; k < 8; k++) {
     if (k >= uNumLights) break;
     vec4 a = uLA[k];
-    if ((int(a.w) & 1) == 0) continue;
+    if ((int(a.w) & 1) == 0 || uOverMode == 2) continue;
     vec4 p = uLPos[k];
     vec3 ld = p.xyz; float dist = 0.0;
     if (p.w != 0.0) { vec3 v = p.xyz - W; dist = length(v); ld = v / max(dist, 1e-6); }
@@ -125,6 +128,7 @@ vec3 diffuseLights(vec3 W, vec3 N) {
     L += uLCol[k].rgb * (att * max(dot(N, ld), 0.0));
   }
   if (uOverMode == 2) L += uOverLight.rgb * max(dot(N, uOverDir), 0.0);
+  else if (uOverMode == 1) L += vec3(max(dot(N, uOverDir), 0.0));
   return min(L, vec3(1.0));
 }
 
@@ -133,6 +137,7 @@ vec3 diffuseLights(vec3 W, vec3 N) {
 // shininess as GX's specular lights are
 vec3 specularLights(vec3 W, vec3 N) {
   vec3 S = vec3(0.0);
+  if (uOverMode == 2) return S;
   vec3 cdir = normalize(uSpecAt - uEye);
   float k0 = 0.5 * uMatF[1].w, k2 = 1.0 - k0;
   for (int k = 0; k < 8; k++) {
@@ -203,6 +208,7 @@ uniform sampler2D uTex0; uniform sampler2D uTex1; uniform sampler2D uTex2; unifo
 uniform sampler2D uShadow0; uniform sampler2D uShadow1; uniform sampler2D uShadow2; uniform sampler2D uShadow3;
 uniform mat4 uShadowM[4];
 uniform int uShadowN;
+uniform int uShadowMask; // which of them this joint takes (the stage's shadow check), bit k for shadow k
 uniform vec4 uCast;
 ${MAT_DECL}
 uniform vec4 uTint; // a ghost: rgb, strength in a (0: not a ghost)
@@ -352,13 +358,15 @@ void main() {
   if ((flags & 256) != 0) {
     for (int k = 0; k < 4; k++) {
       if (k >= uShadowN) break;
+      if (((uShadowMask >> k) & 1) == 0) continue;
       vec2 st = (uShadowM[k] * vec4(vPosW, 1.0)).xy;
       vec3 s = k == 0 ? textureLod(uShadow0, st, 0.0).rgb : k == 1 ? textureLod(uShadow1, st, 0.0).rgb
              : k == 2 ? textureLod(uShadow2, st, 0.0).rgb : textureLod(uShadow3, st, 0.0).rgb;
       c = clamp(c * s, 0.0, 1.0);
     }
   }
-  c += vOverAdd;
+  // (the overlay light's added color: ftMaterial_800BF534 lays it on opaque materials only)
+  if ((flags & 512) == 0) c += vOverAdd;
   if (uOverColor.a > 0.0) c = mix(clamp(c, 0.0, 1.0), uOverColor.rgb, uOverColor.a);
   // the alpha test, on the 8-bit alpha
   float a8 = floor(clamp(a, 0.0, 1.0) * 255.0 + 0.5);
@@ -440,7 +448,7 @@ const UNIFORMS = ["uViewProj", "uView", "uMats", "uAmbLight", "uNumLights", "uLP
                   "uLCol", "uLA", "uLK", "uEye", "uSpecAt", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
                   "uFog", "uFogColor", "uPointSize", "uShadow0", "uShadow1", "uShadow2", "uShadow3", "uShadowM",
-                  "uShadowN", "uCast"];
+                  "uShadowN", "uShadowMask", "uCast"];
 const PARTICLE_ATTRS = ["aPos", "aUv", "aPrim", "aEnv", "aCmp", "aTex"];
 /** a particle quad buffer's layout (17 floats a vertex), into the vertex array bound */
 function particleAttribs(gl: WebGL2RenderingContext) {
@@ -1183,6 +1191,8 @@ void main() {
     gl.uniform1f(l.uInflate, 0);
     gl.uniform4f(l.uCast, 0, 0, 0, 0);
     gl.uniform1i(l.uShadowN, 0);
+    gl.uniform1i(l.uShadowMask, 15);
+    this.shadowMask = 15;
   }
 
   /** where the frame's scene is drawn: the 480p look's frame buffer, or the game's picture's */
@@ -1347,7 +1357,7 @@ void main() {
   /** the shadows the materials that take them get from now on: each a
    *  picture and its world-to-(s, t) matrix, the last made first, as
    *  HSD_MObjAddShadowTexture puts each new one at the head of its list */
-  setShadows(list: { tex: WebGLTexture; mtx: Mat }[]) {
+  setShadows(list: { tex: WebGLTexture; mtx: Mat; y?: number }[]) {
     const gl = this.gl;
     const n = Math.min(MAX_SHADOWS, list.length);
     for (let k = 0; k < n; k++) {
@@ -1360,6 +1370,29 @@ void main() {
     if (n) gl.uniformMatrix4fv(this.loc.uShadowM, false, this.shadowM.subarray(0, n * 16));
     gl.uniform1i(this.loc.uShadowN, n);
     this.shadowMaps = list.slice(0, n).map((x) => ({ mtx: x.mtx }));
+    for (let k = 0; k < n; k++) this.shadowY[k] = list[k].y ?? Infinity;
+  }
+  /** each shadow's fighter's height (its position's y), for the stage's shadow check */
+  private shadowY = new Float64Array(MAX_SHADOWS);
+  /** the shadows the draw being made takes: bit k for shadow k (the draw log reads it) */
+  shadowMask = 15;
+  /** a joint of a part whose stage checks each shadow (grDisplay_801C5B90: a
+   *  part flagged x10_flags.b5 asks the stage's on_check_shadow_render per
+   *  joint and fighter) takes the shadows of the fighters whose height plus
+   *  the stage's margin is above the joint's place (lb_8000B1CC's
+   *  translation); any other joint takes them all */
+  private setShadowMask(d: Drawable, sk: Skeleton | null) {
+    let mask = 15;
+    const bias = sk?.shadowBias;
+    if (bias !== null && bias !== undefined && d.state.mobj.renderMode & RENDER.SHADOW) {
+      const jy = sk!.world[d.jobj.index * 16 + 13];
+      mask = 0;
+      for (let k = 0; k < this.shadowMaps.length; k++) if (this.shadowY[k] + bias > jy) mask |= 1 << k;
+    }
+    if (mask !== this.shadowMask) {
+      this.gl.uniform1i(this.loc.uShadowMask, mask);
+      this.shadowMask = mask;
+    }
   }
   private shadowM = new Float32Array(16 * MAX_SHADOWS);
   /** the shadows set now (the draw log reads them) */
@@ -1658,6 +1691,7 @@ void main() {
     const m = this.upload(d);
     this.mats(d);
     if (!this.material(d, d.state, tint !== null, sk)) return;
+    if (this.shadowMaps.length) this.setShadowMask(d, sk);
     this.cull(d);
     // (points as wide as the model says, in the game's 480 lines: GX_SetPointSize)
     if (m.mode === gl.POINTS) gl.uniform1f(this.loc.uPointSize, (sk?.pointSize ?? 1) * this.viewH / 480);
@@ -1852,7 +1886,7 @@ void main() {
     I[0] = Math.min(st.length, 8);
     I[1] = p.channel;
     I[2] = (p.vertexBase ? 1 : 0) | (p.lit ? 2 : 0) | (p.specular ? 4 : 0) | ((p.bump + 1) << 4) |
-           (s.mobj.renderMode & RENDER.SHADOW ? 256 : 0);
+           (s.mobj.renderMode & RENDER.SHADOW ? 256 : 0) | (s.mobj.renderMode & RENDER.XLU ? 512 : 0);
     // the alpha test: the material's pixel engine's, else HSD's for its mode
     const mo = s.mobj, pe = mo.pe, mode = mo.renderMode;
     const at = pe ? [pe.alphaComp0, pe.ref0, pe.alphaOp, pe.alphaComp1, pe.ref1] : defaultAlphaTest(mode);

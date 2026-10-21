@@ -190,14 +190,15 @@ interface Inner {
   lighting: Lighting | null;
   overlayVP: Mat | null; viewProj: Mat;
   shadowMaps: { mtx: Mat }[];
+  shadowMask: number;
   live: WeakMap<Image, unknown>;
   staticsOf(s: Drawable["state"]): { p: MatProgram; I: Int32Array; F: Float32Array };
 }
 
 /** the renderer's fields and methods the log reads or wraps (a test checks they are still there) */
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "shiftView", "shiftVP", "shifted", "mirrored", "lighting",
-                               "overlayVP", "viewProj", "shadowMaps", "live", "staticsOf", "begin", "setFog", "setTint", "beginShadow",
-                               "endShadow", "drawOne",
+                               "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
+                               "setTint", "setOutline", "beginShadow", "beginMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere"] as const;
 
 export interface FrameLog { frame: number | string | null; draws: Record<string, unknown>[] }
@@ -211,6 +212,8 @@ export class DrawLog {
   private fog: Fog | null = null;
   /** the fighter's color animation the draws are made with (setTint) */
   private tint: Tint | null = null;
+  /** the outline color the draws are made in (setOutline: Mr. Game & Watch's), else null */
+  private outline: number[] | null = null;
   /** a shadow being made: the stage's shadow intensity it is drawn in (beginShadow), else null */
   private cast: number | null = null;
   private inputs = probes();
@@ -239,10 +242,14 @@ export class DrawLog {
         return out;
       };
     };
-    wrap("begin", () => this.newFrame());
+    // (each picture's erase: the game's HSD_CObjEraseScreen and the shadow's start draw it as one flat quad, the
+    // renderer clears; logged as a "clear" of the picture's size)
+    wrap("begin", () => { this.newFrame(); this.clear(640, 480); });
+    wrap("beginMirror", () => this.clear(80, 60));
     wrap("setFog", (a) => { this.fog = (a[0] as Fog | null) ?? null; });
     wrap("setTint", (a) => { this.tint = (a[0] as Tint | null) ?? null; });
-    wrap("beginShadow", (a) => { this.cast = a[3] as number; });  // (the stage's intensity, 0..255)
+    wrap("setOutline", (a) => { this.outline = (a[0] as number[] | null) ?? null; });
+    wrap("beginShadow", (a) => { this.cast = a[3] as number; this.clear(SHADOW_SIZE, SHADOW_SIZE); });  // (the stage's intensity, 0..255)
     wrap("endShadow", () => { this.cast = null; });
     wrap("drawOne", (a, drew) => { if (drew) this.mesh(a[0] as Drawable, a[1] !== null, a[2] as Skeleton | null); });
     wrap("drawGeometry", (a, drew) => { if (drew) this.add({ kind: "depth", obj: (a[0] as Drawable).key }); });
@@ -275,6 +282,11 @@ export class DrawLog {
     this.frames = [];
     this.cur = null;
     return out;
+  }
+
+  private clear(w: number, h: number) {
+    this.add({ kind: "clear", w, h, z: { test: false, func: "always", write: false },
+               blend: { on: false, src: null, dst: null, sub: false, logic: null } });
   }
 
   private note(msg: string) {
@@ -360,9 +372,11 @@ export class DrawLog {
     }
     // (a material that takes the fighters' shadows: each one a texture after its own, sampled where the point
     // falls through the shadow's matrix, its color times the texel)
-    const nShadow = d.state.mobj.renderMode & RENDER.SHADOW ? s.shadowMaps.length : 0;
+    // (only those the stage's shadow check lets onto this joint: the renderer's mask)
+    const taken = d.state.mobj.renderMode & RENDER.SHADOW ? s.shadowMaps.filter((_, k) => (s.shadowMask >> k) & 1) : [];
+    const nShadow = taken.length;
     for (let k = 0; k < nShadow; k++) {
-      const m = s.shadowMaps[k].mtx;
+      const m = taken[k].mtx;
       (rec.tex as Record<string, unknown>[]).push({
         map: p.textures.length + k, id: "efb:shadow", format: 0, w: SHADOW_SIZE, h: SHADOW_SIZE, wrap: ["clamp", "clamp"],
         mag: "near", min: "linear", lod_bias: 0, texgen: "shadow",
@@ -399,7 +413,10 @@ export class DrawLog {
     const l = this.inner.lighting;
     if (!l) return [];
     const out: Record<string, unknown>[] = [];
-    for (let k = 0; k < l.n; k++) {
+    // (a color animation's light, ftCo_8009F5AC's x588: added to the set (white, its alpha the strength), or
+    // with the ambient light alone (its color): the renderer's uOverMode 1 and 2)
+    const ol = this.tint?.light ?? null;
+    for (let k = 0; k < l.n && !(ol && !ol.adds); k++) {
       const P = l.pos.subarray(k * 4, k * 4 + 4), X = l.axis.subarray(k * 4, k * 4 + 4);
       const w = P[3];
       // (in view space, as the game loads its lights)
@@ -411,6 +428,13 @@ export class DrawLog {
                  cosatt: Array.from(l.attnA.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
                  distatt: Array.from(l.attnK.subarray(k * 4, k * 4 + 3)).map((v) => rnd(v)),
                  diffuse: (flags & 1) !== 0, specular: (flags & 2) !== 0 });
+    }
+    if (ol) {
+      const D = ol.dir;
+      const at = [0, 1, 2].map((r) => view[r] * D[0] + view[4 + r] * D[1] + view[8 + r] * D[2]);
+      const rgb = ol.adds ? [255, 255, 255] : ol.rgb.map((v) => Math.round(v * 255));
+      out.push({ k: l.n, at: at.map((v) => rnd(v)), infinite: true, axis: [0, 0, 0], color: [...rgb, Math.round(ol.a * 255)],
+                 cosatt: [1, 0, 0], distatt: [1, 0, 0], diffuse: true, specular: false, overlay: true });
     }
     return out;
   }
@@ -441,8 +465,10 @@ export class DrawLog {
     const s = d.state, l = this.inner.lighting;
     if (p.bump >= 0) return null;                     // (an emboss needs the shifted texel: not probed)
     const amb = l?.ambient ?? [0, 0, 0];
-    const anyDiffuse = !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean);
-    const anySpec = !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
+    const ol = this.tint?.light ?? null;
+    const anyDiffuse = !!ol || (!!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 1) !== 0).some(Boolean));
+    const anySpec = !(ol && !ol.adds) && !!l && Array.from({ length: l.n }, (_, k) => (l.attnA[k * 4 + 3] & 2) !== 0).some(Boolean);
+    const addsOn = !!ol && ol.adds && !(s.mobj.renderMode & RENDER.XLU);
     const c01 = (v: number) => Math.min(Math.max(v, 0), 1);
     return this.inputs.map((q) => {
       const texels = p.textures.map((ti) => {
@@ -462,8 +488,13 @@ export class DrawLog {
         diffuse: [dif[0], dif[1], dif[2]], alpha: s.alpha, specular: [s.specular[0], s.specular[1], s.specular[2]],
         ras0, ras1, texels, blend: p.textures.map((ti) => s.tex[ti].blending),
       });
+      // (the overlay light's color where its alpha channel falls: ftMaterial_800BF534's stage, prev + konst x ras.a)
+      if (addsOn) for (let i = 0; i < 3; i++) out[i] = c01(c01(out[i]) + ol!.rgb[i] * c01(s.alpha * q.s[0][3]));
       const tc = this.tint?.color;
       if (tc && tc[3] > 0) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - tc[3]) + tc[i] * tc[3];
+      // (an outline: the color so far taken toward the outline's by its alpha, ftMaterial_800BF6BC's stage)
+      const oc = this.outline;
+      if (oc) for (let i = 0; i < 3; i++) out[i] = c01(out[i]) * (1 - Math.max(oc[3], 1e-3)) + oc[i] * Math.max(oc[3], 1e-3);
       return out.map((v) => Math.round(c01(v) * 255));
     });
   }

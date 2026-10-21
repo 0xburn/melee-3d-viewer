@@ -49,6 +49,14 @@ export interface StageInfo {
   hide?: Record<number, number[]>;
   /** parts only a mirror image shows (Fountain's pond) */
   mirrorOnly?: number[];
+  /** part -> the margin of the stage's shadow check (its
+   *  on_check_shadow_render: a fighter's shadow is on a joint when the
+   *  fighter's height plus this is above the joint's), for the parts whose
+   *  code sets x10_flags.b5 (grDisplay_801C5B90 then asks it joint by joint);
+   *  the other parts take every shadow. `forms`: the same for every part of a
+   *  transformation */
+  shadowCheck?: Record<number, number>;
+  formShadowCheck?: number;
 }
 
 // Fighters' shadows: none, as in the game. The game draws a fighter's
@@ -63,21 +71,30 @@ export const STAGES: Record<number, StageInfo> = {
   // Fountain of Dreams: part 2 is scenery only the pond's mirror sees: the
   // code puts it on a layer (link 2) the mirror's camera draws and the
   // match's does not, its joints 2 and 3 hidden (grIzumi_801CCA64, 801CCEA0)
+  // (the shadow checks: grIzumi_801CBE64 sets b5 on part 3, its check
+  // grIzumi_801CD280 is "above the joint"; Stadium's grStadium_801D1570 on
+  // part 5 and its forms' parts 3, 4, 6 and 9, its check
+  // grStadium_OnCheckShadowRender "1 below the joint or above")
   2: { file: "GrIz", name: "Fountain of Dreams", parts: [0, 1, 2, 3], lightsPart: 3, fogPart: 3,
-       hide: { 2: [2, 3] }, mirrorOnly: [2] },
-  3: { file: "GrPs", name: "Pokémon Stadium", parts: [0, 1, 2, 5], lightsPart: 2, fogPart: 2 },
+       hide: { 2: [2, 3] }, mirrorOnly: [2], shadowCheck: { 3: 0 } },
+  3: { file: "GrPs", name: "Pokémon Stadium", parts: [0, 1, 2, 5], lightsPart: 2, fogPart: 2,
+       shadowCheck: { 5: 1 }, formShadowCheck: 1 },
   // Yoshi's Story: the Shy Guys' part starts its joint 5 (a cardboard figure
   // on a stick, walking across the back) on its second animation set
   // (grStory's Shy Guy setup: grAnime(gobj, 5, 7, 1, ...)); on the first it
   // stood in the sky, stretched
   8: { file: "GrSt", name: "Yoshi's Story", parts: [0, 1, 2, 3], animSets: { 3: [[5, 1]] },
        lightsPart: 3, fogPart: 3,
-       layers: { 1: { layer: 2, flags: 0x20000000, joint: 1 } } },
+       layers: { 1: { layer: 2, flags: 0x20000000, joint: 1 } },
+       // (grStory_801E3234 sets b5 on part 3; grStory_801E36D8: 1 below the joint or above)
+       shadowCheck: { 3: 1 } },
   // Dream Land: the sky and its rainbow (part 3) are a flat picture close
   // behind the tree, drawn first and hiding nothing (a star KO flies past it)
   28: { file: "GrOp", name: "Dream Land N64", parts: [0, 1, 3, 4, 5, 6, 7, 8],
         lightsPart: 5, fogPart: 5,
-        layers: { 3: { layer: 2, flags: 0x28000000, joint: 0 } } },
+        layers: { 3: { layer: 2, flags: 0x28000000, joint: 0 } },
+        // (grOldPupupu_80210B04 sets b5 on part 4; grOldPupupu_80211CA8: above the joint)
+        shadowCheck: { 4: 0 } },
   // Battlefield: part 3 is the wireframe the background passes through when
   // it changes, hidden until then (grBattle_BG_Callback0); the match starts
   // on background 1. It changes 40 to 60 seconds in, to 2 or 4, as the
@@ -642,6 +659,7 @@ export class Stage {
       all.forEach((jo, k) => { if (under(k)) jo.flags |= 0x10; });
     }
     const skeleton = new Skeleton(a, all, dobjs, tag);
+    skeleton.shadowBias = (archive ? this.info.formShadowCheck : this.info.shadowCheck?.[i]) ?? null;
     const first = (at: number) => { const p = ptr(a, g + at); return p === null ? null : ptr(a, p); };
     const aj = first(0x04), mj = first(0x08);
     const place = ident(new Float32Array(16));

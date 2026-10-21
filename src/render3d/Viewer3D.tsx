@@ -1665,7 +1665,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     prof.mark("fxStep");
     // the fighters' shadows (shadow.ts): each drawn flat into its own picture
     // through its shadow camera, before the stage, which takes them
-    const shadowMaps: { tex: WebGLTexture; mtx: Float32Array }[] = [];
+    const shadowMaps: { tex: WebGLTexture; mtx: Float32Array; y: number }[] = [];
     const sl = st && !layersOff.fighters ? st.playerLighting.shadowLight(fno) : null;
     if (st && sl) {
       const scales = playerScales(data.settings.playerSettings);
@@ -1689,7 +1689,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         r.drawSkeleton(fi.skeleton, "opa");
         fi.skeleton.passHidden = null;
         r.endShadow();
-        shadowMaps.push({ tex: t.tex, mtx: cam.tex });
+        shadowMaps.push({ tex: t.tex, mtx: cam.tex, y: a.st.yPosition });
       }
     }
     r.setShadows(shadowMaps.reverse());
@@ -1719,11 +1719,16 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         // (ftDrawCommon_80080E18), then his body over it
         if (fi.outlineColor && pass === "opa" && !mirror) {
           fi.skeleton.passHidden = fi.outlinePassHidden();
+          // (the outline pass takes neither color animation: ftMaterial_800BF6BC
+          // lays the outline's color in place of the overlay's, and
+          // ftMaterial_800BF534 adds no light overlay while x2223_b2 is set)
+          r.setTint(null);
           r.setOutline(fi.outlineColor);
           r.setNoDepthWrite(true);
           r.drawSkeleton(fi.skeleton, "opa");
           r.setNoDepthWrite(false);
           r.setOutline(null);
+          r.setTint(look.tint);
           fi.skeleton.passHidden = null;
         }
         // its face's textures on their frames (face.ts)
@@ -1755,11 +1760,13 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           // (Mr. Game & Watch's copy: its outline first, as his is drawn)
           if (kh.outline && pass === "opa") {
             kh.skin.passHidden = kh.outline.hidden;
+            r.setTint(null);
             r.setOutline(kh.outline.color);
             r.setNoDepthWrite(true);
             r.drawSkeleton(kh.skin, "opa");
             r.setNoDepthWrite(false);
             r.setOutline(null);
+            r.setTint(look.tint);
             kh.skin.passHidden = null;
           }
           r.drawSkeleton(kh.skin, pass);
@@ -1809,13 +1816,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // fighters' own lights (link 4, ftCo_8009F4A4), the fighters again over
       // their first draw, see-through parts too, and the items; then the
       // effects. So the fighters in the pond are lit as they are above it -
-      // the game's mirror image, read from the playback Dolphin's memory, says
-      // the same: nearer it than the stage's lights)
+      // the second draw covers the first at the same depth - but both are
+      // drawn, as the game draws them)
       r.setLighting(stageLit);
       // (a pass takes a joint by its own flags - OPA, TEXEDGE, XLU - not by its
       // materials': the mirror-only scenery's backdrop, joint 4, is a cut-out
       // joint whose material is see-through, so it is in the mirror's passes)
       if (!layersOff.stage) for (const sk of st.mirrorSkeletons) { r.drawSkeleton(sk, "opa"); r.drawSkeleton(sk, "xlu"); }
+      r.endPass();
+      drawFighters("opa", true);
       r.endPass();
       r.setLighting(lighting);
       drawFighters("opa", true);

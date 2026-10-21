@@ -534,6 +534,10 @@ export class Skeleton {
   readonly alsoPosed = new Set<number>();
   /** its point lists' points, pixels across in the game's 480 lines (GX_SetPointSize: 1 unless its code says) */
   pointSize = 1;
+  /** a stage part's shadow check (grDisplay_801C5B90): a shadow is laid on a
+   *  joint when its fighter's height plus this is above the joint's; null:
+   *  every shadow on every joint */
+  shadowBias: number | null = null;
   /** while set, the meshes hidden instead of `hidden` (a pass of its own) */
   passHidden: Set<number> | null = null;
 
