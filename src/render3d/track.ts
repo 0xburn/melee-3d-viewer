@@ -42,6 +42,17 @@
  *   ["lm", f, spawn_id, links, (link, out, mask, values)...]
  *       a chain's links as the item's code turned them: each link's matrix
  *       (rows 0-2 of the 3x4), link 0 the chain's end, out whether it is drawn
+ *   ["sp", f, part, (joint, mask, values)...]
+ *       a stage part's joints as its animations and code left them, the nine
+ *       values of "jp": the part by its number as "gjoint" has it (an extra
+ *       copy's plus 1000 for each made before it), the joint by its preorder
+ *       index counting the joint the game puts above the file's root as 0 (the
+ *       file's root, a part's joint 0 here, is its 1); a joint not yet sent is
+ *       at its file's rest
+ *   ["fj", f, port, sub, character, (part, mask, values)...]
+ *       a fighter's joints as the game left them (its animation, the blend into
+ *       it and what its code set after), the nine values, by part: every part
+ *       with a live joint but 0; the first line has every value
  * and the ones for later (effects, part switches, stage animations): kept,
  * asked for by type.
  *
@@ -70,7 +81,7 @@ export interface TrackData {
   decoded?: boolean;
 }
 
-/** one owner's pose lines ("jp", "fp", "lm"), each with the joints as of it */
+/** one owner's pose lines ("jp", "fp", "lm"), each with the joints as of it (the streamed ones: PoseStream) */
 interface PoseSnap { frame: number; joints: Map<number, Float32Array>; out: Map<number, number> | null; links: number }
 
 /** a pose as of a frame: by joint (an item's preorder joint, a fighter's part, a chain's link) its values -
@@ -84,7 +95,73 @@ const POSES: Record<string, { key: number; width: number; out: boolean; links: b
   jp: { key: 1, width: 9, out: false, links: false },
   fp: { key: 3, width: 9, out: false, links: false },
   lm: { key: 1, width: 12, out: true, links: true },
+  sp: { key: 1, width: 9, out: false, links: false },
+  fj: { key: 3, width: 9, out: false, links: false },
 };
+
+/** the pose types with a line on most frames (a fighter's every joint, an animated stage's): not kept as a
+ *  snapshot a line, but as their lines with a snapshot every POSE_EVERY of them, played forward from the
+ *  nearest to the frame asked for (PoseStream) */
+const STREAMED = new Set(["sp", "fj"]);
+const POSE_EVERY = 64;
+
+/** one owner's lines of a streamed pose type, and where it was last asked for: asked for frame after frame,
+ *  each step plays the lines since, into the one pose it hands out */
+class PoseStream {
+  readonly frames: number[] = [];
+  readonly lines: TrackEvent[] = [];
+  /** the joints as of line k * POSE_EVERY (made as they are first passed) */
+  private marks: Map<number, Float32Array>[] = [];
+  /** the pose handed out, as of line `at` (-1: none yet) */
+  private at = -1;
+  readonly pose: TrackPose = { joints: new Map(), out: null, links: 0 };
+
+  constructor(private first: number, private width: number) {}
+
+  /** the pose as of line i, played forward from where it is or from the mark before i */
+  seek(i: number): TrackPose {
+    const joints = this.pose.joints;
+    const k = Math.min(Math.floor(i / POSE_EVERY), this.marks.length - 1);
+    if (i < this.at || (i - this.at > POSE_EVERY && k * POSE_EVERY > this.at)) {
+      if (k >= 0) {
+        // (to a mark: its joints, into the pose's own arrays)
+        const mark = this.marks[k];
+        for (const j of joints.keys()) if (!mark.has(j)) joints.delete(j);
+        for (const [j, v] of mark) {
+          const had = joints.get(j);
+          if (had) had.set(v);
+          else joints.set(j, Float32Array.from(v));
+        }
+        this.at = k * POSE_EVERY;
+      } else {
+        joints.clear();
+        this.at = -1;
+      }
+    }
+    while (this.at < i) {
+      this.at++;
+      this.play(this.lines[this.at]);
+      if (this.at % POSE_EVERY === 0 && this.marks.length === this.at / POSE_EVERY) {
+        const mark = new Map<number, Float32Array>();
+        for (const [j, v] of joints) mark.set(j, Float32Array.from(v));
+        this.marks.push(mark);
+      }
+    }
+    return this.pose;
+  }
+
+  private play(e: TrackEvent) {
+    const joints = this.pose.joints, w = this.width;
+    let i = this.first;
+    while (i < e.length) {
+      const j = Number(e[i++]);
+      const mask = Number(e[i++]);
+      let v = joints.get(j);
+      if (!v) joints.set(j, (v = new Float32Array(w).fill(NaN)));
+      for (let k = 0; k < w; k++) if (mask & (1 << k)) v[k] = Number(e[i++]);
+    }
+  }
+}
 
 /** how many values after the type name an event's thing is (its key): the
  *  rest is its new state. Types not here are instants (an effect started). */
@@ -342,10 +419,41 @@ export class ViewerTrack {
     return byKey;
   }
 
+  /** the streamed poses ("sp", "fj"), by type and owner, made the first time they are asked for */
+  private poseStreams = new Map<string, Map<string, PoseStream>>();
+
+  private streamsOf(type: string): Map<string, PoseStream> {
+    let byKey = this.poseStreams.get(type);
+    if (byKey) return byKey;
+    byKey = new Map();
+    this.poseStreams.set(type, byKey);
+    const how = POSES[type];
+    for (const e of this.instants.get(type) ?? []) {
+      const key = e.slice(2, 2 + how.key).join(":");
+      let s = byKey.get(key);
+      if (!s) byKey.set(key, (s = new PoseStream(2 + how.key, how.width)));
+      s.frames.push(e[0]);
+      s.lines.push(e);
+    }
+    return byKey;
+  }
+
   /** an owner's pose as of game frame `frame` (its last line at or before it), or null: "jp" and "lm" by
-   *  item spawn id, "fp" by `port:sub:character` */
+   *  item spawn id, "fp" and "fj" by `port:sub:character`, "sp" by stage part. A streamed type's ("sp",
+   *  "fj") is the owner's one pose, played to the frame: good until the next ask for the same owner */
   pose(type: string, key: string, frame: number): TrackPose | null {
     if (frame >= this.until || !this.instants.has(type)) return null;
+    if (STREAMED.has(type)) {
+      const s = this.streamsOf(type).get(key);
+      if (!s || !s.frames.length || s.frames[0] > frame) return null;
+      let lo = 0, hi = s.frames.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (s.frames[mid] <= frame) lo = mid;
+        else hi = mid - 1;
+      }
+      return s.seek(lo);
+    }
     const list = this.posesOf(type).get(key);
     if (!list || !list.length || list[0].frame > frame) return null;
     let lo = 0, hi = list.length - 1;

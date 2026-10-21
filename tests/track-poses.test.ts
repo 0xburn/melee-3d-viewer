@@ -1,6 +1,6 @@
 // The viewer track's exact floats and poses: a float written as its IEEE
 // single's word ("0x3f800000") reads back as that float, from JSON and from
-// the compact form (VTB1's column kind 4); the pose lines ("jp", "fp", "lm")
+// the compact form (VTB1's column kind 4); the pose lines ("jp", "fp", "lm", "sp", "fj")
 // add up, owner by owner, to each joint's values as of a frame.
 //
 //   deno test --no-check --sloppy-imports tests/
@@ -110,4 +110,60 @@ test("a chain's links: each link's matrix and whether it is out, and the chain's
   assert.equal(b.out!.get(2), 1);
   assert.equal(b.joints.get(2)![0], 300);
   assert.equal(b.joints.get(0)![11], 11);
+});
+
+test("streamed poses (\"sp\", \"fj\") read the same as the lines added up, asked in any order", () => {
+  // a fighter's joints on most frames, a stage part's now and then: seeded, each line a few joints' values
+  let seed = 0x2545f491;
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 4294967296; };
+  const events: TrackEvent[] = [];
+  const want = new Map<string, Map<number, number[]>[]>();
+  const frames = new Map<string, number[]>();
+  for (let f = -123; f < 600; f++) {
+    for (const [type, owner, n] of [["fj", [2, 0, 9], 40], ["sp", [1004], 6]] as const) {
+      if (type === "sp" && rnd() < 0.7) continue;
+      const key = `${type}/${owner.join(":")}`;
+      const list = want.get(key) ?? [];
+      const prev = list.length ? list[list.length - 1] : new Map<number, number[]>();
+      const now = new Map([...prev].map(([j, v]) => [j, [...v]]));
+      const e: TrackEvent = [f, type, ...owner];
+      for (let j = 1; j < n; j++) {
+        if (list.length && rnd() < 0.6) continue;
+        const v = now.get(j) ?? new Array(9).fill(NaN);
+        let mask = 0;
+        for (let k = 0; k < 9; k++) if (!list.length || rnd() < 0.3) { mask |= 1 << k; v[k] = Math.fround(rnd() * 10 - 5); }
+        if (!mask) continue;
+        now.set(j, v);
+        e.push(j, mask);
+        for (let k = 0; k < 9; k++) if (mask & (1 << k)) e.push(v[k]);
+      }
+      if (e.length === 2 + owner.length) continue;
+      events.push(e);
+      list.push(now);
+      want.set(key, list);
+      frames.set(key, [...(frames.get(key) ?? []), f]);
+    }
+  }
+  const t = new ViewerTrack({ version: 2, decoded: true, events });
+  const check = (type: string, owner: string, frame: number) => {
+    const key = `${type}/${owner}`, fs = frames.get(key)!;
+    let i = -1;
+    while (i + 1 < fs.length && fs[i + 1] <= frame) i++;
+    const p = t.pose(type, owner, frame);
+    if (i < 0) return assert.equal(p, null, `${key} at ${frame}`);
+    const w = want.get(key)![i];
+    assert.equal(p!.joints.size, w.size, `${key} at ${frame}: joints`);
+    for (const [j, v] of w) {
+      const got = [...p!.joints.get(j)!];
+      assert.deepEqual(got.map((x) => (Number.isNaN(x) ? null : x)), v.map((x) => (Number.isNaN(x) ? null : x)),
+                       `${key} at ${frame}, joint ${j}`);
+    }
+  };
+  // (frame by frame, as a replay plays; then back, far ahead, and at random)
+  for (let f = -130; f < 610; f++) { check("fj", "2:0:9", f); check("sp", "1004", f); }
+  for (const f of [599, 0, -123, 300, 5, 450, 449, 64, 63, 65, 128]) { check("fj", "2:0:9", f); check("sp", "1004", f); }
+  for (let n = 0; n < 200; n++) { const f = Math.floor(rnd() * 740) - 130; check("fj", "2:0:9", f); check("sp", "1004", f); }
+  assert.equal(t.pose("fj", "2:0:10", 100), null);
+  // (one owner's pose is the same object frame to frame: nothing made per frame)
+  assert.equal(t.pose("fj", "2:0:9", 200), t.pose("fj", "2:0:9", 201));
 });
