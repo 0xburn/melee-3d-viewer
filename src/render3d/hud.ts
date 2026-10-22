@@ -50,7 +50,7 @@ const PLATE_TEXT = { dx: 0.8, top: -0.525 };
 
 // what it asks of the renderer (renderer.ts), by shape: that is a browser
 // module, which the checks, run outside a browser, cannot type
-interface RenderTarget { tex: unknown }
+interface RenderTarget { tex: unknown; erase?: boolean }
 interface Renderer {
   drawSkeleton(sk: Skeleton, pass: "opa" | "xlu"): void;
   overlay(proj: Mat, view: Mat, target?: unknown, clear?: [number, number, number, number] | null, mirrored?: boolean,
@@ -554,6 +554,8 @@ export class Hud {
         if (w <= 0) continue;
         if (!p.pic) {
           p.pic = r.target(PIC, PIC);
+          // (ifMagnify_802FBBDC erases it with a quad, HSD_CObjEraseScreen(cobj, 1, 0, 1): the draw log says so)
+          p.pic.erase = true;
           const img = p.lupe.image(2, 1);
           if (img) r.bindImage(img, p.pic.tex);
         }
