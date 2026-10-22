@@ -69,7 +69,7 @@ import { BgFlash, FLASH_CAMERA, flashQuad } from "./fx/bgflash";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
 import { itemSource } from "./item-source";
-import { isShadowBall, shadowBallScale } from "./shadow-ball";
+import { chargeShotScale, isShadowBall, shadowBallScale } from "./shadow-ball";
 import { shadowCamera } from "./shadow";
 import { stageFrame, stageRevision } from "~/simulation-stage";
 import { mark, timed } from "./startup";
@@ -4739,12 +4739,13 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   let scale = size;
   const pk = pkFlashScale(data, frame, it, art.special);
   if (pk !== null && pk > 0) scale *= pk;
-  // the charge shot grows with its charge (itsamuschargeshot: between its
-  // attributes' +0x18 and +0x1C)
-  if (a.charge && art.special) {
-    const lo = art.special(0x18), hi = art.special(0x1c);
-    if (lo > 0 && hi > 0 && hi < 50) scale *= lo + (hi - lo) * Math.min(1, it.chargeShotChargeLevel / 7);
-  }
+  // the charge shot grows with its charge, on its first grandchild (chargeShotScale: between its attributes'
+  // +0x18 and +0x1C, by Samus's most charge, her attributes' +0x18; Kirby's copy's taken as 7)
+  const maker = a.charge && art.special ? articleFighter(data, fs, it, frame) : null;
+  const chargeScale = a.charge && art.special
+    ? chargeShotScale(it.chargeShotChargeLevel, it.typeId === SAMUS_CHARGE && maker ? maker.specialAttr(0x18) : 7,
+                      art.special(0x18), art.special(0x1c))
+    : null;
   // a needle (or missile) tilts along the way it flies
   const way = a.tilt ? (it.xVelocity || it.yVelocity ? [it.xVelocity, it.yVelocity] : lastFlight(data, frame, it)) : null;
   const along = (w: number[] | null) => !w ? 0 : a.tilt === "z" ? facing * Math.atan2(w[1], w[0] * facing)
@@ -4787,6 +4788,7 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
                   byZ ? 0 : tilt, false, clock?.joint);
   }
   if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale);
+  if (chargeScale !== null) art.prop.setGrandchildScale(chargeScale);
   // (a laser stretched along its flight: Item_UpdateRayAnimation, up to its special attributes' +4)
   if (RAYS.has(it.typeId) && art.special) art.prop.setRootScaleZ(rayScale(data, frame, it, art.special(4)));
   drawnArticles.push({ type: it.typeId, state: it.state, x: it.xPosition, y: it.yPosition, tilt, scale,
@@ -4794,6 +4796,9 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   drawProp(r, art);
   return true;
 }
+
+/** Samus's charge shot (Kirby's copy: 0x97) */
+const SAMUS_CHARGE = 0x5e;
 
 /** Fox's and Falco's lasers, and Kirby's copies of them (itfoxlaser.c) */
 const RAYS = new Set([0x36, 0x37, 0x88, 0x89]);
