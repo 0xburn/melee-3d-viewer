@@ -214,3 +214,24 @@ test("0xB2: the place through the transform's matrix made again, each row readin
   assert.equal(p2.srt, g2.srt);
   assert.equal(p2.px, 1.5);
 });
+
+import { FxWorld } from "../src/render3d/fx/world.ts";
+
+test("a generator the stage's code places (grLib_801C96F8): its transform made ONCE; its own, kind 0x20000, no longer only follows", () => {
+  const cmds: CmdList[] = [];
+  cmds[30001] = cmd();
+  cmds[30002] = cmd({ kind: 0x20000 });
+  const stage = { id: 30, cmds, texGroups: [] } as unknown as EffectBank;
+  const w = new FxWorld({ id: 0, cmds: [], texGroups: [] } as unknown as EffectBank, (_c, part) => part);
+  w.stageBank = () => stage;
+  w.stageScale = 2;
+  const gen = (w as unknown as { stageGen(e: unknown[]): { srt: AppSRT | null; px: number } }).stageGen.bind(w);
+  // (["sgen", running object, file, id, x, y, z, seed, stage object, joint]: no joint)
+  const a = gen([0, "sgen", 0, 30, 30001, 5, 6, 7, 1, -1, -1])!;
+  assert.equal(a.srt!.status, APP_ONCE);
+  assert.deepEqual([a.srt!.tx, a.srt!.ty, a.srt!.tz, a.srt!.sx, a.px], [5, 6, 7, 2, 0]);
+  const b = gen([0, "sgen", 0, 30, 30002, 5, 6, 7, 1, -1, -1])!;
+  assert.equal(b.srt!.view, false);
+  assert.equal(b.srt!.status ?? 0, 0);
+  assert.deepEqual([b.srt!.tx, b.srt!.sx], [5, 2]);
+});
