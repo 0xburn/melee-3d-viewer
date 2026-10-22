@@ -1690,6 +1690,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     for (const { f: fi, a } of [...posed, ...posedHidden]) {
       const c = a.captor ? posed.find((q) => q.a === a.captor) : undefined;
       if (!c || !ek) continue;
+      // (hung on the captor's hand only while the game has it so, when the track says: ftCo_800DB368's
+      // constraint, x2226_b2, from when the pull brings it in until the throw lets go)
+      if (trackAt?.has("cns") && Number(trackAt.at("cns", `${a.player}:${a.nana ? 1 : 0}`, fno - 123)?.[0] ?? 0) !== 1) continue;
       const cc = c.a.st.internalCharacterId, vc = a.st.internalCharacterId;
       const tj = partToModelJoint(cc, ek.partToJoint(cc, TRANSN2)), vj = partToModelJoint(vc, ek.partToJoint(vc, XROTN));
       if (tj < 0 || vj < 0) continue;

@@ -166,7 +166,7 @@ class PoseStream {
 /** how many values after the type name an event's thing is (its key): the
  *  rest is its new state. Types not here are instants (an effect started). */
 const KEYS: Record<string, number> = {
-  tint: 3, charge: 3, part: 3, pos: 2, shake: 2, hide: 2,
+  tint: 3, charge: 3, part: 3, pos: 2, shake: 2, hide: 2, cns: 2,
   bg: 0, fd: 0, bgcolor: 0, cam: 0, ganim: 1, gcolor: 1, gjoint: 2,
   hook: 2, irot: 1, fdrot: 0, stadscreen: 0, anim: 2, rng: 0, fod: 0, ij: 2,
 };
