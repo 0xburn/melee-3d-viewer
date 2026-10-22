@@ -15,7 +15,10 @@ __viewer3d.poseLog({ start: true }) then { take: true }: src/render3d/poselog.ts
 
 A line's twelve values are rows 0 to 2 of the joint's 3 x 4 world matrix, row by row, each kept as its float32's
 bits; mask bit k says value k follows, and a value holds until its next line. The two are compared at every frame
-the viewer logged ("wn"), for every joint both sides have.
+the viewer logged ("wn"), for every joint both sides have of each owner the viewer drew that frame: the log has a
+line for each owner it drew (its head alone when nothing changed), and none for one it did not (a fighter KO'd,
+off the screen, hidden), whose held values are its last drawn pose, not this frame's. Those owner-frames are
+counted apart, by class.
 
 It prints, per cause group (object class, joint, which values - the 3 x 3's scale (its columns' lengths) or turn
 (their directions), the translation - and how the error goes over the frames it is wrong: constant, growing or
@@ -177,14 +180,19 @@ class Stream:
         self.lines = sorted((e for e in events if len(e) > 1 and e[1] in KINDS), key=lambda e: e[0])
         self.at = 0
         self.state: dict[tuple, dict[int, list]] = defaultdict(dict)
+        # (the owners with a line on the frame played to: in the viewer's log, the ones it drew that frame)
+        self.drawn: set[tuple] = set()
         self.kinds = {e[2]: e[3] for e in events if len(e) > 3 and e[1] == "wk"}
         self.frames = sorted({e[0] for e in events if len(e) > 1 and e[1] == "wn"})
 
     def to(self, frame: int):
+        self.drawn = set()
         while self.at < len(self.lines) and self.lines[self.at][0] <= frame:
             e = self.lines[self.at]
             self.at += 1
             owner, start = owner_of(e)
+            if e[0] == frame:
+                self.drawn.add(owner)
             have = self.state[owner]
             for joint, vals in joints_of(e, start):
                 m = have.setdefault(joint, [None] * 12)
@@ -260,11 +268,16 @@ def compare_game(track_path: str, log_path: str) -> dict:
     sim, view = Stream(read_events(track_path)), Stream(read_events(log_path))
     joints: dict[tuple, dict] = {}
     only = {"simulator": set(), "viewer": set()}
+    undrawn: dict[tuple, int] = defaultdict(int)
     compared = exact = 0
     for frame in view.frames:
         sim.to(frame)
         view.to(frame)
         for owner, vj in view.state.items():
+            if owner not in view.drawn:
+                if owner in sim.state:
+                    undrawn[owner] += 1
+                continue
             sj = sim.state.get(owner, {})
             for joint, vm in vj.items():
                 sm = sj.get(joint)
@@ -289,7 +302,7 @@ def compare_game(track_path: str, log_path: str) -> dict:
             for joint in sj:
                 if joint not in view.state.get(owner, {}):
                     only["simulator"].add((owner, joint))
-    return {"joints": joints, "only": only, "compared": compared, "exact": exact,
+    return {"joints": joints, "only": only, "compared": compared, "exact": exact, "undrawn": undrawn,
             "kinds": {**sim.kinds, **view.kinds}}
 
 
@@ -322,8 +335,11 @@ def report(folder: str, top: int, pairs: int) -> int:
     groups: dict[tuple, list] = defaultdict(list)
     compared = exact = 0
     only_counts = {"simulator": defaultdict(int), "viewer": defaultdict(int)}
+    undrawn: dict[str, int] = defaultdict(int)
     for game, track, log in games:
         r = compare_game(track, log)
+        for owner, n in r["undrawn"].items():
+            undrawn[owner_class(owner, r["kinds"])] += n
         compared += r["compared"]
         exact += r["exact"]
         for (owner, joint), j in r["joints"].items():
@@ -355,6 +371,9 @@ def report(folder: str, top: int, pairs: int) -> int:
         if only_counts[side]:
             print("\nonly the %s has (joint-frames by class): %s" % (
                 side, ", ".join("%s %d" % kv for kv in sorted(only_counts[side].items(), key=lambda kv: -kv[1]))))
+    if undrawn:
+        print("\nnot compared, the simulator's on a frame the viewer did not draw them (owner-frames by class): %s" % (
+            ", ".join("%s %d" % kv for kv in sorted(undrawn.items(), key=lambda kv: -kv[1]))))
     return 0
 
 
@@ -369,10 +388,13 @@ def self_test() -> int:
     moved = ident[:]
     moved[3] = "0x40000000"  # (translation x 2 instead of 0)
     sim = [[0, "wf", 1, 0, 2, 0, 4095, *ident, 3, 4095, *ident],
-           [5, "wf", 1, 0, 2, 3, 1 << 3, moved[3]]]
+           [5, "wf", 1, 0, 2, 3, 1 << 3, moved[3]],
+           [7, "wf", 1, 0, 2, 0, 1 << 3, moved[3]]]
+    # (frame 7: the viewer did not draw it - no line - so its held pose is not this frame's and is not compared)
     view = [[0, "wn"], [0, "wf", 1, 0, 2, 0, 4095, *ident, 3, 4095, *ident],
             [5, "wn"], [5, "wf", 1, 0, 2],
-            [6, "wn"], [6, "wf", 1, 0, 2]]
+            [6, "wn"], [6, "wf", 1, 0, 2],
+            [7, "wn"]]
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "g.track.jsonl"), "w") as f:
             f.write("\n".join(json.dumps(e) for e in sim))
@@ -384,6 +406,7 @@ def self_test() -> int:
     j = joints[(("wf", 1, 0, 2), 3)]
     assert j["first"] == 5 and j["what"] == {"translation"} and trend(j["errs"]) == "constant", j
     assert r["compared"] == 6 and r["exact"] == 4, r
+    assert dict(r["undrawn"]) == {("wf", 1, 0, 2): 1}, r["undrawn"]
     # (the compact form: one exact-float column read back as its words)
     w = _Reader(bytes([4 * 2]))
     assert w.zigzag() == 4
