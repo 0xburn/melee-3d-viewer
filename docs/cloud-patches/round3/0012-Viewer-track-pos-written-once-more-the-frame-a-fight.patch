@@ -1,8 +1,8 @@
-From a7f8e99fec3ad764a11c4b77df5ded8512331a5e Mon Sep 17 00:00:00 2001
+From ad4d109647fc83cf4ea5da2806e8b52a20ee7985 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 22 Oct 2026 01:43:44 +0000
-Subject: [PATCH] Viewer track: pos written once more the frame a fighter is
- back on the plane
+Subject: [PATCH 12/12] Viewer track: pos written once more the frame a fighter
+ is back on the plane
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_017JX71xgnBPBiwucag1mFRr
@@ -12,7 +12,7 @@ Claude-Session: https://claude.ai/code/session_017JX71xgnBPBiwucag1mFRr
  2 files changed, 16 insertions(+), 4 deletions(-)
 
 diff --git a/agent_docs/VIEWER_TRACK.md b/agent_docs/VIEWER_TRACK.md
-index 91c98059..c18b5d6d 100644
+index 61eab1fb..91d38f8a 100644
 --- a/agent_docs/VIEWER_TRACK.md
 +++ b/agent_docs/VIEWER_TRACK.md
 @@ -92,7 +92,7 @@ fighter's port (0-3) and `sub` 0 for the leader, 1 for Nana.
@@ -23,9 +23,9 @@ index 91c98059..c18b5d6d 100644
 +| `pos` | state | port, sub, x, y, z, rot x, y, z, scale | the top joint, while in DeadUp states (4-10) or off the plane, and once more the frame it is back |
  | `shake` | state | port, sub, x, y, z (0 when it stops) | the draw offset `ftCommon_8008021C` sums: hit shake, the held-mash wobble, the smash-charge shake |
  | `hide` | state | port, sub, bits (1 invisible, 2 `x221E_b5`, 4 `x2226_b5`) | written once something is hidden |
- | `cns` | state | port, sub, 1 or 0 | `x2226_b2`: the fighter's XRotN hung on its captor's TransN2 (`ftCo_800DB368`) until the throw lets go (`ftCo_800DDDE4`) or the grab breaks; written once set |
+ | `cns` | state | port, sub, 1 or 0 | `x2226_b2`: the fighter's XRotN hung on its captor's TransN2 (`ftCo_800DB368`) until the throw lets go (`ftCo_800DDDE4`) or the grab breaks; written at the fighter's first frame and on every change |
 diff --git a/src/runtime/viewer_track.c b/src/runtime/viewer_track.c
-index bd3543c6..a74ecea9 100644
+index 78b8c096..b0261b17 100644
 --- a/src/runtime/viewer_track.c
 +++ b/src/runtime/viewer_track.c
 @@ -101,6 +101,9 @@ struct MslViewerTrack {

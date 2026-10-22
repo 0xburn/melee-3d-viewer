@@ -154,7 +154,7 @@ For the pose check (`tools/pose_check.py` in the viewer repo). Off by default. S
 ```
 
 - **What it is.** A grab's victim is not hung on the captor's hand from the start. `ftCo_800DB368` puts a position constraint on its XRotN (`lb_8000C1C0` to the captor's TransN2) only once the pull brings it in (ftCo_CatchPull's distance test against `p_ftCommonData` +0x34C/+0x350), and sets `x2226_b2`. The throw's release (`ftCo_800DDDE4`: `lb_8000C390`, XRotN's translation put back) and a broken grab (`ftCo_CaptureCut`) clear it, while the victim can stay in its Thrown state for many frames after.
-- **When.** A state line, written once `x2226_b2` is set and then on every change.
+- **When.** A state line, written at each fighter's first frame (0 or 1) and then on every change, so a track made with this patch always has it: the viewer's old rule (hang every captured or thrown fighter) is kept only for tracks without any `cns` line. (Amended: the first version wrote it only once set, so a game with no capture had no line and the viewer fell back to its old rule, as at bot-fox_falco 2630.)
 - **For the viewer.** It hangs the victim's XRotN on the captor's TransN2 only while `cns` is 1. Without the line it keeps its own rule (every captured or thrown frame). This is the pose check's f1 at bot-fox_falco 2630 (CapturePulledLw, frame 1: not hung yet) and f15 at bot-tp_peach_puff 1229 (ThrownHi after the release: let go).
 - `cns` is added to `UNLOCKED_KINDS`, so no lock changes.
 - **Production.** `.text`, `.rodata` and `.data` are identical.
