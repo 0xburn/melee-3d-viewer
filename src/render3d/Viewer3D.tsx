@@ -68,6 +68,7 @@ import type { ColAnimTables, Tint as ColTint } from "./fx/colanim";
 import { BgFlash, FLASH_CAMERA, flashQuad } from "./fx/bgflash";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
+import { THUNDERS, thunderScaleY } from "./thunder";
 import { itemSource } from "./item-source";
 import { chargeShotScale, isShadowBall, shadowBallScale } from "./shadow-ball";
 import { shadowCamera } from "./shadow";
@@ -4836,6 +4837,11 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   if (chargeScale !== null) art.prop.setGrandchildScale(chargeScale);
   // (a laser stretched along its flight: Item_UpdateRayAnimation, up to its special attributes' +4)
   if (RAYS.has(it.typeId) && art.special) art.prop.setRootScaleZ(rayScale(data, frame, it, art.special(4)));
+  // (Thunder's bolt shrinking where it struck: itPikachuthunder_UnkMotion2_Anim, by its length, its special
+  // attributes' +4)
+  if (THUNDERS.has(it.typeId) && it.state === 2 && art.special) {
+    art.prop.setRootScaleY(thunderScaleY(itemAge(data, frame, it), it.yVelocity, art.special(4)));
+  }
   drawnArticles.push({ type: it.typeId, state: it.state, x: it.xPosition, y: it.yPosition, tilt, scale,
                        shown: Array.from(art.prop.skeleton.shown) });
   // (Fox's and Falco's Illusion: its own model hidden in its state 2 - it_8029D798's it_80272A3C - and its copy
