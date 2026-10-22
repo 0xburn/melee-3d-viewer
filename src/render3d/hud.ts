@@ -578,7 +578,9 @@ export class Hud {
     for (const p of this.players) {
       if (!p.tag || !p.life.tag[f]) continue;
       const a = actors.find((x) => x.player === p.slot);
-      if (!a || (!a.drawn && !a.at)) continue;
+      // (whether the fighter is drawn or not: fn_802FCC44 asks only its slot, its state and its stocks - one its
+      // move hides, a Kirby's swallowed one, keeps its tag)
+      if (!a) continue;
       const pos = a.tagAt ?? a.at ?? [a.st.xPosition, a.st.yPosition, 0];
       const [sx, sy, w] = toScreen(tagViewProj, [pos[0], pos[1] + a.nameTagHeight - 2.5, pos[2]], k);
       if (w <= 0) continue;
