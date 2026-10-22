@@ -4641,8 +4641,12 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   // tumbling bomb), else the way it faces and flies
   const turn = a.tilt ? null : turnOf?.(it.spawnId) ?? null;
   if (turn) {
-    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, turn[1], true, turn[2], turn[0], false,
-                  clock?.joint);
+    // (a root that rolls as it faces the camera - the fireballs' (JOBJ_RBILLBOARD) - takes its turn about z from its
+    // own rotate z, mkRBillBoardMtx: on the joint, not in the matrix it is placed by)
+    const rolls = (art.prop.skeleton.flags[0] & 0xe00) === 0x800;
+    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, turn[1], true, rolls ? 0 : turn[2],
+                  turn[0], false, clock?.joint);
+    if (rolls) art.prop.setRootRotationZ(turn[2]);
   }
   else {
     art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
