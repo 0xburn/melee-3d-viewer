@@ -40,6 +40,10 @@ export interface StageInfo {
    *  parts whose materials the code changes: moving the others' see-through
    *  meshes ahead hid Final Destination's grid under its top */
   layers?: Record<number, { layer: number; flags?: number; joint?: number }>;
+  /** parts whose setup starts no animation (their StageCallbacks' first
+   *  function calls no grAnime_801C8138, and the ground's own setup starts
+   *  none): they stand as the file has them until the code starts one */
+  idle?: number[];
   /** parts the stage's code shows only later (Battlefield's other
    *  backgrounds and the wireframe between them): loaded, not drawn until
    *  something says they are up (setBattle) */
@@ -92,6 +96,9 @@ export const STAGES: Record<number, StageInfo> = {
   // behind the tree, drawn first and hiding nothing (a star KO flies past it)
   28: { file: "GrOp", name: "Dream Land N64", parts: [0, 1, 3, 4, 5, 6, 7, 8],
         lightsPart: 5, fogPart: 5,
+        // (the flowers' setup, grOldPupupu_80211C10, is empty: they bend first when Whispy blows,
+        // grOldPupupu_80211C1C)
+        idle: [6],
         layers: { 3: { layer: 2, flags: 0x28000000, joint: 0 } },
         // (grOldPupupu_80210B04 sets b5 on part 4; grOldPupupu_80211CA8: above the joint)
         shadowCheck: { 4: 0 } },
@@ -797,7 +804,9 @@ export class Stage {
   playing(index: number): (number | null)[][] {
     const runs = this.runs.get(index);
     if (runs) return runs.map((r) => [r.anim, r.joint, r.hold === undefined ? r.from : null, r.rate, r.hold ?? null]);
-    // (none: its first set, from where the code started it or from the stage's building)
+    // (none: nothing for a part its setup leaves still; else its first set, from where the code started it or
+    // from the stage's building)
+    if (this.info.idle?.includes(index)) return [];
     return [[0, 0, this.animFrom.get(index) ?? -1, 1, null]];
   }
 
@@ -860,7 +869,11 @@ export class Stage {
     const sk = p.skeleton;
     const runs = this.runsOf(p);
     if (runs) this.poseRuns(p, runs, frame);
-    else if (!p.still) {
+    else if (this.info.idle?.includes(p.index)) {
+      // (a part its setup starts nothing on: as the file has it)
+      sk.resetPose();
+      if (p.matAnim) sk.resetMaterials();
+    } else if (!p.still) {
       // (a part the code started on a frame of its own plays once from
       // there; the rest were started as the stage was built, and have been
       // stepped once more than the frame's number by the time it is drawn)
