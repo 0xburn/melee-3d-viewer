@@ -1175,7 +1175,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (w <= 0) continue;
       const px = Math.trunc(sx), py = Math.trunc(sy);
       if (px >= 0 && px < 640 && py >= 0 && py < 480) continue;
-      const [ex] = edgePoint(sx - 320, -(sy - 240), EDGE_W);
+      // (by the whole pixels ifMagnify_802FB8C0 has: the fighter's x2188, ftLib_GetScreenPos)
+      const [ex] = edgePoint(px - 320, -(py - 240), EDGE_W);
       if (Math.abs(ex) >= EDGE_W - 1e-4) edgeKinds[p.playerIndex] = ex < 0 ? 1 : 2;
     }
     return edgeKinds;

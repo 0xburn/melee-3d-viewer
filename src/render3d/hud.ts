@@ -564,7 +564,9 @@ export class Hud {
           if (img) r.bindImage(img, p.pic.tex);
         }
         this.picture(r, p.pic, a);
-        magnified.push({ p, sx, sy });
+        // (the bubble and its arrow go by the same whole pixels: ftLib_GetScreenPos hands ifMagnify_802FB8C0 the
+        // fighter's x2188, which Camera_80030BBC set from the point cut toward zero)
+        magnified.push({ p, sx: px, sy: py });
         out.magnified.push(p.slot);
       }
     }
