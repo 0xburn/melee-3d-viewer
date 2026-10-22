@@ -4246,13 +4246,15 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z" | "child";
   // the cape is taken as the next, not confirmed against his file)
   0x53: { art: 1, held: heldAll(RTHUMB) },
   0x59: { art: 1 },                // Pikachu's Thunder Jolt (his articles 1 and 2: ftpikachu.c)
-  0x5a: { art: 2 },
+  // (its bolt, the item its carrier makes as it lands: made, it_802B43D0 and then it_802B3F88 each start its
+  // state 0 and step its animation once more - Item_80268E5C, Item_802694CC - so it runs a frame ahead)
+  0x5a: { art: 2, from: { 0: 1 } },
   0x5b: { art: 1 },                // Pichu's, the same way
   // Pikachu's and Pichu's Thunder (their article 0): hidden while it waits for its turn to fall (state 0:
   // it_802B2080's it_8026BB44 sets every joint JOBJ_HIDDEN; it_802B211C's it_8026BB20 shows it as it falls)
   0x51: { art: 0, gone: [0] },
   0x52: { art: 0, gone: [0] },
-  0x5c: { art: 2 },
+  0x5c: { art: 2, from: { 0: 1 } },
   0x56: { art: 0, gone: [2] },     // Yoshi's egg, thrown (state 2: broken, its pieces are effects)
   0x5d: { art: 0, gone: [3] },     // Samus's bomb (state 3: going off)
   0x5e: { art: 1, charge: true },  // Samus's charge shot
