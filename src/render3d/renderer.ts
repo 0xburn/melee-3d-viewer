@@ -180,7 +180,7 @@ ivec4 tevProgram() {
 }`;
 
 const VS = `#version 300 es
-in vec3 aPos; in vec3 aNrm; in vec2 aUv0; in vec2 aUv1; in vec4 aClr; in float aMtx; in vec3 aBin; in vec3 aTan;
+in vec3 aPos; in vec3 aNrm; in vec2 aUv0; in vec2 aUv1; in vec2 aUv2; in vec4 aClr; in float aMtx; in vec3 aBin; in vec3 aTan;
 uniform mat4 uViewProj;
 uniform mat4 uView;
 uniform mat4 uMats[10];
@@ -221,7 +221,7 @@ out vec4 vRas0; out vec3 vRas1; out vec3 vT0; out vec3 vT1; out vec3 vT2; out ve
 out vec3 vNrmV; out vec3 vPosV; out float vOverA; out vec3 vPosW;
 out vec2 vBump; // an emboss bump map's coordinates, shifted toward the first diffuse light
 
-vec3 texGen(int i, vec2 uv0, vec2 uv1, vec3 nv, vec4 W) {
+vec3 texGen(int i, vec2 uv0, vec2 uv1, vec2 uv2, vec3 nv, vec4 W) {
   int kind = uMatI[1][i];
   vec4 r0 = uMatF[6 + i * 3], r1 = uMatF[7 + i * 3], r2 = uMatF[8 + i * 3];
   if (kind == 4) {
@@ -249,7 +249,7 @@ vec3 texGen(int i, vec2 uv0, vec2 uv1, vec3 nv, vec4 W) {
     float e = 0.5 - 0.5 * dot(h, nv);
     return vec3(r0.x * e + r0.w, r1.x * e + r1.w, 1.0);
   }
-  vec2 uv = kind == 1 ? uv1 : uv0;
+  vec2 uv = kind == 1 ? uv1 : kind == 5 ? uv2 : uv0;
   return vec3(dot(r0, vec4(uv, 1.0, 1.0)), dot(r1, vec4(uv, 1.0, 1.0)), 1.0);
 }
 
@@ -375,10 +375,10 @@ void main() {
   // (and that lit alpha is the rasterized alpha the material's alpha stage takes, lerp(0, alpha, ras.a), as it
   // is the color's: while the light adds, a lit material's alpha is its alpha times the light's alpha by the turn)
   if (m0.y == 2 && uOverMode == 1) vRas0.a = rasA;
-  vT0 = texGen(0, aUv0, aUv1, nv, w);
-  vT1 = texGen(1, aUv0, aUv1, nv, w);
-  vT2 = texGen(2, aUv0, aUv1, nv, w);
-  vT3 = texGen(3, aUv0, aUv1, nv, w);
+  vT0 = texGen(0, aUv0, aUv1, aUv2, nv, w);
+  vT1 = texGen(1, aUv0, aUv1, aUv2, nv, w);
+  vT2 = texGen(2, aUv0, aUv1, aUv2, nv, w);
+  vT3 = texGen(3, aUv0, aUv1, aUv2, nv, w);
   // GX's bump texture coordinates: the map's own, moved by the first
   // diffuse light's direction along the tangent and the binormal
   int bs = ((m0.z >> 4) & 7) - 1;
@@ -543,7 +543,7 @@ export const SHADERS = { VS, FS, PARTICLE_VS, PARTICLE_FS, TEV_GLSL, TEV_PROG_GL
 
 // the model programs' attribute slots (the meshes' vertex arrays serve both),
 // the uniforms looked up once they are linked, and the particles' slots
-const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aClr", "aMtx", "aBin", "aTan"];
+const ATTRS = ["aPos", "aNrm", "aUv0", "aUv1", "aUv2", "aClr", "aMtx", "aBin", "aTan"];
 const UNIFORMS = ["uViewProj", "uView", "uMats", "uMV", "uProj", "uAmbLight", "uAmbA", "uNumLights", "uLPos", "uLAxis",
                   "uLCol", "uLA", "uLK", "uEye", "uNrm", "uLPosV", "uLAxisV", "uLSpecV", "uOverPosV", "uTint", "uTex0", "uTex1", "uTex2", "uTex3", "uInflate",
                   "uFlat", "uOutline", "uFlash", "uOverColor", "uOverLight", "uOverDir", "uOverMode",
@@ -846,11 +846,11 @@ export class Renderer {
     const fits = (m: Drawable["mesh"]) => {
       const n = m.mtx.length;
       return m.pos.length === n * 3 && m.nrm.length === n * 3 && m.uv.length === n * 2 && m.uv1.length === n * 2 && m.clr.length === n * 4 &&
-        (!m.bin || !m.tan || (m.bin.length === n * 3 && m.tan.length === n * 3));
+        (!m.uv2 || m.uv2.length === n * 2) && (!m.bin || !m.tan || (m.bin.length === n * 3 && m.tan.length === n * 3));
     };
     const ds: Drawable[] = [];
     const seen = new Set<string>();
-    let nv = 0, ni = 0, nbt = false;
+    let nv = 0, ni = 0, nbt = false, nt2 = false;
     for (const d of g.drawables) {
       if (seen.has(d.key) || !fits(d.mesh)) continue;
       seen.add(d.key);
@@ -858,11 +858,14 @@ export class Renderer {
       nv += d.mesh.mtx.length;
       ni += d.mesh.indices.length;
       if (d.mesh.bin && d.mesh.tan) nbt = true;
+      if (d.mesh.uv2) nt2 = true;
     }
     const pos = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3), uv0 = new Float32Array(nv * 2), uv1 = new Float32Array(nv * 2);
     const clr = new Float32Array(nv * 4), mtx = new Float32Array(nv);
     // (the meshes without binormals and tangents read zeros, as an attribute left off does)
     const bin = nbt ? new Float32Array(nv * 3) : null, tan = nbt ? new Float32Array(nv * 3) : null;
+    // (and those without a third texture coordinate set zeros)
+    const uv2 = nt2 ? new Float32Array(nv * 2) : null;
     const wide = nv > 65536;
     const idx = wide ? new Uint32Array(ni) : new Uint16Array(ni);
     const type = wide ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT, bytes = wide ? 4 : 2;
@@ -873,6 +876,7 @@ export class Renderer {
       const m = d.mesh, n = m.mtx.length, ix = m.indices;
       pos.set(m.pos, v * 3); nrm.set(m.nrm, v * 3); uv0.set(m.uv, v * 2); uv1.set(m.uv1, v * 2); clr.set(m.clr, v * 4); mtx.set(m.mtx, v);
       if (bin && tan && m.bin && m.tan) { bin.set(m.bin, v * 3); tan.set(m.tan, v * 3); }
+      if (uv2 && m.uv2) uv2.set(m.uv2, v * 2);
       for (let k = 0; k < ix.length; k++) idx[i + k] = ix[k] + v;
       meshes.set(d.key, { vao, buffers: [], count: ix.length, type, mode: m.points ? gl.POINTS : gl.TRIANGLES, offset: i * bytes });
       v += n;
@@ -890,6 +894,7 @@ export class Renderer {
     };
     buf(pos, "aPos", 3); buf(nrm, "aNrm", 3); buf(uv0, "aUv0", 2); buf(uv1, "aUv1", 2); buf(clr, "aClr", 4); buf(mtx, "aMtx", 1);
     if (bin && tan) { buf(bin, "aBin", 3); buf(tan, "aTan", 3); }
+    if (uv2) buf(uv2, "aUv2", 2);
     const ib = gl.createBuffer()!;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, idx, gl.STATIC_DRAW);
@@ -930,6 +935,7 @@ export class Renderer {
     buf(d.mesh.mtx, "aMtx", 1);
     // (a mesh without binormals and tangents reads zeros: the attributes stay off)
     if (d.mesh.bin && d.mesh.tan) { buf(d.mesh.bin, "aBin", 3); buf(d.mesh.tan, "aTan", 3); }
+    if (d.mesh.uv2) buf(d.mesh.uv2, "aUv2", 2);
     const ib = gl.createBuffer()!;
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, d.mesh.indices, gl.STATIC_DRAW);

@@ -180,7 +180,7 @@ export const TEX = {
  *  view-space normal, the highlight of the first infinite light, or where a
  *  point falls in a stage's mirror image (Fountain of Dreams' pond: the
  *  game's code turns that texture into a shadow-style projection) */
-export const enum TexGen { UV0 = 0, UV1 = 1, REFLECTION = 2, HIGHLIGHT = 3, MIRROR = 4 }
+export const enum TexGen { UV0 = 0, UV1 = 1, REFLECTION = 2, HIGHLIGHT = 3, MIRROR = 4, UV2 = 5 }
 
 /** one TEV step of a material: a texture laid on the color (and alpha)
  *  carried so far, in the part of the material it belongs to */
@@ -247,7 +247,7 @@ export function compileMaterial(mo: MObj, tobjs: TObj[], skip?: (t: TObj) => boo
     s = prog.textures.length;
     prog.textures.push(i);
     prog.texGen.push(mirror && mirror(t) ? TexGen.MIRROR : coord === 1 ? TexGen.REFLECTION : coord === 2 ? TexGen.HIGHLIGHT
-      : t.src === 5 ? TexGen.UV1 : TexGen.UV0);
+      : t.src === 5 ? TexGen.UV1 : t.src === 6 ? TexGen.UV2 : TexGen.UV0);
     sampler.set(i, s);
     return s;
   };
