@@ -1523,6 +1523,10 @@ export class FxWorld {
     };
     if (callback === "SetRotYAndTransition" && turn) m.rootRotationY = true;
     if (FACING_CALLBACKS.has(callback) || callback === "SetRotYZ_FromParamZ_FighterDir" || m.rootRotationY) turn?.(m);
+    // (efLib_Cb_SetScaleRotY_FromFighter: after each animation step the root's scale times the fighter's root
+    // joint's, its model scale (Fighter_UpdateModelScale) - the root's own being its animation's that step, the
+    // product is the same each frame)
+    if (callback === "SetScaleRotY_FromFighter" && a) m.scale *= a.fighter.modelScale;
     const endPart = LIFETIME_END_PART[Number(e[2])];
     if (callback === "LifetimeEndSpawn" && lifetime > 0 && a && key && endPart !== undefined && e.length >= 29) {
       // (the game counts the lifetime down once each frame the model runs, from the frame it is made)

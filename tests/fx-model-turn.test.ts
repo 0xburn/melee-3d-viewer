@@ -47,3 +47,21 @@ test("Final Cutter's attached models face the fighter's side by their root's tur
   assert.ok(attached.rootRotationY);
   assert.equal(attached.rotY, Math.PI / 2);
 });
+
+test("Screw Attack's model takes its fighter's model scale (efLib_Cb_SetScaleRotY_FromFighter)", () => {
+  const prop = { length: 30, pose: () => {} } as unknown as Prop;
+  const bank = { id: 2, cmds: [], texGroups: [], models: { 0: { life: 0, joint: 0, animJoint: null, matAnimJoint: null } },
+                 prop: () => prop, ptclKeys: () => [] } as unknown as EffectBank;
+  const w = new FxWorld(bank, (_c, part) => part);
+  w.trackFx = () => [];
+  const piece = [0, "fxp", 0x482, "f", 0, 0, "m", 2000, "attach", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+                 "SetScaleRotY_FromFighter", 0, 0, 0, 0, 0];
+  const actor = { key: "0:0", st: { facingDirection: -1 }, fighter: { modelScale: Math.fround(0.88) }, world: new Float32Array(16) };
+  // (the pieces alone, placed as a frame's step places them: the rest of a fighter's step wants a whole fighter)
+  const inner = w as unknown as { sts: Map<string, unknown>; placePieces(f: number, a: unknown[], e: unknown[]): void };
+  inner.sts.set(actor.key, actor.st);
+  inner.placePieces(123, [actor], [piece]);
+  const [m] = w.models;
+  assert.equal(m.scale, Math.fround(0.88));
+  assert.equal(m.rotY, -Math.PI / 2);
+});
