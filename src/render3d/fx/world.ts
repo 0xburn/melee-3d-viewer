@@ -186,6 +186,8 @@ export interface ModelFx {
   index: number;
   x: number; y: number; z: number;
   rotY: number; rotZ: number; scale: number;
+  /** its turn about x, when the dispatch gives it one (HSD_JObjSetRotationX: an egg's shell pieces, efSync 0x4CF) */
+  rotX?: number;
   age: number;
   life: number;
   follow: (() => Float32Array | null) | null;
@@ -1510,7 +1512,7 @@ export class FxWorld {
     const placed = how === "place" || how === "create" || !onJoint;
     const m: ModelFx = {
       bank, index, x: placed ? t[0] : here[0], y: placed ? t[1] : here[1], z: placed ? t[2] : here[2],
-      rotY: ry, rotZ: rz, scale: sx || 1, age: 0, life, follow: placed ? null : onJoint, owner: null, turn,
+      rotY: ry, rotZ: rz, rotX: v[13] || undefined, scale: sx || 1, age: 0, life, follow: placed ? null : onJoint, owner: null, turn,
       by: a?.key, whose: key, under: how === "child" ? onJoint : null, steady: NEVER_PAUSED.has(Number(e[2])),
       rootSet: how !== "child" && !(how === "create" && t[0] === 0 && t[1] === 0 && t[2] === 0),
     };
@@ -1697,7 +1699,7 @@ export class FxWorld {
         const vy = 2 * Math.sin(rx);
         const vz = 2 * Math.cos(rx) * Math.cos(ry);
         const m: ModelFx = {
-          bank: this.common, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2], rotY: ry, rotZ: rx,
+          bank: this.common, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2], rotY: ry, rotZ: 0, rotX: rx,
           scale: ctx.scale, age: 0, life: s.life, follow: null, owner: null, by: ctx.by,
           turn: (p) => { p.fall = (p.fall ?? vy) - 0.1; p.x += vx; p.y += p.fall; p.z += vz; }, steady: NEVER_PAUSED.has(this.spawning),
         };
@@ -1933,7 +1935,7 @@ export class FxWorld {
           const pr = m.bank.prop(m.index, 0, true);
           if (!pr) return null;
           const [x, y, z] = this.modelPlace(m);
-          pr.pose(m.age, x, y, z, m.scale, m.rotY, false, m.rotZ);
+          pr.pose(m.age, x, y, z, m.scale, m.rotY, false, m.rotZ, m.rotX ?? 0);
           const ww = pr.skeleton.world;
           return (joint + 1) * 16 <= ww.length ? ww.subarray(joint * 16, joint * 16 + 16) : null;
         };
@@ -1978,7 +1980,7 @@ export class FxWorld {
       return;
     }
     const [x, y, z] = this.modelPlace(m);
-    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, 0, m.rootSet);
+    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, m.rotX ?? 0, m.rootSet);
     // (what its update callback sets after the animation: the root's turn, a joint's place)
     if (m.rootRotationY) pr.setRootRotationY(m.rotY);
     if (m.rootRotationZ) pr.setRootRotationZ(m.rotZ);
