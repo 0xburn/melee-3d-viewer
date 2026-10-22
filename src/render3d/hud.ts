@@ -864,8 +864,9 @@ export class Hud {
         arrowsAssign(t, port, kinds.get(port) ?? 0, !p?.human, p ? portColor(p.colorIdx) : [0, 0, 0]);
       }
     };
-    // (after a jump the frame before is not known: this frame's own magnifiers stand in for it)
-    let before = this.arrowAfter.get(f - 1);
+    // (after a jump: the table as the magnifiers left it, played from the HUD's start (arrowHistory); without
+    // that, this frame's own magnifiers stand in for the frame before)
+    let before = this.arrowAfter.get(f - 1) ?? this.arrowHistory(f - 1);
     if (!before) { before = arrowTable(); assign(before); }
     const t = copyArrowTable(before);
     const z = arrowsPlace(t);
@@ -886,6 +887,47 @@ export class Hud {
     return before.kind.flatMap((k, i) => (k ? [before!.port[i]] : []));
   }
   private arrows: HudModel[] = [];
+  /** the arrow kind of each port (0-5: 0 none, 1 left, 2 right) its magnifier gives at frame g, worked out without
+   *  drawing (the player's: Viewer3D), or null when it can't be; for the table after a jump */
+  edgeKindsAt: ((g: number) => ArrayLike<number> | null) | null = null;
+  /** the table after frame f's magnifiers, every 256 frames from the HUD's start (arrowHistory) */
+  private arrowChecks: ArrowTable[] = [];
+  /** if_2FD9.c's table after frame f's magnifiers, played from the HUD's start (game frame 0) a frame at a time:
+   *  fn_802FDA78 placing the arrows, then each port's magnifier (ifMagnify_802FB8C0). An unused arrow keeps
+   *  where it last was and its color for the rest of the game, so a jump needs the whole of it. Null when the
+   *  player gives no edgeKindsAt. */
+  private arrowHistory(f: number): ArrowTable | null {
+    const kindsAt = this.edgeKindsAt;
+    if (!kindsAt) return null;
+    const f0 = -FIRST_FRAME, STEP = 256;
+    if (f < f0) return arrowTable();
+    // (false when a frame's kinds can't be had yet - its camera not worked out: nothing is kept then)
+    const step = (t: ArrowTable, g: number): boolean => {
+      const kinds = kindsAt(g);
+      if (!kinds) return false;
+      arrowsPlace(t);
+      for (let port = 0; port < 6; port++) {
+        const p = this.players.find((q) => q.slot === port);
+        arrowsAssign(t, port, kinds[port] ?? 0, !p?.human, p ? portColor(p.colorIdx) : [0, 0, 0]);
+      }
+      return true;
+    };
+    const want = Math.floor((f - f0) / STEP);
+    // (checkpoint k: the table after frame f0 + k * STEP)
+    if (!this.arrowChecks.length) {
+      const t = arrowTable();
+      if (!step(t, f0)) return null;
+      this.arrowChecks.push(t);
+    }
+    while (this.arrowChecks.length <= want) {
+      const k = this.arrowChecks.length, t = copyArrowTable(this.arrowChecks[k - 1]);
+      for (let g = f0 + (k - 1) * STEP + 1; g <= f0 + k * STEP; g++) if (!step(t, g)) return null;
+      this.arrowChecks.push(t);
+    }
+    const t = copyArrowTable(this.arrowChecks[want]);
+    for (let g = f0 + want * STEP + 1; g <= f; g++) if (!step(t, g)) return null;
+    return t;
+  }
   /** the arrows' table after a frame's magnifiers, for the frame drawn and the one before it */
   private arrowAfter = new Map<number, ArrowTable>();
 

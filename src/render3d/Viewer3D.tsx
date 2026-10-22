@@ -60,7 +60,8 @@ import { SHIELD_FX, trackFilesOf, trackShapes, type TrackShapes } from "./fx/dra
 import { type EggRoll, eggRollAt, YOSHI } from "./yoshiroll";
 import { kirbyStoneAt } from "./kirbystone";
 import { ROLLOUT_ATTRS, ROLLOUT_FIRST, rolloutAngle, rolloutAttrs } from "./rollout";
-import { fighterShown, Hud, HudActor, HudKit } from "./hud";
+import { fighterShown, Hud, HudActor, HudKit, toScreen } from "./hud";
+import { EDGE_W, edgePoint } from "./hudlogic";
 import { drawLogCommand, setLiveGame } from "./drawlog";
 import { PoseLog, poseLogCommand } from "./poselog";
 import type { Tint as ColTint } from "./fx/colanim";
@@ -1099,6 +1100,37 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   // (the plates' and nametags' words as the page last gave them: a HUD made again - the stage's colors for its
   // magnifier coming in after it - takes them at once, as Hud3D gives them only when they change)
   let hudWords: { data: unknown; w: Map<string, string> } | null = null;
+  // Each port's edge arrow kind at frame g as its magnifier would give it (ifMagnify_802FB8C0, if_2FD9.c), worked
+  // out without drawing: the game camera of that frame, the camera bone taken as the fighter's place and its camera
+  // box's lift (the HUD's own, posed, on the frames it draws). For the arrows' table after a jump (hud.ts).
+  const edgeView = mat(), edgeProj = mat(), edgeVP = mat(), edgeGx = new Float32Array(16);
+  const edgeEye = [0, 0, 0], edgeAt = [0, 0, 0], edgeKinds = [0, 0, 0, 0, 0, 0];
+  const edgeKindsOf = (data: ReplayData, g: number): number[] | null => {
+    // (only frames the camera run has done: a jump doesn't run it ahead - the idle time does)
+    const track = camTrack(), fs = ready();
+    if (!track || !fs || !camRun || camRun.out !== track || g >= camRun.done || (g + 1) * CAM_STRIDE > track.length) return null;
+    const t = g * CAM_STRIDE;
+    for (let i = 0; i < 3; i++) { edgeEye[i] = track[t + i]; edgeAt[i] = track[t + 3 + i]; }
+    gameView(edgeView, edgeEye, edgeAt);
+    gameProjection(edgeProj, edgeGx, track[t + 6], CAM_ASPECT);
+    mul(edgeVP, edgeProj, edgeView);
+    edgeKinds.fill(0);
+    for (const p of data.frames[g]?.players ?? []) {
+      if (!p || p.playerIndex >= 6) continue;
+      const st = p.state;
+      // (not one KO'd, asleep or coming back: ftLib_80086ED0; nor one its move hides)
+      if (gone(st) || st.actionStateId <= 13 || hidden(st)) continue;
+      const fi = fs.get(`${st.internalCharacterId}:${data.settings.playerSettings[p.playerIndex]?.costumeIndex ?? 0}`);
+      const lift = (fi?.cameraBox?.lift ?? 8) * (fi?.modelScale ?? 1);
+      const [sx, sy, w] = toScreen(edgeVP, [st.xPosition, st.yPosition + lift, 0], 1);
+      if (w <= 0) continue;
+      const px = Math.trunc(sx), py = Math.trunc(sy);
+      if (px >= 0 && px < 640 && py >= 0 && py < 480) continue;
+      const [ex] = edgePoint(sx - 320, -(sy - 240), EDGE_W);
+      if (Math.abs(ex) >= EDGE_W - 1e-4) edgeKinds[p.playerIndex] = ex < 0 ? 1 : 2;
+    }
+    return edgeKinds;
+  };
   const hudOf = createMemo(() => {
     const k = hudKit(), data = rawData(), st = stage();
     if (!k || !data) return null;
@@ -1107,6 +1139,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (hudWords && hudWords.data === data) h.setWords(hudWords.w);
       // (the percent's shake and scatter from the game's own random numbers, when a viewer track has them:
       // the effect world's state at the end of the frame's particles - hud.ts shakeDraws)
+      h.edgeKindsAt = (g) => edgeKindsOf(data, g);
       h.rngAt = (i) => {
         if (hudRng === "off") return null;
         if (hudRng === "ps") return fxw?.rngAfter.get(i) ?? null;
