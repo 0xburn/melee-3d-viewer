@@ -1724,7 +1724,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // viewer's pose)
       const owner = `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`;
       const posedBy = trackAt?.pose("fj", owner, fno - 123);
-      let laid = posedBy ? layTrackSwing(fi, a.st.internalCharacterId, posedBy.joints, true) : false;
+      // (while the game blends into a new animation - the track's blend not yet through on this frame - its
+      // joints from TransN down are turned through quaternions, lb_8000C490 under ftAnim_8006FE9C, and the
+      // track leaves a joint so turned out: its last values are the ones from before the blend, which held the
+      // fighter still in that pose until the blend was over. Only the parts this frame's line has, then; the
+      // others keep the viewer's own blend)
+      const blend = posedBy ? trackAt!.animAt(a.player, a.nana ? 1 : 0, fno - 123) : null;
+      const fresh = blend && blend.blendFrames > 0 && blend.blendAt < blend.blendFrames
+        ? trackAt!.poseSent("fj", owner, fno - 123) : null;
+      let laid = posedBy ? layTrackSwing(fi, a.st.internalCharacterId, posedBy.joints, true, fresh) : false;
       // (and the ones the simulator runs - the chains a hurtbox sits on - as the game swung them, when the
       // track has them: "fp")
       const swungBy = trackAt?.pose("fp", owner, fno - 123);
@@ -4560,11 +4568,13 @@ function loadLearned(): Promise<Learned | null> {
 const trackArticles = new WeakMap<ReplayData, Map<number, number>>();
 
 /** a fighter's swinging joints as the track has them ("fp": by part, rot, scale, translate) laid on its
- *  pose; whether any was */
-function layTrackSwing(fi: Fighter, char: number, joints: Map<number, Float32Array>, all: boolean): boolean {
+ *  pose; whether any was. `only`: the parts from TransN (part 1) down are laid only when in it */
+function layTrackSwing(fi: Fighter, char: number, joints: Map<number, Float32Array>, all: boolean,
+                       only: ReadonlySet<number> | null = null): boolean {
   const sk = fi.skeleton;
   let laid = false;
   for (const [part, v] of joints) {
+    if (only && part >= 1 && !only.has(part)) continue;
     const j = partToModelJoint(char, part);
     if (j < 0 || j >= sk.n) continue;
     for (let k = 0; k < 3; k++) {

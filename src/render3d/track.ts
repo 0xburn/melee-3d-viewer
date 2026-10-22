@@ -104,6 +104,8 @@ const POSES: Record<string, { key: number; width: number; out: boolean; links: b
  *  nearest to the frame asked for (PoseStream) */
 const STREAMED = new Set(["sp", "fj"]);
 const POSE_EVERY = 64;
+/** no joint sent (poseSent on a frame the owner has no line) */
+const NONE_SENT: ReadonlySet<number> = new Set();
 
 /** one owner's lines of a streamed pose type, and where it was last asked for: asked for frame after frame,
  *  each step plays the lines since, into the one pose it hands out */
@@ -117,6 +119,24 @@ class PoseStream {
   readonly pose: TrackPose = { joints: new Map(), out: null, links: 0 };
 
   constructor(private first: number, private width: number) {}
+
+  /** the joints line i and the lines before it on the same frame have values for (one set, made again each ask) */
+  private sentSet = new Set<number>();
+  sentOn(i: number): ReadonlySet<number> {
+    const out = this.sentSet;
+    out.clear();
+    for (let k = i; k >= 0 && this.frames[k] === this.frames[i]; k--) {
+      const e = this.lines[k];
+      let at = this.first;
+      while (at < e.length) {
+        out.add(Number(e[at]));
+        let mask = Number(e[at + 1]);
+        at += 2;
+        while (mask) { at += mask & 1; mask >>>= 1; }
+      }
+    }
+    return out;
+  }
 
   /** the pose as of line i, played forward from where it is or from the mark before i */
   seek(i: number): TrackPose {
@@ -462,6 +482,22 @@ export class ViewerTrack {
       else hi = mid - 1;
     }
     return list[lo];
+  }
+
+  /** the joints a streamed pose type ("sp", "fj") has a line with values for on exactly game frame `frame`:
+   *  empty when the owner has no line then, null when the track has no lines of the owner's at or before it.
+   *  Good until the next ask */
+  poseSent(type: string, key: string, frame: number): ReadonlySet<number> | null {
+    if (frame >= this.until || !STREAMED.has(type)) return null;
+    const s = this.streamsOf(type).get(key);
+    if (!s || !s.frames.length || s.frames[0] > frame) return null;
+    let lo = 0, hi = s.frames.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (s.frames[mid] <= frame) lo = mid;
+      else hi = mid - 1;
+    }
+    return s.frames[lo] === frame ? s.sentOn(lo) : NONE_SENT;
   }
 
   /** a fighter's stored charge (the fighter's own field: "dk", "ss", ...), or undefined */

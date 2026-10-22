@@ -182,3 +182,22 @@ test("a fighter's last depth off the plane holds while it stands there, however 
   assert.equal(t.depthAt(1, 0, 30, -10, 0.0001), 0);
   assert.equal(t.depthAt(1, 0, 41, -18.8, 0.0001), 0);
 });
+
+test("the joints a streamed pose's line has on exactly a frame (a joint left out keeps its last values)", () => {
+  const t = new ViewerTrack({ version: 2, events: [
+    // (part 1 every value, part 3 its x turn and z place; then part 3 alone, twice on one frame; then nothing)
+    [10, "fj", 0, 0, 25, 1, 0x1ff, 1, 2, 3, 4, 5, 6, 7, 8, 9, 3, 0x101, 0.5, 2.5],
+    [11, "fj", 0, 0, 25, 3, 0x4, 0.25],
+    [11, "fj", 0, 0, 25, 4, 0x80, 1.5],
+    [14, "fj", 0, 0, 25, 1, 0x1, 0.75],
+  ] });
+  assert.equal(t.poseSent("fj", "0:0:25", 9), null);
+  assert.deepEqual([...t.poseSent("fj", "0:0:25", 10)!].sort(), [1, 3]);
+  assert.deepEqual([...t.poseSent("fj", "0:0:25", 11)!].sort(), [3, 4]);
+  assert.deepEqual([...t.poseSent("fj", "0:0:25", 12)!], []);
+  assert.deepEqual([...t.poseSent("fj", "0:0:25", 14)!], [1]);
+  // (the pose as of a frame with no line is the one before's, all joints)
+  assert.deepEqual([...t.pose("fj", "0:0:25", 12)!.joints.keys()].sort(), [1, 3, 4]);
+  assert.equal(t.poseSent("fj", "0:0:26", 11), null);
+  assert.equal(t.poseSent("jp", "0:0:25", 11), null);
+});
