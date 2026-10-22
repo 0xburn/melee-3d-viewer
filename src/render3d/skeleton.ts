@@ -10,7 +10,7 @@ import {
 } from "./hsd";
 import { Mat, ident, invert, mul } from "./math";
 import {
-  HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, concatGL, madd, mkBillBoardMtx, mtxFromGL, mtxToGL,
+  HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, PSMTXMultVec, concatGL, madd, mkBillBoardMtx, mtxFromGL, mtxToGL,
 } from "./gxmath";
 
 /** what a texture animation can change, per TObj */
@@ -224,6 +224,8 @@ export class Skeleton {
   readonly shown: Uint8Array;
   /** where each joint's subtree ends in the (preorder) joint list */
   private readonly subEnd: Int32Array;
+  /** each joint's PATH track's spline joint (its AObj's object), or -1 */
+  private pathOf: Int32Array | null = null;
   private readonly rest: Float32Array; // rot, scale, trans per joint (9 each)
   /** each joint's accumulated scale (jobj->scl), and whether it has one */
   private readonly accScale: Float32Array;
@@ -405,12 +407,13 @@ export class Skeleton {
   // PATH: the joint stands a share of the way along another joint's spline
   // (Yoshi's Story's Randall rides his cloud path this way). The curve's
   // point is the joint's translate as it is (JObjUpdateFunc's HSD_A_J_PATH:
-  // splArcLengthPoint, then HSD_JObjSetTranslateX/Y/Z), not carried through
-  // the spline joint's own place - Randall's turned half round and moved
+  // splArcLengthPoint, then HSD_JObjSetTranslateX/Y/Z); the matrix carries it
+  // through the spline joint's (placeOnPaths)
   private path(i: number, splineJoint: number | null, f: number) {
     const sj = splineJoint === null ? undefined : this.joints.find((j) => j.offset === splineJoint);
     if (!sj?.spline) return;
     splineAt(sj.spline, f, tmpP);
+    (this.pathOf ??= new Int32Array(this.n).fill(-1))[i] = sj.index;
     this.trans[i * 3] = tmpP[0]; this.trans[i * 3 + 1] = tmpP[1]; this.trans[i * 3 + 2] = tmpP[2];
   }
 
@@ -448,35 +451,8 @@ export class Skeleton {
     const W = this.world;
     // HSD_JObjMakeMatrix: each joint's HSD_MtxSRT, given its parent's accumulated scale (jobj->scl) when it has
     // one, then PSMTXConcat(parent->mtx, jobj->mtx); in float32, as the game does
-    const L = tmpL, P = tmpP12, R = this.rot, Sc = this.scale, T = this.trans, A = this.accScale;
-    const rs = this.rootScale;
-    for (let i = 0; i < this.n; i++) {
-      const p = this.parent[i];
-      const r = i * 3;
-      let ps: Float32Array | null = null;
-      if (p >= 0) { if (this.hasScl[p]) { tmpRS[0] = A[p * 3]; tmpRS[1] = A[p * 3 + 1]; tmpRS[2] = A[p * 3 + 2]; ps = tmpRS; } }
-      else if (rs) { tmpRS[0] = rs[0]; tmpRS[1] = rs[1]; tmpRS[2] = rs[2]; ps = tmpRS; }
-      // (a parent scale with a 0 in it - or one not a number - would make HSD_MtxSRT's 1.0 / scale infinite and
-      // the joint NaN; the game's draws in its recordings have no such joints, so the turn is made without the
-      // parent's scale taken out, as for a joint without one)
-      const psOk = !!ps && ps[0] !== 0 && ps[1] !== 0 && ps[2] !== 0 && Number.isFinite(ps[0] + ps[1] + ps[2]);
-      if (this.flags[i] & JOBJ.CLASSICAL_SCALE) {
-        if (ps) { A[r] = ps[0]; A[r + 1] = ps[1]; A[r + 2] = ps[2]; }
-        this.hasScl[i] = ps ? 1 : 0;
-      } else {
-        if (ps) { A[r] = Sc[r] * ps[0]; A[r + 1] = Sc[r + 1] * ps[1]; A[r + 2] = Sc[r + 2] * ps[2]; }
-        else { A[r] = Sc[r]; A[r + 1] = Sc[r + 1]; A[r + 2] = Sc[r + 2]; }
-        this.hasScl[i] = 1;
-      }
-      for (let k = 0; k < 3; k++) { tmpS3[k] = Sc[r + k]; tmpR3[k] = R[r + k]; tmpT3[k] = T[r + k]; }
-      HSD_MtxSRT(L, tmpS3, tmpR3, tmpT3, psOk ? ps : null);
-      const o = i * 16;
-      if (p >= 0) { mtxFromGL(W, P, p * 16); PSMTXConcat(P, L, L); }
-      else if (parentWorld) { mtxFromGL(parentWorld, P, 0); PSMTXConcat(P, L, L); }
-      mtxToGL(L, W, o);
-      // (a joint held somewhere else, its children with it)
-      if (this.shift && this.shift.joint === i) { W[o + 12] += this.shift.d[0]; W[o + 13] += this.shift.d[1]; W[o + 14] += this.shift.d[2]; }
-    }
+    for (let i = 0; i < this.n; i++) this.makeMatrix(i, parentWorld);
+    if (this.pathOf) this.placeOnPaths(parentWorld);
     // the joints the envelopes use: world * inverse bind
     const S = this.skin;
     for (let k = 0; k < this.skinUsed.length; k++) {
@@ -488,6 +464,58 @@ export class Skeleton {
     }
     for (const d of this.drawables) {
       if (this.isVisible(d) || this.alsoPosed.has(d.dobj.index)) this.matrices(d);
+    }
+  }
+
+  /** one joint's world matrix from its pose and its parent's (HSD_JObjMakeMatrix) */
+  private makeMatrix(i: number, parentWorld: Mat | null) {
+    const W = this.world;
+    const L = tmpL, P = tmpP12, R = this.rot, Sc = this.scale, T = this.trans, A = this.accScale;
+    const rs = this.rootScale;
+    const p = this.parent[i];
+    const r = i * 3;
+    let ps: Float32Array | null = null;
+    if (p >= 0) { if (this.hasScl[p]) { tmpRS[0] = A[p * 3]; tmpRS[1] = A[p * 3 + 1]; tmpRS[2] = A[p * 3 + 2]; ps = tmpRS; } }
+    else if (rs) { tmpRS[0] = rs[0]; tmpRS[1] = rs[1]; tmpRS[2] = rs[2]; ps = tmpRS; }
+    // (a parent scale with a 0 in it - or one not a number - would make HSD_MtxSRT's 1.0 / scale infinite and
+    // the joint NaN; the game's draws in its recordings have no such joints, so the turn is made without the
+    // parent's scale taken out, as for a joint without one)
+    const psOk = !!ps && ps[0] !== 0 && ps[1] !== 0 && ps[2] !== 0 && Number.isFinite(ps[0] + ps[1] + ps[2]);
+    if (this.flags[i] & JOBJ.CLASSICAL_SCALE) {
+      if (ps) { A[r] = ps[0]; A[r + 1] = ps[1]; A[r + 2] = ps[2]; }
+      this.hasScl[i] = ps ? 1 : 0;
+    } else {
+      if (ps) { A[r] = Sc[r] * ps[0]; A[r + 1] = Sc[r + 1] * ps[1]; A[r + 2] = Sc[r + 2] * ps[2]; }
+      else { A[r] = Sc[r]; A[r + 1] = Sc[r + 1]; A[r + 2] = Sc[r + 2]; }
+      this.hasScl[i] = 1;
+    }
+    for (let k = 0; k < 3; k++) { tmpS3[k] = Sc[r + k]; tmpR3[k] = R[r + k]; tmpT3[k] = T[r + k]; }
+    HSD_MtxSRT(L, tmpS3, tmpR3, tmpT3, psOk ? ps : null);
+    const o = i * 16;
+    if (p >= 0) { mtxFromGL(W, P, p * 16); PSMTXConcat(P, L, L); }
+    else if (parentWorld) { mtxFromGL(parentWorld, P, 0); PSMTXConcat(P, L, L); }
+    mtxToGL(L, W, o);
+    // (a joint held somewhere else, its children with it)
+    if (this.shift && this.shift.joint === i) { W[o + 12] += this.shift.d[0]; W[o + 13] += this.shift.d[1]; W[o + 14] += this.shift.d[2]; }
+  }
+
+  // HSD_JObjMakeMatrix's last step: a joint on a PATH animation (its AObj's
+  // object, the spline joint) has its matrix's translation replaced by the
+  // spline joint's matrix times its translate (HSD_JObjSetupMatrix on that
+  // joint, then MTXMultVec) - its turn and scale its own and its parent's.
+  // Its children are made again on it. (Yoshi's Story's Randall: the path's
+  // point carried through the spline joint, turned half round and moved.)
+  private placeOnPaths(parentWorld: Mat | null) {
+    const W = this.world, P = tmpP12, T = this.trans, at = this.pathOf!;
+    for (let i = 0; i < this.n; i++) {
+      const k = at[i];
+      if (k < 0) continue;
+      mtxFromGL(W, P, k * 16);
+      for (let c = 0; c < 3; c++) tmpT3[c] = T[i * 3 + c];
+      PSMTXMultVec(P, tmpT3, tmpS3);
+      const o = i * 16;
+      W[o + 12] = tmpS3[0]; W[o + 13] = tmpS3[1]; W[o + 14] = tmpS3[2];
+      for (let j = i + 1; j < this.subEnd[i]; j++) this.makeMatrix(j, parentWorld);
     }
   }
 
