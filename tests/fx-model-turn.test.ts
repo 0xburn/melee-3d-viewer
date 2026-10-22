@@ -29,3 +29,21 @@ test("a model the track's piece turns about x and y is posed turned both ways", 
   const [, , , , scale, rotY, , rotZ, rotX] = posed.at(-1)!;
   assert.deepEqual([scale, rotY, rotZ, rotX], [2, 1.25, 0, 0.75]);
 });
+
+test("Final Cutter's attached models face the fighter's side by their root's turn; its child does not", () => {
+  const prop = { length: 70, pose: () => {}, setRootRotationY: () => {} } as unknown as Prop;
+  const bank = { id: 5, cmds: [], texGroups: [], models: { 0: { life: 0, joint: 0, animJoint: null, matAnimJoint: null },
+                                                            2: { life: 0, joint: 0, animJoint: null, matAnimJoint: null } },
+                 prop: () => prop, ptclKeys: () => [] } as unknown as EffectBank;
+  const w = new FxWorld(bank, (_c, part) => part);
+  w.trackFx = () => [];
+  const piece = (index: number, id: number, how: string) =>
+    [0, "fxp", 0x494, "n", 0, index, "m", id, how, -1, 0, 0, 0, 0, 0, 0, 1, 1, 1, "SetRotYAndTransition", 0x41, 0, 0, 0, 0];
+  w.trackOrdered = (f) => (f === 123 ? [piece(0, 5000, "child"), piece(1, 5002, "attach")] : []) as never;
+  w.step(123, []);
+  const [child, attached] = w.models;
+  assert.ok(!child.rootRotationY && child.rotY === 0);
+  // (no fighter to face here: the side faced is right)
+  assert.ok(attached.rootRotationY);
+  assert.equal(attached.rotY, Math.PI / 2);
+});

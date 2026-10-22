@@ -1496,7 +1496,12 @@ export class FxWorld {
         m.rotY = f * Math.PI / 2;
         m.rotZ = f < 0 ? Math.PI / 2 - way : -(Math.PI / 2 - way);
       };
-    } else if (FACING_CALLBACKS.has(callback)) turn = (m) => { m.rotY = facing() * Math.PI / 2; };
+    } else if (FACING_CALLBACKS.has(callback) || (callback === "SetRotYAndTransition" && how !== "child")) {
+      // (efLib_Cb_SetRotYAndTransition too, on the two of Final Cutter's three that efalt.c 0x494 gives the fighter
+      // as their user data - the ones it attaches, not its child: the root's turn about y set to the side faced
+      // after each step of the animation)
+      turn = (m) => { m.rotY = facing() * Math.PI / 2; };
+    }
     else if (callback === "SetOffset_FromParams") {
       // flung by its parameters, falling 0.1 a frame faster each frame (an egg's shell)
       turn = (m) => { m.fall = (m.fall ?? p1) - 0.1; m.x += p0; m.y += m.fall; m.z += p2; };
@@ -1516,7 +1521,8 @@ export class FxWorld {
       by: a?.key, whose: key, under: how === "child" ? onJoint : null, steady: NEVER_PAUSED.has(Number(e[2])),
       rootSet: how !== "child" && !(how === "create" && t[0] === 0 && t[1] === 0 && t[2] === 0),
     };
-    if (FACING_CALLBACKS.has(callback) || callback === "SetRotYZ_FromParamZ_FighterDir") turn?.(m);
+    if (callback === "SetRotYAndTransition" && turn) m.rootRotationY = true;
+    if (FACING_CALLBACKS.has(callback) || callback === "SetRotYZ_FromParamZ_FighterDir" || m.rootRotationY) turn?.(m);
     const endPart = LIFETIME_END_PART[Number(e[2])];
     if (callback === "LifetimeEndSpawn" && lifetime > 0 && a && key && endPart !== undefined && e.length >= 29) {
       // (the game counts the lifetime down once each frame the model runs, from the frame it is made)
