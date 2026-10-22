@@ -1,5 +1,6 @@
-// The percent's timing (hudlogic.ts PlayerHud): the damage the HUD shows at a frame is the replay's percent of that
-// frame - its color, its digits and the shake start with the frame whose percent has the hit.
+// The HUD's timing (hudlogic.ts PlayerHud): the damage the HUD shows at a frame is the replay's percent of that
+// frame - its color, its digits and the shake start with the frame whose percent has the hit; a launch's tag counts
+// from that frame, held while the hitlag lasts.
 //
 //   deno test --no-check --sloppy-imports -A tests/
 
@@ -31,4 +32,19 @@ test("a hit shows with the frame whose replay percent has it, not the frame befo
   assert.equal(h.percentAt(20).layout.shown[1], true);
   assert.equal(h.percentAt(20).layout.frame[1], 0);
   assert.equal(h.percentAt(21).layout.frame[1], 2);
+});
+
+test("a launch's tag: its count from the hit's frame, held through the hitlag", () => {
+  const states = (hitlag: number[]) => {
+    const data = replay(Array(30).fill(0));
+    data.frames.forEach((f, i) => {
+      const s = f.players[0]!.state as unknown as Record<string, number>;
+      if (i >= 10) { s.actionStateId = 88; s.attackBasedXSpeed = 5; }
+      s.hitlagRemaining = hitlag[i - 10] ?? 0;
+    });
+    return new PlayerHud(data, 0, { idle: 50, launch: 4, launchSpeed: 3 }, -200);
+  };
+  const first = (h: PlayerHud) => h.tag.findIndex((t, i) => i >= 10 && t === 1);
+  assert.equal(first(states([])), 13);
+  assert.equal(first(states([5, 4, 3, 2, 1])), 17);
 });

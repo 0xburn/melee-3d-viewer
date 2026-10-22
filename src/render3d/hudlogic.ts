@@ -327,7 +327,12 @@ export class PlayerHud {
         for (let k = this.stocks[i]; k < this.stocks[i - 1] && k < 5; k++) this.losses[k].push(i);
       }
     }
-    // the player tag over the fighter (ifnametag.c): shown while the count is 1
+    // the player tag over the fighter (ifnametag.c): shown while the count is 1.
+    // Fighter_procAnim steps it down only out of hitlag (x2219_b5): not on the
+    // frames after a hit's while its hitlag lasts (hitlag left at the frame
+    // and at the frame before; Fighter_procHitlag, before it, lets go on the
+    // frame the count runs out)
+    const frozen = (i: number) => (st(i)?.hitlagRemaining ?? 0) > 0 && i > 0 && (st(i - 1)?.hitlagRemaining ?? 0) > 0;
     let count = 0;
     prevState = -1;
     for (let i = 0; i < n; i++) {
@@ -335,12 +340,12 @@ export class PlayerHud {
       if (s !== prevState) {
         const kb = Math.hypot(st(i)?.attackBasedXSpeed ?? 0, st(i)?.attackBasedYSpeed ?? 0);
         if (s === WAIT || s === CLIFF_CATCH) count = tagIdle;
-        // (the launch's count from the frame the hit landed, the one before
-        // the replay shows it: see game())
-        else if (s >= DAMAGE_FLY_FIRST && s <= DAMAGE_FLY_LAST && kb >= tags.launchSpeed) count = Math.max(1, tags.launch - 1);
+        // (the launch's count from the frame the hit landed, the frame the
+        // replay shows it: see game())
+        else if (s >= DAMAGE_FLY_FIRST && s <= DAMAGE_FLY_LAST && kb >= tags.launchSpeed) count = tags.launch;
         else if (s === REBIRTH || s === DEAD_UP_STAR || s === DEAD_UP_STAR_ICE || s === DEAD_UP_FALL || s === DEAD_UP_FALL_ICE) count = 1;
         else if (!KEEPS_TAG.has(s)) count = 0;
-      } else if (count > 1 && i + FIRST_FRAME >= goFrame) count--; // (not while the intro holds the players still)
+      } else if (count > 1 && i + FIRST_FRAME >= goFrame && !frozen(i)) count--; // (not while the intro holds the players still)
       const gameFrame = i + FIRST_FRAME;
       // (a player with a nametag has it over the fighter the whole game: fn_802FCC44)
       this.tag[i] = (count === 1 || gameFrame < goFrame || nametag) && this.stocks[i] > 0 ? 1 : 0;
