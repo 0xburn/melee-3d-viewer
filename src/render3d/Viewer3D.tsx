@@ -610,13 +610,24 @@ const KB_HELD: { kind: number; states: [number, number]; slot: number; part: num
   { kind: 18, states: [492, 499], slot: 0, part: 49, sized: true },  // Shield Breaker (Marth's): the sword on his RThumbNb
   { kind: 26, states: [530, 537], slot: 0, part: 49, sized: true },  // and Roy's
 ];
-/** who holds a fighter held or thrown: the nearest of the others */
+/** a grab's holder from its catch to its throw (Catch to ThrowLw, 212-222): the one whose victim_gobj the held
+ *  one is, from ftCo_Catch_Enter until ftCo_800DDDE4 lets go; and the held one's states of such a grab
+ *  (CapturePulledHi to CaptureWaitLw, ThrownF to ThrownLw) */
+const CATCHING_FIRST = 212, CATCHING_LAST = 222;
+const catching = (st: PlayerState) => st.actionStateId >= CATCHING_FIRST && st.actionStateId <= CATCHING_LAST;
+const caughtByCatch = (s: number) => (s >= 223 && s <= 228) || (s >= 239 && s <= 242);
+/** who holds a fighter held or thrown: the nearest of the others, of those holding a grab when any does */
 function captorOf(a: Actor, actors: Actor[]): Actor | null {
   const s = a.st.actionStateId;
   if (!CAPTURED.has(s) && !THROWN.has(s)) return null;
+  // (of the Ice Climbers, the one in the grab: Nana walking on while Popo throws can be the nearer, and the one
+  // thrown was hung on her hand and went along with her where the game holds it on Popo's - Ness, thrown
+  // forward, 12 to 16 off on frames 1064-1066 of bot-throws_ness_ics-1065)
+  const holding = caughtByCatch(s) && actors.some((o) => o.player !== a.player && !gone(o.st) && catching(o.st));
   let best: Actor | null = null, dist = Infinity;
   for (const o of actors) {
     if (o.player === a.player || gone(o.st)) continue;
+    if (holding && !catching(o.st)) continue;
     // (a star's thrower is a Kirby: the nearest, as kirbyHeld takes him)
     if (KIRBY_STARS.has(s) && o.st.internalCharacterId !== KIRBY) continue;
     const d = Math.hypot(o.st.xPosition - a.st.xPosition, o.st.yPosition - a.st.yPosition);
