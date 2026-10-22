@@ -483,10 +483,11 @@ export function nametagFrame(tag: number): number {
 }
 
 /** the edge chevrons' blink (Stc_rarwmdls, 16 frames round): the game starts
- *  it with the HUD, two frames before the replay's first frame, and steps it
- *  every frame after (fn_802FDA78) - the reference frames' phase */
+ *  it with the HUD, a frame before the replay's first frame, and steps it
+ *  every frame after (fn_802FDA78) - the phase of the game's captures, all
+ *  sixteen phases over 322 windows */
 export function chevronFrame(f: number): number {
-  return (f + 2) % 16;
+  return (f + 1) % 16;
 }
 
 
