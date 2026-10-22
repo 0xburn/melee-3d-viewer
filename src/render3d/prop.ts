@@ -255,6 +255,21 @@ export class Prop {
     this.place.set(m.subarray(0, 16));
     sk.update(this.place);
   }
+  /** at frame `frame` of its animations, as the child of a root given the matrix `m` outright: a model the
+   *  game loads whole, gives its root a matrix of its own (HSD_JObjCopyMtx) and animates from the root's child
+   *  down (HSD_JObjAddAnimAll on jobj->child), this tree being that child's - its own turn, size and place,
+   *  as its animation has them, under the root's matrix (the grapple beam's links: itsamusgrapple.c) */
+  poseUnderMatrix(m: Float32Array, frame: number) {
+    const sk = this.skeleton;
+    sk.resetPose();
+    if (this.anim) sk.applyAObjs(this.anim, frame, false);
+    if (this.matAnim) {
+      sk.resetMaterials();
+      sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, false);
+    }
+    this.place.set(m.subarray(0, 16));
+    sk.update(this.place);
+  }
   /** the track's joints over the animation's (its root is the item's place, never in it) */
   private layTrackPose() {
     const tp = this.trackPose;

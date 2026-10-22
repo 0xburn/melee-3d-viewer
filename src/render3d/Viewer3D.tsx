@@ -4538,7 +4538,8 @@ function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPos
     for (let row = 0; row < 3; row++) for (let col = 0; col < 4; col++) trackLinkMtx[col * 4 + row] = v[row * 4 + col];
     trackLinkMtx[3] = trackLinkMtx[7] = trackLinkMtx[11] = 0;
     trackLinkMtx[15] = 1;
-    if (anim !== undefined) p.poseMatrix(trackLinkMtx, age);
+    // (a link with animations is its model's root's child, posed by them under the link's matrix)
+    if (anim !== undefined) p.poseUnderMatrix(trackLinkMtx, age);
     else p.poseMatrix(trackLinkMtx);
     r.drawSkeletonTrsp(p.skeleton, TRSP[pass]);
   }
