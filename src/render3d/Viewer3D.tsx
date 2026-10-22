@@ -1004,6 +1004,20 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     return invert(camInvScratch, camViewScratch);
   };
 
+  // the match camera's view-projection at frame f as the frame's own picture has it (the page's zoom and shape),
+  // or null before the camera run has it: for the tags, which the game places with the frame before's (hud.ts)
+  const prevView = mat(), prevProj = mat(), prevVP = mat(), prevGx = new Float32Array(16);
+  const viewProjAt = (f: number, aspect: number): Float32Array | null => {
+    const track = camTrackTo(f);
+    if (f < 0 || !track || (f + 1) * CAM_STRIDE > track.length) return null;
+    const t = f * CAM_STRIDE, z = Math.max(0.05, replayStore.zoom);
+    const at = [track[t + 3], track[t + 4], track[t + 5]];
+    const eye = [0, 1, 2].map((i) => at[i] + (track[t + i] - at[i]) / z);
+    gameView(prevView, eye, at);
+    gameProjection(prevProj, prevGx, track[t + 6], Math.abs(aspect - CAM_ASPECT) < 0.01 ? CAM_ASPECT : aspect, ...camPlanes);
+    return mul(prevVP, prevProj, prevView);
+  };
+
   // stats: when each frame was drawn, and how long it took
   const drawnAt: number[] = [];
   const frameLog: number[] = [];
@@ -2431,8 +2445,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         // (the camera bone: its place in the fighter's bone list, ftLib_800866DC; the model's joint past its
         // part list's gaps, parts.ts)
         const bone = magnify ? cameraBone(fi, a.st) : null;
+        // (where the player's record has it when the tag is placed: the frame before's place, hud.ts)
+        const pst = data.frames[fno - 1]?.players[a.player]?.state;
+        const pko = pst && gone(pst) ? koAt(data, fno - 1, a.player, false, pst, camInvAt(fno - 1)) : null;
         hudActors.push({
           player: a.player, st: a.st, drawn, magnify, at: a.ko ? [a.ko.x, a.ko.y, a.ko.z] : undefined,
+          tagAt: pko ? [pko.x, pko.y, pko.z] : pst ? [pst.xPosition, pst.yPosition, 0] : undefined,
           // (the magnifier's size: the camera box's target_ext.v.z, ftData +0x3C's last float times fp->x34_scale.y
           // - the player's scale, not the model's (ftCamera_80076064, ftLib_80086B80) - over 8)
           nameTagHeight: fi.nameTagHeight, bone,
@@ -2458,7 +2476,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       // (with a track that has the HUD's own generators, the bursts are the effect world's)
       const bursts = fxw && fxw.trackHud && fno < fxw.trackUntil
         ? { particles: fxw.particlesOf(true), places: fxw.hudPlaces } : null;
-      hud.draw(r, fno, viewProj, hudActors, ek?.bank ?? null, w / Math.max(1, h), bursts);
+      hud.draw(r, fno, viewProj, hudActors, ek?.bank ?? null, w / Math.max(1, h), bursts,
+               viewProjAt(fno - 1, w / Math.max(1, h)) ?? viewProj);
       hudMs = performance.now() - h0;
     }
     const had = runTags();

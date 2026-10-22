@@ -321,6 +321,9 @@ export interface HudActor {
   magnify?: boolean;
   /** where it is drawn, when not where the replay says (a star KO) */
   at?: [number, number, number];
+  /** where the player's record has it when its tag is placed (fn_802FCC44, Player_LoadPlayerCoords): the frame
+   *  before's place, as Fighter_procPlayer writes it after the HUD's procs; `at` (or the replay's) if unset */
+  tagAt?: [number, number, number];
   nameTagHeight: number;
   /** the point the match camera frames it by (its camera bone), world */
   bone: [number, number, number] | null;
@@ -528,9 +531,10 @@ export class Hud {
    *  every page; should one ever be wider or narrower, the HUD keeps its
    *  proportions (the HUD camera's height, the picture's width), its layout
    *  in the middle as a widescreen Melee shows it, the bubbles and chevrons
-   *  on the picture's own edges. */
+   *  on the picture's own edges. `tagViewProj` is the match camera as the frame before left it (the tags': see
+   *  below), `viewProj` without it. */
   draw(r: Renderer, f: number, viewProj: Mat, actors: HudActor[], bank: EffectBank | null = null,
-       aspect = this.kit.cam.aspect, tracked: TrackedBursts | null = null) {
+       aspect = this.kit.cam.aspect, tracked: TrackedBursts | null = null, tagViewProj: Mat = viewProj) {
     const gameFrame = f + FIRST_FRAME;
     // the picture's width over the game's
     // (a picture of the game's own shape takes the game's cameras as they are: within a part in a hundred, 1)
@@ -564,7 +568,10 @@ export class Hud {
         out.magnified.push(p.slot);
       }
     }
-    // --- the tags over the fighters: a flat 640 x 480 camera, pixel units
+    // --- the tags over the fighters: a flat 640 x 480 camera, pixel units. fn_802FCC44 places each in the HUD's
+    // procs (17), before Fighter_procPlayer (22) writes the frame's place to the player's record and before the
+    // frame's render makes the camera's matrices again (lbVector_WorldToScreen reads the cobj's): the place and
+    // the camera of the frame before
     ortho(this.flatProj, 320 - 320 * k, 320 + 320 * k, -480, 0, 0.1, 32768);
     lookAt(this.flatView, [0, 0, 300], [0, 0, 0]);
     let tagsBegun = false;
@@ -572,8 +579,8 @@ export class Hud {
       if (!p.tag || !p.life.tag[f]) continue;
       const a = actors.find((x) => x.player === p.slot);
       if (!a || (!a.drawn && !a.at)) continue;
-      const pos = a.at ?? [a.st.xPosition, a.st.yPosition, 0];
-      const [sx, sy, w] = toScreen(viewProj, [pos[0], pos[1] + a.nameTagHeight - 2.5, pos[2]], k);
+      const pos = a.tagAt ?? a.at ?? [a.st.xPosition, a.st.yPosition, 0];
+      const [sx, sy, w] = toScreen(tagViewProj, [pos[0], pos[1] + a.nameTagHeight - 2.5, pos[2]], k);
       if (w <= 0) continue;
       const m = p.tag;
       m.begin();
