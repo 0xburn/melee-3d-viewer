@@ -6,8 +6,8 @@
  * spray at its foot and its top. As its platform rises and sinks the code
  * stretches the column's root joint to the platform's height (tall by the
  * height over the column's own, 45; wide by half that and a half), and when
- * the platform goes under the water the column goes with it until it comes
- * back up (grIzumi_801CC358). A viewer track says how high each platform is
+ * the platform goes under the water (the column down to -1) the column is
+ * hidden until it comes back up (grIzumi_801CC358). A viewer track says how high each platform is
  * ("fod"), whatever the replay's version, and so does the replay from Slippi
  * 3.18 on; else they stand where the file starts them. The platforms are the
  * main part's joints, which the stage poses from the heights apply leaves.
@@ -19,6 +19,8 @@ interface Column { part: Part; side: 0 | 1; tall: number }
 
 /** a platform this low is under the water (the code sets it just under its column's foot) */
 const SUNK = -1.5;
+/** the height a column sinks to (grIzumi_801CC358's state 1: xD4 = -1) */
+const SINK = -1;
 const columns = new WeakMap<Stage, Column[]>();
 
 export class Fountain implements StageLogic {
@@ -62,10 +64,19 @@ export class Fountain implements StageLogic {
     return this.heightAt(frame, side) ?? st.fountainStart?.[side] ?? 20;
   }
 
+  /** whether a column is under the water this frame: its platform below SUNK, or the column's height at the
+   *  sink's -1 (grIzumi_801CC358 sends it there, xD4 = -1) and on the frames either side too. It is shown on the
+   *  frame it gets there (the code hides it the frame after, in its state 3) and on the frame it comes back up
+   *  (state 4 shows it, its height still -1, and raises it from the next) */
+  private under(st: Stage, frame: number, side: 0 | 1): boolean {
+    if (this.height(st, frame, side) < SUNK) return true;
+    return this.heightAt(frame, side) === SINK && this.heightAt(frame - 1, side) === SINK && this.heightAt(frame + 1, side) === SINK;
+  }
+
   apply(st: Stage, frame: number) {
     st.fodHeights = [this.heightAt(frame, 0), this.heightAt(frame, 1)];
     for (const c of this.cols) {
-      if (this.height(st, frame, c.side) >= SUNK) st.extraRuns.set(c.part, this.run);
+      if (!this.under(st, frame, c.side)) st.extraRuns.set(c.part, this.run);
     }
   }
 
