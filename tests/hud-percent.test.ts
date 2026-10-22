@@ -48,3 +48,14 @@ test("a launch's tag: its count from the hit's frame, held through the hitlag", 
   assert.equal(first(states([])), 13);
   assert.equal(first(states([5, 4, 3, 2, 1])), 17);
 });
+
+test("Kirby's spat-out star shows its fighter's tag at once", () => {
+  const data = replay(Array(30).fill(0));
+  data.frames.forEach((f, i) => {
+    const s = f.players[0]!.state as unknown as Record<string, number>;
+    s.actionStateId = i < 10 ? 35 : 291;
+  });
+  const h = new PlayerHud(data, 0, { idle: 50, launch: 4, launchSpeed: 3 }, -200);
+  assert.equal(h.tag[9], 0);
+  assert.equal(h.tag[10], 1);
+});

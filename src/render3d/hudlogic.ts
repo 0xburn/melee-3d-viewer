@@ -198,6 +198,9 @@ const DEAD_UP_STAR = 4, DEAD_UP_STAR_ICE = 5, DEAD_UP_FALL = 6, DEAD_UP_FALL_ICE
 const CLIFF_CATCH = 252, DAMAGE_FLY_FIRST = 87, DAMAGE_FLY_LAST = 91;
 /** states entered without clearing the name tag's count (Ft_MF_SkipNametagVis) */
 const KEEPS_TAG = new Set([REBIRTH_WAIT, 253, 183, 184, 185, 191, 192, 193, 247, 248]);
+/** states whose start sets the count to 1 (ThrownKirbyStar, ThrownCopyStar, YoshiEgg, KirbyYoshiEgg, BarrelWait,
+ *  Barrel) */
+const TAG_AT_ONCE = new Set([290, 291, 277, 332, 293, 340]);
 /** ftCommonData +0x5F0, +0x5EC and +0x5E8: standing still (or on the
  *  ledge) this many frames brings the tag up; so does a launch (a DamageFly
  *  state) at a knockback speed of at least 3, this many frames after it
@@ -344,6 +347,9 @@ export class PlayerHud {
         // replay shows it: see game())
         else if (s >= DAMAGE_FLY_FIRST && s <= DAMAGE_FLY_LAST && kb >= tags.launchSpeed) count = tags.launch;
         else if (s === REBIRTH || s === DEAD_UP_STAR || s === DEAD_UP_STAR_ICE || s === DEAD_UP_FALL || s === DEAD_UP_FALL_ICE) count = 1;
+        // (Kirby's stars, Yoshi's eggs and the barrel set it to 1 as they start: ftCo_ThrownKirby.c inlineB2,
+        // ftCo_YoshiEgg.c, ftkirbyyoshiegg.c, ftCo_Barrel_Enter, ftCo_BarrelWait.c)
+        else if (TAG_AT_ONCE.has(s)) count = 1;
         else if (!KEEPS_TAG.has(s)) count = 0;
       } else if (count > 1 && i + FIRST_FRAME >= goFrame && !frozen(i)) count--; // (not while the intro holds the players still)
       const gameFrame = i + FIRST_FRAME;
