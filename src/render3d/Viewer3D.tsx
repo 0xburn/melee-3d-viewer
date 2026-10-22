@@ -1533,7 +1533,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       perspective(proj, FOVY, aspect, Math.max(1, cam.dist * 0.05), cam.dist * 40, 0, -f * lift / cam.dist);
     }
     mul(viewProj, proj, view);
-    setBillboardView(view);
+    const frameBB = setBillboardView(view);
 
     prof.mark("camera");
     const st = stage();
@@ -2115,10 +2115,8 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // fighters, the items, the effects - seen from below the floor into the
     // stage's mirror image, before the pond is drawn with it (grizumi.c)
     // (not drawn while no part of the pond is in view: nothing would show it)
-    let mirrorDrawn = false;
     if (st?.mirror && st.mirrorSurfaces.some(({ sk, d }) => sk.isVisible(d) && r.inView(d))) {
       const m0 = performance.now(), d0 = r.draws;
-      mirrorDrawn = true;
       const axesM = r.beginMirror();
       // (grIzumi_801CCEA0: the mirror's camera draws links 0, 2 and 5 - the
       // scenery under the stage's lights, and the fighters - in their opaque
@@ -2153,7 +2151,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         r.drawParticles(built.data, built.batches);
       }
       if (ek?.bank && fxw && !layersOff.effects) {
+        // (posed facing the mirror's camera: a billboard's matrix is made under the camera that draws it,
+        // HSD_JObjMakePositionMtx in HSD_JObjDisp, so grIzumi_801CCEA0's camera turns them to itself; the main
+        // camera's pass poses them again)
+        setBillboardView(axesM.view);
         drawFxModels(r, fxw);
+        setBillboardView(view, frameBB);
         const mine = fxw.particlesOf(false);
         if (mine.length) {
           const built = buildParticles(mine, axesM);
@@ -2283,7 +2286,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       r.drawParticles(built.data, built.batches);
     }
     if (ek?.bank && fxw && !layersOff.effects) {
-      models = drawFxModels(r, fxw, !mirrorDrawn);
+      models = drawFxModels(r, fxw);
       // (every list but the HUD's: that one is drawn in the HUD's pass, in its space)
       const mine = fxw.particlesOf(false);
       particles = mine.length;
@@ -4768,7 +4771,7 @@ function pictureHash(gl: WebGL2RenderingContext): number {
 }
 
 // The game's effect models where the world has them, each at its own frame
-function drawFxModels(r: Renderer, w: FxWorld, pose = true): number {
+function drawFxModels(r: Renderer, w: FxWorld): number {
   const slots = new Map<number, number>();
   let n = 0;
   for (const m of w.models) {
@@ -4778,8 +4781,8 @@ function drawFxModels(r: Renderer, w: FxWorld, pose = true): number {
     slots.set(k, slot + 1);
     const pr = m.bank.prop(m.index, slot, true);
     if (!pr) continue;
-    // (posed once a frame: a second pass - the main one after a mirror's - draws them as they are)
-    if (pose) w.poseModel(m, pr, m.age);
+    // (posed in each camera's pass: its billboards face that camera)
+    w.poseModel(m, pr, m.age);
     if (m.tint) {
       // the colors the game sets (efLib_SetTevKonstColor): on one material
       // only, the first mesh of the root's first child, its first texture's

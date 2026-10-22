@@ -1946,8 +1946,9 @@ void main() {
   private uploadMats(M: Float32Array, count: number, d: Drawable | null = null) {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
     // (a billboard drawn through the view it was made under: its modelview as the game made it - every slot but a
-    // shared-vertex skin's second joint's)
-    const bb = d && d.bbMV && d.bbMVView === this.bbFrame && !this.shifted && this.camView === this.view ? d.bbMV : null;
+    // shared-vertex skin's second joint's; the frame's camera or another's, the mirror's)
+    const bb = d && d.bbMV && !this.shifted && d.bbMVView === (this.camView === this.view ? this.bbFrame : billboardViewOf(this.camView))
+      ? d.bbMV : null;
     const N = this.nrmBuf, T = this.nrmTmp;
     for (let k = 0; k < count; k++) {
       if (bb && !(k === 1 && d!.second >= 0)) MV.set(bb, k * 16);

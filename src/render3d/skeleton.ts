@@ -107,8 +107,9 @@ const tmpP = [0, 0, 0];
 const bbView = ident(new Float32Array(16)), bbInv = ident(new Float32Array(16));
 const bbA = new Float32Array(16), bbB = new Float32Array(16);
 let bbIdentity = true;
-// (each view set: a skeleton with billboards is posed again under a new one)
-let bbViewId = 0;
+// (each view set: a skeleton with billboards is posed again under a new one; the numbers only ever grow, so a view
+// set back keeps its own and one set anew never takes an old one's)
+let bbViewId = 0, bbViews = 0;
 // (?noposeskip: every update poses again, for checking that skipping changes nothing)
 const SKIP_SAME = typeof location === "undefined" || !new URLSearchParams(location.search).has("noposeskip");
 
@@ -122,12 +123,16 @@ export function billboardViewOf(view: ArrayLike<number>): number {
 }
 
 /** the view the billboards face from now on (the viewer sets it each frame,
- *  before it poses anything) */
-export function setBillboardView(view: Float32Array) {
-  bbViewId++;
+ *  before it poses anything); returns its number. With `id`, the number a call
+ *  returned for this same view: the view set back (a camera's pass drawn in
+ *  between - the mirror's - and the main camera's again), what was posed under
+ *  it before still its own */
+export function setBillboardView(view: Float32Array, id?: number): number {
+  bbViewId = id ?? ++bbViews;
   bbView.set(view);
   invert(bbInv, view);
   bbIdentity = false;
+  return bbViewId;
 }
 
 /** a joint that turns to face the camera (HSD's mkBillBoardMtx and kin): its
