@@ -2092,12 +2092,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     // fighters', and their see-through parts once (Camera_80031328); the items' own it_8026EECC draws in one of
     // the two only. `note`: the glow's place for the checks, once a frame
     const drawChains = (pass: "opa" | "xlu", note = false) => {
-      for (const it of frame.items ?? []) {
-        if (!trackChains.has(it.spawnId)) continue;
-        const links = trNow!.pose("lm", String(it.spawnId), fno - 123);
-        const f = articleFighter(data, fs, it, fno);
-        if (links && f) drawTrackChain(r, f, it, links, trackArticles.get(data)?.get(it.typeId), itemLife(data, fno, it), pass);
-      }
+      // (the glows first: the item's own GObj is made before its links' - it_802B7C18)
       for (const a of actors) {
         const c = CHAINS[a.st.internalCharacterId];
         const costume = data.settings.playerSettings[a.player]?.costumeIndex ?? 0;
@@ -2123,6 +2118,12 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           r.drawSkeletonTrsp(glow.skeleton, TRSP[pass]);
           r.endPass();
         }
+      }
+      for (const it of frame.items ?? []) {
+        if (!trackChains.has(it.spawnId)) continue;
+        const links = trNow!.pose("lm", String(it.spawnId), fno - 123);
+        const f = articleFighter(data, fs, it, fno);
+        if (links && f) drawTrackChain(r, f, it, links, trackArticles.get(data)?.get(it.typeId), itemLife(data, fno, it), pass);
       }
     };
     // (their first opaque copy, under the stage's lights, then the second, under the fighters')
@@ -4523,7 +4524,11 @@ function drawTrackChain(r: Renderer, f: Fighter, it: ReplayItem, links: TrackPos
   const art = said ?? c.art;
   if (art < 0) return;
   const n = links.links;
-  for (const [k, v] of links.joints) {
+  // (in the order the item's code made them, each its own GObj after the one before: from the chain's start
+  // to its end - it_802B75FC, it_802A2568 and their kin make the start first - so the track's last link first)
+  for (let k = n - 1; k >= 0; k--) {
+    const v = links.joints.get(k);
+    if (!v) continue;
     const out = links.out?.get(k) ?? 0;
     const i = n - 1 - k;
     // (the end is drawn whatever its flag says - all but the grapple's claw, whose x2C_b0 it_802B743C
