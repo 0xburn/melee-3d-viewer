@@ -167,3 +167,18 @@ test("streamed poses (\"sp\", \"fj\") read the same as the lines added up, asked
   // (one owner's pose is the same object frame to frame: nothing made per frame)
   assert.equal(t.pose("fj", "2:0:9", 200), t.pose("fj", "2:0:9", 201));
 });
+
+test("a fighter's last depth off the plane holds while it stands there, however near the plane", () => {
+  // (nudged apart in depth, then left a third of a unit off the plane: the track's "pos" line, then nothing
+  // until the line that brings it back to depth 0)
+  const t = new ViewerTrack({ version: 2, decoded: true, events: [
+    [10, "pos", 1, 0, -18.5, 0.0001, -0.3, 0, 1.57, 0, 0.94],
+    [11, "pos", 1, 0, -18.8, 0.0001, -0.3223, 0, 1.57, 0, 0.94],
+    [40, "pos", 1, 0, -18.8, 0.0001, 0, 0, 1.57, 0, 0.94],
+  ] });
+  assert.equal(t.depthAt(1, 0, 11, -18.8, 0.0001), -0.3223);
+  assert.equal(t.depthAt(1, 0, 30, -18.8, 0.0001), -0.3223);
+  // (moved on with no line: not where the line has it, so back on the plane)
+  assert.equal(t.depthAt(1, 0, 30, -10, 0.0001), 0);
+  assert.equal(t.depthAt(1, 0, 41, -18.8, 0.0001), 0);
+});

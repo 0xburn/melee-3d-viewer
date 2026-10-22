@@ -171,10 +171,6 @@ const KEYS: Record<string, number> = {
   hook: 2, irot: 1, fdrot: 0, stadscreen: 0, anim: 2, rng: 0, fod: 0, ij: 2,
 };
 
-/** the most a fighter's depth moves in a frame, and a little (Nana's 0.2;
- *  the others' 0.1): a last "pos" nearer the plane than this has ended */
-const DEPTH_STEP = 0.35;
-
 /** a fighter's animation as the game played it ("anim"), as of game frame `since` */
 export interface TrackAnim {
   since: number; anim: number; kind: number; frame: number; rate: number; blendFrames: number; blendAt: number;
@@ -295,10 +291,13 @@ export class ViewerTrack {
 
   /** how far off the stage's plane a fighter stands on game frame `frame`:
    *  the game moves fighters that overlap apart in depth (Nana behind Popo
-   *  by 3.8), a little each frame. "pos" is sent while a fighter is off the
-   *  plane, only as it changes: its last depth holds while it stands still
-   *  out there (`x`, `y`: where the replay has it now), and one within a
-   *  step of the plane with nothing after it is back on it. 0 without one */
+   *  by 3.8), a little each frame while they overlap (ftCommon_8007DD7C's
+   *  nudges, added in Fighter_procUpdate), and nothing brings it back: a few
+   *  nudges can leave one a fraction of a unit off the plane for good.
+   *  "pos" is sent while a fighter is off the plane, only as it changes, and
+   *  once more the frame it is back on it (its depth 0): its last depth
+   *  holds while it stands still out there (`x`, `y`: where the replay has
+   *  it now), however near the plane. 0 without one */
   depthAt(port: number, sub: number, frame: number, x: number, y: number): number {
     const list = this.states.get("pos")?.get(`${port}:${sub}`);
     if (!list || !list.length || list[0][0] > frame || frame >= this.until) return 0;
@@ -313,7 +312,7 @@ export class ViewerTrack {
     // (nothing sent since: it stands where it stood, out there - or it left
     // the depth at once, and has moved on since)
     const near = (p: number, q: number) => Math.abs(p - q) <= 1e-3 * Math.max(1, Math.abs(q));
-    return Math.abs(z) > DEPTH_STEP && near(Number(e[4]), x) && near(Number(e[5]), y) ? z : 0;
+    return near(Number(e[4]), x) && near(Number(e[5]), y) ? z : 0;
   }
 
   /** the game's random state after game frame `frame`'s gameplay ("rng", one
