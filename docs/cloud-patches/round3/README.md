@@ -3,7 +3,7 @@
 Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Ten commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0011 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0012 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -157,4 +157,11 @@ For the pose check (`tools/pose_check.py` in the viewer repo). Off by default. S
 - **When.** A state line, written once `x2226_b2` is set and then on every change.
 - **For the viewer.** It hangs the victim's XRotN on the captor's TransN2 only while `cns` is 1. Without the line it keeps its own rule (every captured or thrown frame). This is the pose check's f1 at bot-fox_falco 2630 (CapturePulledLw, frame 1: not hung yet) and f15 at bot-tp_peach_puff 1229 (ThrownHi after the release: let go).
 - `cns` is added to `UNLOCKED_KINDS`, so no lock changes.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+
+## 0012 Viewer track: `pos` written once more the frame a fighter is back on the plane
+
+- **What was wrong.** `pos` is written while a fighter is in DeadUp states (4-10) or off the plane (`cur_pos.z != 0`). A state line is written only on change, so a reader can't tell "still at -3.8" from "back at 0": when the condition ended no line came. Nana in bot-ness_ics 3298 is back at z 0 in the game, and the viewer still had the last line's -3.8 (the pose check's f11, -3.8 on every joint).
+- **Now.** The frame the condition ends writes the top joint once more (its place then, z 0 for a fighter back on the plane). One line per return.
+- **Tracks.** `pos` lines are added; locks with `pos` change (they are regenerated with this series anyway).
 - **Production.** `.text`, `.rodata` and `.data` are identical.
