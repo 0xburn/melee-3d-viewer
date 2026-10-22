@@ -302,6 +302,18 @@ export function trackShake(tr: ShakeTrack | null | undefined, key: string, g: nu
   return x === 0 && y === 0 ? null : [x, y];
 }
 
+/** whether a smash attack is charging at the end of frame `g` (its smash_attrs.state Charging,
+ *  ftLib_IsChargingSmash): its animation stands at or past its script's charge frame and stays there
+ *  the next frame */
+export function smashCharging(stateAt: (g: number) => PlayerState | undefined, g: number,
+                              chargeFrame: (state: number) => number | null): boolean {
+  const a = stateAt(g), b = stateAt(g + 1);
+  if (!a || !b || a.isDead || a.actionStateId !== b.actionStateId) return false;
+  if ((a.hitlagRemaining ?? 0) > 0 || (b.hitlagRemaining ?? 0) > 0) return false;
+  const at = chargeFrame(a.actionStateId);
+  return at !== null && a.actionStateFrameCounter >= at - 0.001 && b.actionStateFrameCounter === a.actionStateFrameCounter;
+}
+
 /** a smash attack's charge trembling on frame `f` (null when not): the
  *  charge holds the animation from its script's charge frame (`chargeFrame`
  *  of a state, null for one that does not charge) until the button is let
@@ -310,13 +322,7 @@ export function trackShake(tr: ShakeTrack | null | undefined, key: string, g: nu
  *  a step of its table a frame (ftCo_800DEEE8, ftCo_800DEF38) */
 export function chargeShakeAt(stateAt: (g: number) => PlayerState | undefined, f: number,
                               chargeFrame: (state: number) => number | null, hf: HitFeel = HIT_FEEL): V2 | null {
-  const holds = (g: number): boolean => {
-    const a = stateAt(g), b = stateAt(g + 1);
-    if (!a || !b || a.isDead || a.actionStateId !== b.actionStateId) return false;
-    if ((a.hitlagRemaining ?? 0) > 0 || (b.hitlagRemaining ?? 0) > 0) return false;
-    const at = chargeFrame(a.actionStateId);
-    return at !== null && a.actionStateFrameCounter >= at - 0.001 && b.actionStateFrameCounter === a.actionStateFrameCounter;
-  };
+  const holds = (g: number): boolean => smashCharging(stateAt, g, chargeFrame);
   if (!holds(f)) return null;
   let from = f;
   while (from > 0 && f - from < 600 && holds(from - 1)) from--;

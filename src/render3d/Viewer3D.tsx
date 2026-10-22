@@ -26,7 +26,7 @@ import { Hud3D } from "./Hud3D";
 import { CRT_LOOKS, type CrtPreset, isCrtPreset, tubeOutline, unbend } from "./crt";
 import { invert, lookAt, mat, perspective, translation, mul } from "./math";
 import { CAM_ASPECT, CAM_STRIDE, cameraPlanes, CamActor, CameraRun, cameraRun, gameProjection, gameView, playerScales } from "./camera";
-import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf, trackShake } from "./hitlag";
+import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf, smashCharging, trackShake } from "./hitlag";
 import { setBillboardView } from "./skeleton";
 import { DEFAULT_LIGHTING, Renderer } from "./renderer";
 import type { Lighting } from "./lightset";
@@ -4721,7 +4721,8 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
     shadowScale = shadowBallScale(it.state, it.chargeShotChargeLevel, most, art.special(0x18), art.special(0x1c));
   }
   if (on) {
-    art.prop.poseUnder(still ?? itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0), on, size, false, art.attach);
+    const age = it.typeId === GW_TORCH && owner ? torchAge(data, owner, frame, it) : itemAnimAge(data, frame, it);
+    art.prop.poseUnder(still ?? age + (a.from?.[it.state] ?? 0), on, size, false, art.attach);
     // (held: its place kept against Mewtwo's hand at his size)
     if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale, shadowOwner?.modelScale);
     const w = art.prop.skeleton.world;
@@ -4798,6 +4799,22 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
                        shown: Array.from(art.prop.skeleton.shown) });
   drawProp(r, art);
   return true;
+}
+
+/** Mr. Game & Watch's torch (forward smash, itgamewatchfire.c) */
+const GW_TORCH = 0x74;
+
+/** the torch's animation clock: its callback (itGamewatchFire_Motion0_Anim) sets its rate to 0 while its owner
+ *  charges the smash (ftLib_IsChargingSmash) and back to 1 after, and the rate a frame's callback sets is the one
+ *  the next frame's step (Item_802694CC, before the callback) runs at - so a frame after one its owner ended
+ *  charging stands still */
+function torchAge(data: ReplayData, owner: Fighter, frame: number, it: ReplayItem): number {
+  const base = itemAnimAge(data, frame, it);
+  const stAt = (g: number) => data.frames[g]?.players[it.owner]?.state;
+  const chargeAt = (s: number) => owner.scriptFor(s).find((e) => e.kind === "smashCharge")?.frame ?? null;
+  let held = 0;
+  for (let n = frame - itemAge(data, frame, it) + 1; n <= frame; n++) if (smashCharging(stAt, n - 1, chargeAt)) held++;
+  return Math.max(0, base - held);
 }
 
 /** Samus's charge shot (Kirby's copy: 0x97) */
