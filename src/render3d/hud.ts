@@ -673,7 +673,10 @@ export class Hud {
           b.solo(1, 2);
           b.color(1, [0, 0, 0], 2);
           b.alpha(1, PLATE.fill, 2);
-          b.finish(cx, oy, 0, sx, 0, PLATE.sy, 1);
+          // (the box's own joint at the plate's place, as the game's draws have it: its rest offset - 2.5 up and 10
+          // back in the tag model - not added, so the root goes where that cancels it)
+          const [rx, ry, rz] = b.rest(1);
+          b.finish(cx - rx * sx, oy - ry * PLATE.sy, -rz, sx, 0, PLATE.sy, 1);
           r.drawSkeleton(b.sk, "opa");
           r.drawSkeleton(b.sk, "xlu");
         } else {
