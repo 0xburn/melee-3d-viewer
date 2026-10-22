@@ -271,6 +271,8 @@ interface Inner {
   shadowMaps: { mtx: Mat }[];
   shadowMask: number;
   live: WeakMap<Image, unknown>;
+  /** the images drawn from a texture the page draws into (bindImage: the magnifier's picture) */
+  imageTex: WeakMap<Image, unknown>;
   staticsOf(s: Drawable["state"]): { p: MatProgram; I: Int32Array; F: Float32Array };
 }
 
@@ -278,7 +280,7 @@ interface Inner {
 export const RENDERER_NAMES = ["draws", "cs", "camView", "camVP", "camProj", "camGx", "mvBuf", "lightV", "fogRegs", "cullOn", "shiftView", "shiftVP",
                                "shifted", "mirrored",
                                "lighting",
-                               "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "staticsOf", "begin", "setFog",
+                               "overlayVP", "viewProj", "shadowMaps", "shadowMask", "live", "imageTex", "staticsOf", "begin", "setFog",
                                "setTint", "setOutline", "beginShadow", "beginMirror", "endMirror", "endShadow", "drawOne",
                                "drawGeometry", "drawParticles", "drawTrail", "drawSphere", "overlay", "endOverlay"] as const;
 
@@ -595,9 +597,9 @@ export class DrawLog {
     if (!t) return { id: null };
     const o = t.tobj;
     let id = this.images.get(t.image);
-    // (a picture made at run time - the mirror's, one the page draws into, Stadium's screen - is a frame
-    // copy to the game, not the file's bytes)
-    if (this.inner.live.has(t.image)) id = "efb:live";
+    // (a picture made at run time - the mirror's, one the page draws into, Stadium's screen, the magnifier's - is a
+    // frame copy to the game, not the file's bytes)
+    if (this.inner.live.has(t.image) || this.inner.imageTex.has(t.image)) id = "efb:live";
     else if (id === undefined) this.images.set(t.image, (id = gen === 4 ? "mirror" : imageId(a, t.image)));
     const game = id === "mirror" ? MIRROR_GAME : id === "efb:live" ? liveGame.get(t.image) : undefined;
     const at = 24 + n * 12;
