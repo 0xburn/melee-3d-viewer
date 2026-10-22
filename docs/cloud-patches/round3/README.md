@@ -3,7 +3,7 @@
 Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Ten commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0012 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0013 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -165,3 +165,15 @@ For the pose check (`tools/pose_check.py` in the viewer repo). Off by default. S
 - **Now.** The frame the condition ends writes the top joint once more (its place then, z 0 for a fighter back on the plane). One line per return.
 - **Tracks.** `pos` lines are added; locks with `pos` change (they are regenerated with this series anyway).
 - **Production.** `.text`, `.rodata` and `.data` are identical.
+
+## 0013 Viewer track: `bgflash`, a hit's screen flash started (`lbBgFlash_80021C48`)
+
+```
+[frame,"bgflash",type,duration]
+```
+
+- **What it is.** A strong hit starts lbBgFlash's screen flash: `ftCo_8008DB10` by the hit's element (types 2 to 6) when the knockback passes `p_ftCommonData` +0x178 to +0x188, and `ft_0C8C` (type 0xE). The flash is a full-screen 640 x 480 quad with vertex color under its own camera (`fn_8001FEC4`, `lbl_803BB028`), drawn three times a frame by `HSD_GObj_803910D8`'s mask 7, from the match's first flash on (after it, mode 5 at alpha 0). The game's draws are the gate's `missing|immediate|untextured|invsrcalpha` group (179 draws, 22 windows).
+- **Why a patch.** The hosted build stubs `lbBgFlash_80021C48` (src/stubs/headless_exclusions.c), so no track had it. With the visual build the stub writes this event; production keeps the empty stub.
+- `bgflash` is added to `UNLOCKED_KINDS`, so no lock changes.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+- **Numbering.** Your struct-dump hook goes after this one, as 0014.
