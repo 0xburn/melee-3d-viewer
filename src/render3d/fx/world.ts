@@ -832,7 +832,7 @@ export class FxWorld {
     }
     const events = clocked ?? a.fighter.scriptFor(st.actionStateId);
     // (a new move turns the trail off; one picked up under way has its script's say from its start)
-    this.swordStep(a, events, picked ? -1 : prev, now, t.entry === frame);
+    this.swordStep(a, frame, events, picked ? -1 : prev, now, t.entry === frame);
     let charge = -1;
     for (const e of events) {
       if (e.frame > now) break;
@@ -2073,13 +2073,17 @@ export class FxWorld {
     });
   }
 
-  private swordStep(a: ActorFrame, events: readonly ScriptEvent[], prev: number, now: number, entered: boolean) {
+  private swordStep(a: ActorFrame, frame: number, events: readonly ScriptEvent[], prev: number, now: number, entered: boolean) {
     const at = this.swordOf(a.fighter);
     if (!at) return;
     // (the sword's number is one of the game's parts: fp->parts, the model's joints in order)
     const j = partToModelJoint(a.st.internalCharacterId, at.part);
     const blade = j >= 0 && (j + 1) * 16 <= a.world.length ? a.world.subarray(j * 16, j * 16 + 16) : null;
-    this.swords.step(a.key, events, prev, now, entered, (a.st.hitlagRemaining ?? 0) > 0, blade);
+    // (held still by hitlag as the game reads it: Fighter_procCollResolve notes the blade unless x2219_b6, which
+    // Fighter_procHitlag copies from x2219_b5 after counting the frame before's hitlag down - before this frame's
+    // hits - so the frame a hit lands still notes it, and the frame its hitlag runs out too)
+    const held = this.stateAt ? (this.stateAt(a.key, frame - 1)?.hitlagRemaining ?? 0) - 1 > 0 : (a.st.hitlagRemaining ?? 0) > 0;
+    this.swords.step(a.key, events, prev, now, entered, held, blade);
   }
 
   private itemEvents(list: FxItem[]) {
