@@ -65,3 +65,23 @@ test("Screw Attack's model takes its fighter's model scale (efLib_Cb_SetScaleRot
   assert.equal(m.scale, Math.fround(0.88));
   assert.equal(m.rotY, -Math.PI / 2);
 });
+
+test("Mario's Tornado model shows its root's first child's next only in motion 349 (efLib_Cb_ftMr_SpecialLw)", () => {
+  const prop = { length: 87, pose: () => {} } as unknown as Prop;
+  const bank = { id: 1, cmds: [], texGroups: [], models: { 1: { life: 160, joint: 0, animJoint: null, matAnimJoint: null } },
+                 prop: () => prop, ptclKeys: () => [] } as unknown as EffectBank;
+  const w = new FxWorld(bank, (_c, part) => part);
+  w.trackFx = () => [];
+  const piece = [0, "fxp", 0x47c, "f", 0, 0, "m", 1001, "attach", -1, 0, 0, 0, 0, 0, 0, 1, 1, 1,
+                 "ftMr_SpecialLw", 0, 0, 0, 0, 0];
+  const actor = { key: "0:0", st: { facingDirection: 1, actionStateId: 349 }, fighter: { modelScale: 1 }, world: new Float32Array(16) };
+  const inner = w as unknown as { sts: Map<string, unknown>; placePieces(f: number, a: unknown[], e: unknown[]): void };
+  inner.sts.set(actor.key, actor.st);
+  inner.placePieces(123, [actor], [piece]);
+  const [m] = w.models;
+  m.turn?.(m);
+  assert.equal(m.secondChildOff, false);
+  actor.st.actionStateId = 350;
+  m.turn?.(m);
+  assert.equal(m.secondChildOff, true);
+});

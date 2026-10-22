@@ -241,6 +241,9 @@ export interface ModelFx {
   rootRotationZ?: boolean;
   /** held to the joint it is under by place and turn constraints (Prop.poseConstrained), not made its child */
   constrained?: boolean;
+  /** the root's first child's next joint and everything under it hidden, as its update callback last set
+   *  them (efLib_Cb_ftMr_SpecialLw, efLib_Cb_ftLg_SpecialLw) */
+  secondChildOff?: boolean;
 }
 
 /** The effects whose model the game's dispatch marks with state bit 0x80
@@ -1512,6 +1515,16 @@ export class FxWorld {
       onJoint = null;
       turn = (m) => { const w = on(); if (w) { m.x = w[12]; m.y = w[13] + p1; m.z = w[14]; } };
     } else if (callback === "SetScale_FromParamX") turn = (m) => { m.scale *= p0 || 1; };
+    else if (callback === "ftMr_SpecialLw" || callback === "ftLg_SpecialLw") {
+      // (efLib_Cb_ftMr_SpecialLw, efLib_Cb_ftLg_SpecialLw: the root's first child's next and all under it
+      // shown while the fighter is in motion 349 (Mario's) or 357 (Luigi's), HSD_JObjSetFlagsAll HIDDEN
+      // on it otherwise)
+      const motion = callback === "ftMr_SpecialLw" ? 349 : 357;
+      turn = (m) => {
+        const st = a ? this.sts.get(a.key) : undefined;
+        if (st) m.secondChildOff = st.actionStateId !== motion;
+      };
+    }
     else if (callback && !KNOWN_CALLBACKS.has(callback)) this.unknownCallbacks.add(callback);
     // (a model made at a place stays there; one on a joint goes with it, a
     // child of it turned as it turns)
@@ -1988,6 +2001,7 @@ export class FxWorld {
     if (parent) {
       if (m.constrained) pr.poseConstrained(age, parent, m.scale, false);
       else pr.poseChild(age, parent, m.scale, false);
+      if (m.secondChildOff) pr.hideSecondChild();
       return;
     }
     const [x, y, z] = this.modelPlace(m);
@@ -1996,6 +2010,7 @@ export class FxWorld {
     if (m.rootRotationY) pr.setRootRotationY(m.rotY);
     if (m.rootRotationZ) pr.setRootRotationZ(m.rotZ);
     if (m.jabZ) pr.setJointTranslationZ(1, m.z - 6 + 2 * age);
+    if (m.secondChildOff) pr.hideSecondChild();
   }
 
   private own(key: string) {

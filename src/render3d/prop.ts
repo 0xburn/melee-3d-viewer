@@ -166,6 +166,16 @@ export class Prop {
     sk.update(this.place);
   }
 
+  /** after the pose, the root's first child's next joint and everything under it hidden (HSD_JObjSetFlagsAll
+   *  HIDDEN on HSD_JObjGetNext(HSD_JObjGetChild(root)): an effect's callback). Hidden meshes are not drawn, so
+   *  no matrix is made again */
+  hideSecondChild() {
+    const sk = this.skeleton;
+    const first = sk.parent.indexOf(0);
+    if (first < 0) return;
+    for (let j = first + 1; j < sk.n; j++) if (sk.parent[j] === 0) { sk.setBranchShown(j, false); return; }
+  }
+
   /** after the pose, a joint's z place set to `value` (an effect's callback moving one of its joints) */
   setJointTranslationZ(joint: number, value: number) {
     if (joint < 0 || joint >= this.skeleton.n) return;
