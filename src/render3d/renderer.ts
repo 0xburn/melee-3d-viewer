@@ -1274,7 +1274,7 @@ void main() {
    *  over the match), or into a target, cleared to a color first (the
    *  magnifier's picture). endOverlay() puts the match camera back. */
   overlay(proj: Mat, view: Mat, target: RenderTarget | null = null, clear: [number, number, number, number] | null = null,
-          mirrored = false) {
+          mirrored = false, gx: Float32Array | null = null) {
     const gl = this.gl;
     this.endPass();
     // (a camera that turns the picture over turns the faces' winding too)
@@ -1295,8 +1295,11 @@ void main() {
     gl.uniformMatrix4fv(this.loc.uView, false, this.ovView);
     gl.uniformMatrix4fv(this.loc.uProj, false, this.ovProj);
     this.camera(viewProj, this.ovView, this.ovProj);
+    // (the GX projection it was made from, when the caller has one: for the draw log)
+    if (gx) this.camGx = (this.ovGx.set(gx), this.ovGx);
     this.dirty();
   }
+  private ovGx = new Float32Array(16);
 
   private mirrored = false;
   private overlayVP: Mat | null = null;

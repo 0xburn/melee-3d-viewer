@@ -53,7 +53,8 @@ const PLATE_TEXT = { dx: 0.8, top: -0.525 };
 interface RenderTarget { tex: unknown }
 interface Renderer {
   drawSkeleton(sk: Skeleton, pass: "opa" | "xlu"): void;
-  overlay(proj: Mat, view: Mat, target?: unknown, clear?: [number, number, number, number] | null, mirrored?: boolean): void;
+  overlay(proj: Mat, view: Mat, target?: unknown, clear?: [number, number, number, number] | null, mirrored?: boolean,
+          gx?: Float32Array | null): void;
   endOverlay(): void;
   target(w: number, h: number): RenderTarget;
   bindImage(image: Image, tex: unknown): void;
@@ -595,7 +596,7 @@ export class Hud {
     // (in float32 as the game makes them: C_MTXPerspective, HSD_CObjSetupViewingMtx)
     gameProjection(this.proj, this.gxProj, c.fovy, c.aspect * k, c.near, c.far);
     gameView(this.view, c.eye, ORIGIN);
-    r.overlay(this.proj, this.view);
+    r.overlay(this.proj, this.view, null, null, false, this.gxProj);
     // the picture's pixels a HUD unit (the camera's view of its z = 0 plane)
     const hudPpu = r.pictureHeight / (2 * Math.abs(c.eye[2]) * Math.tan((c.fovy * Math.PI) / 360));
     for (const { p, sx, sy } of magnified) this.drawLupe(r, p, sx, sy);
