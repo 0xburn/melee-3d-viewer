@@ -297,8 +297,7 @@ export class PlayerHud {
       prevStocks = stocks;
     }
     // the percent, and the hits and falls within each life, by the damage the
-    // game holds (a hit lands after Slippi takes the frame's state: the
-    // replay's percent is the frame after's)
+    // game holds when the HUD's procs run (game())
     for (let i = 0; i < n; i++) {
       const s = st(i);
       this.pct[i] = s ? Math.max(0, Math.min(999, Math.trunc(s.percent))) : (i > 0 ? this.pct[i - 1] : 0);
@@ -356,15 +355,17 @@ export class PlayerHud {
     return out;
   }
 
-  /** the damage the game holds at a frame: the replay's percent a frame on */
+  /** the damage the game holds at a frame when the HUD's procs (17) run: the frame's hits are taken in
+   *  Fighter_procCollResolve (14) before them, and Slippi takes the frame's state after both - the replay's percent
+   *  of the frame itself (the game's captures: the percent's color, digits and shake come with the frame whose
+   *  replay percent has the hit, at every hit in their windows) */
   private game(i: number): number {
-    return this.pct[Math.min(i + 1, this.n - 1)] ?? 0;
+    return this.pct[Math.max(0, Math.min(i, this.n - 1))] ?? 0;
   }
 
   /** The percent at a frame (percentAt below). Its color, the narrow-1 spacing, which digits show and the shake
-   *  follow the game's damage at once; the digits' pictures are the replay's percent of the frame before (the game's
-   *  damage two frames back: ifStatus_802F4EDC asks for them after the frame's animation has run, and the pictures
-   *  change a frame after that). */
+   *  follow the game's damage at once; the digits' pictures are the damage of the frame before (ifStatus_802F4EDC
+   *  asks for them after the frame's animation has run, and the pictures change a frame after that). */
   /** whether the digits shake at frame i (and so draw eight random numbers there: ifStatus_802F4B84) */
   shakingAt(i: number): boolean {
     const l = this.lifeAt(i);
@@ -398,7 +399,7 @@ export class PlayerHud {
     const animFrame = anim === 1 ? at - drop : at - l.from;
     // (the digits' pictures are the number of the frame before: the game's captures show a new number's digits a frame
     // after the replay's percent has it - the request the HUD makes for them after the frame's animation has run is
-    // taken up by the frame after next)
+    // taken up by the next frame's)
     const layout = { ...digitLayout(now), frame: digitLayout(this.pct[Math.max(l.from, at - 1)] ?? 0).frame };
     const offset: [number, number][] = [[0, 0], [0, 0], [0, 0], [0, 0]];
     const hit = this.hitAt[at];
