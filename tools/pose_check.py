@@ -14,11 +14,12 @@ __viewer3d.poseLog({ start: true }) then { take: true }: src/render3d/poselog.ts
     <game>.poselog.jsonl
 
 A line's twelve values are rows 0 to 2 of the joint's 3 x 4 world matrix, row by row, each kept as its float32's
-bits; mask bit k says value k follows, and a value holds until its next line. The two are compared at every frame
-the viewer logged ("wn"), for every joint both sides have of each owner the viewer drew that frame: the log has a
-line for each owner it drew (its head alone when nothing changed), and none for one it did not (a fighter KO'd,
-off the screen, hidden), whose held values are its last drawn pose, not this frame's. Those owner-frames are
-counted apart, by class.
+bits; mask bit k says value k follows, and a value holds until its next line; a joint with mask 0 is left out from
+that frame on (the simulator no longer makes its matrix: a constraint put on it, as a held fighter's XRotN), until
+a line has it again. The two are compared at every frame the viewer logged ("wn"), for every joint both sides have
+of each owner the viewer drew that frame: the log has a line for each owner it drew (its head alone when nothing
+changed), and none for one it did not (a fighter KO'd, off the screen, hidden), whose held values are its last
+drawn pose, not this frame's. Those owner-frames are counted apart, by class.
 
 It prints, per cause group (object class, joint, which values - the 3 x 3's scale (its columns' lengths) or turn
 (their directions), the translation - and how the error goes over the frames it is wrong: constant, growing or
@@ -195,6 +196,11 @@ class Stream:
                 self.drawn.add(owner)
             have = self.state[owner]
             for joint, vals in joints_of(e, start):
+                if not vals:
+                    # (mask 0: the joint left out from this frame on - a constraint, IK, a cold part - until it
+                    # is written whole again; its held values are no longer its pose)
+                    have[joint] = [None] * 12
+                    continue
                 m = have.setdefault(joint, [None] * 12)
                 for k, w in vals.items():
                     m[k] = w
@@ -389,12 +395,15 @@ def self_test() -> int:
     moved[3] = "0x40000000"  # (translation x 2 instead of 0)
     sim = [[0, "wf", 1, 0, 2, 0, 4095, *ident, 3, 4095, *ident],
            [5, "wf", 1, 0, 2, 3, 1 << 3, moved[3]],
-           [7, "wf", 1, 0, 2, 0, 1 << 3, moved[3]]]
+           [7, "wf", 1, 0, 2, 0, 1 << 3, moved[3]],
+           [8, "wf", 1, 0, 2, 0, 1 << 3, ident[3], 3, 0]]
     # (frame 7: the viewer did not draw it - no line - so its held pose is not this frame's and is not compared)
     view = [[0, "wn"], [0, "wf", 1, 0, 2, 0, 4095, *ident, 3, 4095, *ident],
             [5, "wn"], [5, "wf", 1, 0, 2],
             [6, "wn"], [6, "wf", 1, 0, 2],
-            [7, "wn"]]
+            [7, "wn"],
+            [8, "wn"], [8, "wf", 1, 0, 2]]
+    # (frame 8: joint 3 left out by the simulator - mask 0 - so not compared, joint 0 is)
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "g.track.jsonl"), "w") as f:
             f.write("\n".join(json.dumps(e) for e in sim))
@@ -405,7 +414,8 @@ def self_test() -> int:
     assert list(joints) == [(("wf", 1, 0, 2), 3)], joints
     j = joints[(("wf", 1, 0, 2), 3)]
     assert j["first"] == 5 and j["what"] == {"translation"} and trend(j["errs"]) == "constant", j
-    assert r["compared"] == 6 and r["exact"] == 4, r
+    assert r["compared"] == 7 and r["exact"] == 5, r
+    assert (("wf", 1, 0, 2), 3) in r["only"]["viewer"], r["only"]
     assert dict(r["undrawn"]) == {("wf", 1, 0, 2): 1}, r["undrawn"]
     # (the compact form: one exact-float column read back as its words)
     w = _Reader(bytes([4 * 2]))
