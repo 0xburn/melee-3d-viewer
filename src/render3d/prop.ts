@@ -41,6 +41,10 @@ export class Prop {
    *  it_802742F4), so the file's rest scale of the root is not kept under the place's; a root whose
    *  animation sets its scale keeps the animation's */
   itemRoot = false;
+  /** an item a fighter has picked up: it_802742F4 clears JOBJ_HIDDEN on the root's first child and everything
+   *  under it (HSD_JObjClearFlagsAll), so the file's hidden joints there are shown until its animation or code
+   *  hides them again */
+  pickedUp = false;
   /** its joints as the game posed them, when the viewer track has them ("jp": by preorder joint, rot,
    *  scale, translate; NaN for a value not sent: the file's rest): laid over its animation's pose */
   trackPose: Map<number, Float32Array> | null = null;
@@ -67,6 +71,16 @@ export class Prop {
     if (!this.itemRoot || this.rootScaled) return;
     const sk = this.skeleton;
     sk.scale[0] = sk.scale[1] = sk.scale[2] = 1;
+  }
+
+  /** the rest pose, with a picked-up item's joints under the root's first child shown (pickedUp) */
+  private reset() {
+    const sk = this.skeleton;
+    sk.resetPose();
+    if (this.pickedUp) {
+      const child = sk.parent.indexOf(0);
+      if (child > 0) sk.setBranchShown(child, true);
+    }
   }
 
   /** every material drawn with no depth test (HSD's ZMODE_ALWAYS): over
@@ -98,7 +112,7 @@ export class Prop {
   pose(frame: number, x: number, y: number, z: number, scale: number, rotY = 0, loop = true, rotZ = 0, rotX = 0,
        rootSet = false, jointFrame = frame) {
     const sk = this.skeleton;
-    sk.resetPose();
+    this.reset();
     if (this.anim) sk.applyAObjs(this.anim, jointFrame, loop);
     this.layTrackPose();
     if (this.rootAtOrigin || rootSet) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
@@ -164,7 +178,7 @@ export class Prop {
    *  about the vertical (a stand whose height alone grows) */
   poseScaled(x: number, y: number, z: number, scale: [number, number, number], rotY: number) {
     const sk = this.skeleton;
-    sk.resetPose();
+    this.reset();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
     this.itemRootScale();
     gameSrt(this.place, scale[0], scale[1], scale[2], 0, rotY, 0, x, y, z);
@@ -177,7 +191,7 @@ export class Prop {
    *  ties to a fighter's hand (a position and an orientation constraint) */
   poseUnder(frame: number, parent: Float32Array, scale: number, loop = true, attach = 0) {
     const sk = this.skeleton;
-    sk.resetPose();
+    this.reset();
     if (this.anim) sk.applyAObjs(this.anim, frame, loop);
     this.layTrackPose();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;

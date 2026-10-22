@@ -4202,7 +4202,10 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
                                  lifeIn?: { state: number; attr: number };
                                  /** shown only between these frames of its animation, by state
                                   *  (its code hides and shows it as the frame passes them) */
-                                 shownIn?: Record<number, [number, number]> }> = {
+                                 shownIn?: Record<number, [number, number]>;
+                                 /** picked up by its owner as it is made (Item_8026AB54): its file's hidden joints
+                                  *  under the root's first child shown (it_802742F4) */
+                                 pickedUp?: boolean }> = {
   0x30: { art: 0 },                // Mario's fireball
   0x31: { art: 1, colorPick: true }, // Dr. Mario's pill (his article 1: ftdrmario.c)
   0x36: { art: 0 },                // Fox's laser
@@ -4234,7 +4237,7 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   // Peach's turnip, in her hand where she holds items while she pulls it and when she has it again (its states 0
   // and 4: itemhold.ts): it_802BD4AC picks it up with Item_8026AB54 on her ftData x8 +0x10 part, its attach
   // joint tied to it in place and turn (it_80274F48: lb_8000C2F8) - the replay's place has no depth, the hand's has
-  0x63: { art: 1, held: { 0: "item", 4: "item" } },
+  0x63: { art: 1, held: { 0: "item", 4: "item" }, pickedUp: true },
   // Peach's parasol: the game ties it to her joint 109 (ftpeachspecialhi.c
   // hands the joint list's 109th straight to Item_AttachToParent), so it
   // swings with her hand
@@ -4713,6 +4716,7 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
     const t = itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0);
     if (t < win[0] || t >= win[1]) return false;
   }
+  art.prop.pickedUp = !!a.pickedUp;
   const owner = a.ownerSize || a.held ? ownerOf(data, fs, it, frame) : null;
   // one the game hangs on its owner's joint: under that joint
   const by = a.held?.[it.state];
