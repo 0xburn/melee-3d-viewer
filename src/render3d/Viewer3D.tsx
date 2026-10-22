@@ -64,7 +64,8 @@ import { fighterShown, Hud, HudActor, HudKit, toScreen } from "./hud";
 import { EDGE_W, edgePoint } from "./hudlogic";
 import { drawLogCommand, setLiveGame } from "./drawlog";
 import { PoseLog, poseLogCommand } from "./poselog";
-import type { Tint as ColTint } from "./fx/colanim";
+import type { ColAnimTables, Tint as ColTint } from "./fx/colanim";
+import { BgFlash, FLASH_CAMERA, flashQuad } from "./fx/bgflash";
 import { itemAnimation, itemAnimationIndex } from "./item-animation";
 import { samusBombClocks, samusBombRotation } from "./item-facing";
 import { itemSource } from "./item-source";
@@ -327,6 +328,23 @@ function trackFacesOf(tr: ViewerTrack): TrackFaces | null {
   if (t === undefined) trackFaces.set(tr, (t = tr.has("tex") ? new TrackFaces(tr.between("tex", -1e9, 1e9)) : null));
   return t;
 }
+// the screen flash of each track (fx/bgflash.ts), from its "bgflash" starts; null: the track has none
+const trackFlashes = new WeakMap<ViewerTrack, BgFlash | null>();
+function trackFlashOf(tr: ViewerTrack, t: ColAnimTables): BgFlash | null {
+  let b = trackFlashes.get(tr);
+  if (b === undefined) {
+    b = tr.has("bgflash")
+      ? new BgFlash(t, tr.between("bgflash", -1e9, 1e9).map((e) => [Number(e[0]), Number(e[2]), Number(e[3]) || 0]))
+      : null;
+    trackFlashes.set(tr, b);
+  }
+  return b;
+}
+// (the flash's camera and quad, made once)
+const flashProj = new Float32Array(16), flashGx = new Float32Array(16), flashView = new Float32Array(16);
+const flashData = new Float32Array(4 * 17);
+const flashBatch = [{ sprite: null, additive: false, near: false, zwrite: false, nozcomp: true, first: 0, count: 1 }];
+
 // a fighter coming back down on the angel platform
 const REBIRTH = 12;
 // the reflector's effect file (EfFxData, Fox's and Falco's both: efalt 0x488-0x48A)
@@ -1085,6 +1103,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
   const [hudKit, setHudKit] = createSignal<HudKit>();
   const [hudDone, setHudDone] = createSignal(false);
   const [magColors, setMagColors] = createSignal<[number, number, number][] | null>(null);
+  // (the screen flash's color animations, LbBf.dat: fx/bgflash.ts)
+  const [flashTables, setFlashTables] = createSignal<ColAnimTables | null>(null);
+  files.bgFlash().then(setFlashTables);
   createEffect(() => {
     if (!replayStore.replayData || hudKit() || !mayLoad()) return;
     files.hud().then(setHudKit).catch((e) => console.warn("3D replay viewer: no HUD art:", e)).finally(() => setHudDone(true));
@@ -2378,6 +2399,22 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       if (rect) r.captureLive(img, sc.size[0], sc.size[1], rect, [255, 255, 255], fno);
     }
     prof.mark("ghosts");
+    // the screen flash of a strong hit (fx/bgflash.ts): from the match's first on, fn_8001FEC4's quad under its own
+    // camera (lbl_803BB028), three times - HSD_GObj_803910D8 runs its link in all three passes - before the HUD
+    {
+      const tr = viewerTrack(), ft = flashTables();
+      const bf = tr && ft && tr.valid(fno - 123) ? trackFlashOf(tr, ft) : null;
+      const flash = bf ? bf.stateAt(fno - 123) : null;
+      if (flash?.drawn) {
+        const c = FLASH_CAMERA, k0 = (w / Math.max(1, h)) / c.aspect, k = Math.abs(k0 - 1) < 0.01 ? 1 : k0;
+        gameProjection(flashProj, flashGx, c.fovy, c.aspect * k, c.near, c.far);
+        gameView(flashView, c.eye, c.interest);
+        flashQuad(flashData, flash.color, k);
+        r.overlay(flashProj, flashView, null, null, false, flashGx);
+        for (let i = 0; i < 3; i++) r.drawParticles(flashData, flashBatch);
+        r.endOverlay();
+      }
+    }
     // the game's HUD over it all (hud.ts)
     let hudMs = 0;
     const hud = NO_HUD || layersOff.hud ? null : hudOf();

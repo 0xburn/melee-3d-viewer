@@ -126,6 +126,8 @@ export class Overlay {
   starts = 0;
 
   get running(): boolean { return this.p !== null; }
+  /** a run given frames of its own still counting them down (lb_800144C8's x4_pri) */
+  get limited(): boolean { return this.frames > 0; }
 
   reset() {
     this.p = null; this.frames = 0; this.index = 0;
