@@ -4222,6 +4222,10 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x59: { art: 1 },                // Pikachu's Thunder Jolt (his articles 1 and 2: ftpikachu.c)
   0x5a: { art: 2 },
   0x5b: { art: 1 },                // Pichu's, the same way
+  // Pikachu's and Pichu's Thunder (their article 0): hidden while it waits for its turn to fall (state 0:
+  // it_802B2080's it_8026BB44 sets every joint JOBJ_HIDDEN; it_802B211C's it_8026BB20 shows it as it falls)
+  0x51: { art: 0, gone: [0] },
+  0x52: { art: 0, gone: [0] },
   0x5c: { art: 2 },
   0x56: { art: 0, gone: [2] },     // Yoshi's egg, thrown (state 2: broken, its pieces are effects)
   0x5d: { art: 0, gone: [3] },     // Samus's bomb (state 3: going off)
