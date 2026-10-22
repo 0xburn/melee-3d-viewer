@@ -212,7 +212,7 @@ const ALPHA_OP = ["and", "or", "xor", "xnor"];
 const WRAP = ["clamp", "repeat", "mirror"];
 const MIN = ["near", "linear", "near_mip_near", "linear_mip_near", "near_mip_linear", "linear_mip_linear"];
 const FOG_TYPE: Record<number, string> = { 0: "none", 2: "linear", 4: "exp", 5: "exp2", 6: "revexp", 7: "revexp2" };
-const TEXGEN = ["uv0", "uv1", "reflection", "highlight", "mirror"];
+const TEXGEN = ["uv0", "uv1", "reflection", "highlight", "mirror", "uv2"];
 
 /** a number kept to 6 significant digits (the logs compare with tolerances) */
 export function rnd(x: number, digits = 6): number {
