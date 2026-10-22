@@ -3928,6 +3928,15 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       return [((m[0] * X + m[4] * Y + m[8] * Z + m[12]) / cw + 1) / 2, (1 - (m[1] * X + m[5] * Y + m[9] * Z + m[13]) / cw) / 2,
               (m[2] * X + m[6] * Y + m[10] * Z + m[14]) / cw];
     },
+    /** the screen flash (fx/bgflash.ts) at a replay frame: whether LbBf.dat's table was read, the track's
+     *  "bgflash" starts ([game frame, type, duration]), and whether fn_8001FEC4's quad is drawn there, in what color */
+    flash: (frame: number) => {
+      const tr = viewerTrack(), ft = flashTables();
+      const starts = tr ? tr.between("bgflash", -1e9, 1e9).map((e) => [Number(e[0]), Number(e[2]), Number(e[3]) || 0]) : [];
+      const bf = tr && ft && tr.valid(frame - 123) ? trackFlashOf(tr, ft) : null;
+      const s = bf ? bf.stateAt(frame - 123) : null;
+      return { tables: ft !== null, track: !!tr, starts, drawn: s?.drawn ?? false, color: s ? [...s.color] : null };
+    },
     /** the stage mirror's image and matrices (Fountain's pond) */
     mirror: () => renderer?.mirrorDebug() ?? null,
     /** the draw log (drawlog.ts): debug only, attached by { start: true } and never otherwise */
