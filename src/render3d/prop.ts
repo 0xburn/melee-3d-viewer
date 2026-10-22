@@ -166,6 +166,7 @@ export class Prop {
     const sk = this.skeleton;
     sk.resetPose();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
+    this.itemRootScale();
     gameSrt(this.place, scale[0], scale[1], scale[2], 0, rotY, 0, x, y, z);
     sk.update(this.place);
   }
