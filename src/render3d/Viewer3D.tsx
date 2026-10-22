@@ -2129,6 +2129,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       mirrorMs = performance.now() - m0;
       lastMirrorDraws = r.draws - d0;
     }
+    // Yoshi's Story's Shy Guys (stage items): with the fighters' and items' first pass (Camera_800311EC), before
+    // the stage's see-through meshes
+    if (st?.shyGuy) { r.setLighting(lighting); drawShyGuys(r, st.shyGuy, data, frame.items ?? [], fno); }
     if (st) {
       r.setLighting(stageLit);
       for (const sk of st.skeletons) {
@@ -2143,8 +2146,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     drawFighters("xlu");
     prof.mark("fightersXlu");
     r.endPass();
-    // the angel platform under a fighter coming back, Yoshi's Story's Shy
-    // Guys, then the effects over everything
+    // the angel platform under a fighter coming back, then the effects over everything
     for (const a of actors) if (onAngelPlatform(a.st)) drawPlatform(r, ek, a, fno);
     // the stands the fighters enter the match on (the leader's only: ftCo_800C6408)
     for (const a of actors) {
@@ -2158,7 +2160,6 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
       const ps = playerScales(data.settings.playerSettings)[a.player] ?? 1;
       drawStand(r, ek.entryStand, a.st, standScale(ps, fi.trophyScale), en.stand, fi.entryGap * ps);
     }
-    if (st?.shyGuy) drawShyGuys(r, st.shyGuy, data, frame.items ?? [], fno);
     prof.mark("fighters2");
     let projectiles = 0;
     // (a chain's item is drawn as its own model too - the hookshot in Link's hand - its links from "lm" below)
