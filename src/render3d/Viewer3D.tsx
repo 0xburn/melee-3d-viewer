@@ -4241,7 +4241,13 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   // Mewtwo's Shadow Ball (his article 1: ftmewtwo.c), held at his right
   // shoulder while it grows (joint 35, which his code names by number), and
   // Disable (article 0). States 10 to 17: the ball bursting, at each charge (item-effects.ts)
-  0x70: { art: 1, held: { 0: { joint: 35 } }, gone: [10, 11, 12, 13, 14, 15, 16, 17] },
+  // (held and fired, states 0 to 8, its animation runs a frame ahead of the frames it has been in the state:
+  // both start in its owner's step - it_802C5000's pickup, it_2725_Logic101_PickedUp, and it_802C53F0's
+  // it_802C5B18, each with Item_80268E5C - and the ball's own Item_802694CC steps it later that frame; the
+  // recordings have its texture animation and shown joints a frame on from the viewer's count, Mewtwo's ball
+  // and Kirby's copy alike)
+  0x70: { art: 1, held: { 0: { joint: 35 } }, gone: [10, 11, 12, 13, 14, 15, 16, 17],
+          from: { 0: 1, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1, 8: 1 } },
   0x6e: { art: 0 },
   // Mr. Game & Watch's props (his articles 0 to 9: ftgamewatch.c), each tied
   // to his joint for as long as it lasts (Item_AttachGameWatchArticle; the
@@ -4783,12 +4789,12 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
     // (a root that rolls as it faces the camera - the fireballs' (JOBJ_RBILLBOARD) - takes its turn about z from its
     // own rotate z, mkRBillBoardMtx: on the joint, not in the matrix it is placed by)
     const rolls = (art.prop.skeleton.flags[0] & 0xe00) === 0x800;
-    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, turn[1], true, rolls ? 0 : turn[2],
+    art.prop.pose(itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0), it.xPosition, it.yPosition, 0, scale, turn[1], true, rolls ? 0 : turn[2],
                   turn[0], false, clock?.joint);
     if (rolls) art.prop.setRootRotationZ(turn[2]);
   }
   else {
-    art.prop.pose(itemAnimAge(data, frame, it), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
+    art.prop.pose(itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
                   byZ ? 0 : tilt, false, clock?.joint);
   }
   if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale);
