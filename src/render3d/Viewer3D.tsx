@@ -4227,7 +4227,10 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x5d: { art: 0, gone: [3] },     // Samus's bomb (state 3: going off)
   0x5e: { art: 1, charge: true },  // Samus's charge shot
   0x5f: { art: 2, tilt: true, gone: [2, 3] }, // Samus's missile (states 2 and 3: bursting)
-  0x63: { art: 1 },                // Peach's turnip
+  // Peach's turnip, in her hand where she holds items while she pulls it and when she has it again (its states 0
+  // and 4: itemhold.ts): it_802BD4AC picks it up with Item_8026AB54 on her ftData x8 +0x10 part, its attach
+  // joint tied to it in place and turn (it_80274F48: lb_8000C2F8) - the replay's place has no depth, the hand's has
+  0x63: { art: 1, held: { 0: "item", 4: "item" } },
   // Peach's parasol: the game ties it to her joint 109 (ftpeachspecialhi.c
   // hands the joint list's 109th straight to Item_AttachToParent), so it
   // swings with her hand
