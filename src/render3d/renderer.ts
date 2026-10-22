@@ -16,7 +16,7 @@
 import { Archive, Image, MObj, TObj, Tlut, decodeImage } from "./hsd";
 import { DrawGroup, Drawable, MatState, Skeleton, TexState, billboardViewOf } from "./skeleton";
 import { Mat, invert, lookAt, mul } from "./math";
-import { HSD_MtxInverseTranspose, concatGL, mtxFromGL, mtxToGL3 } from "./gxmath";
+import { HSD_MtxInverseTranspose, PSMTXConcat, concatGL, mkBillBoardMtx, mtxFromGL, mtxToGL, mtxToGL3 } from "./gxmath";
 import { type ViewLights, jointInView, lightsInView, newViewLights, specularDirs } from "./gxlights";
 import { SHADOW_SIZE, shadowGray } from "./shadow";
 import type { Tint as ColTint } from "./fx/colanim";
@@ -1947,8 +1947,16 @@ void main() {
     const n = count * 16, V = this.shifted ? this.shiftView : this.camView, MV = this.mvBuf;
     // (a billboard drawn through the view it was made under: its modelview as the game made it - every slot but a
     // shared-vertex skin's second joint's; the frame's camera or another's, the mirror's)
-    const bb = d && d.bbMV && !this.shifted && d.bbMVView === (this.camView === this.view ? this.bbFrame : billboardViewOf(this.camView))
+    let bb = d && d.bbMV && !this.shifted && d.bbMVView === (this.camView === this.view ? this.bbFrame : billboardViewOf(this.camView))
       ? d.bbMV : null;
+    // (one drawn through another camera it was not posed under - a mirror's, a shadow's - made again under that
+    // camera's view, as HSD_JObjMakePositionMtx makes it with the vmtx of the camera drawing)
+    if (!bb && d && d.bbMV && d.bbW && d.bbKind && !this.shifted) {
+      const V12 = mtxFromGL(V, this.bbV12, 0), W12 = mtxFromGL(d.bbW, this.bbW12, 0);
+      PSMTXConcat(V12, W12, W12);
+      mkBillBoardMtx(d.bbKind, d.bbPersp ?? false, d.bbRotZ ?? 0, W12, this.bbP12);
+      bb = mtxToGL(this.bbP12, this.bbMVAgain);
+    }
     const N = this.nrmBuf, T = this.nrmTmp;
     for (let k = 0; k < count; k++) {
       if (bb && !(k === 1 && d!.second >= 0)) MV.set(bb, k * 16);
@@ -1962,6 +1970,10 @@ void main() {
     this.lastMatsN = n;
     this.lastMatsView = this.viewVer;
   }
+  private bbV12 = new Float32Array(12);
+  private bbW12 = new Float32Array(12);
+  private bbP12 = new Float32Array(12);
+  private bbMVAgain = new Float32Array(16);
   private lastMats = new Float32Array(32);
   private lastMatsN = 0;
   private lastMatsView = -1;

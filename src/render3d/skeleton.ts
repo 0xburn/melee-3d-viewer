@@ -93,6 +93,13 @@ export interface Drawable {
    *  through that view */
   bbMV?: Float32Array | null;
   bbMVView?: number;
+  /** and what it is made of, to make it again under another camera (a mirror's, a shadow's: HSD_JObjMakePositionMtx
+   *  takes the vmtx of the camera drawing): its joint's matrix, its kind of billboard, whether it faces the eye
+   *  (JOBJ_PBILLBOARD), its joint's turn about z */
+  bbW?: Float32Array;
+  bbKind?: number;
+  bbPersp?: boolean;
+  bbRotZ?: number;
 }
 
 let stamps = 0;
@@ -533,6 +540,10 @@ export class Skeleton {
         const mv = (d.bbMV ??= new Float32Array(16));
         mtxToGL(bbP12, mv);
         d.bbMVView = bbViewId;
+        (d.bbW ??= new Float32Array(16)).set(W.subarray(o, o + 16));
+        d.bbKind = bb;
+        d.bbPersp = (this.flags[j] & 0x2000) !== 0;
+        d.bbRotZ = this.rot[j * 3 + 2];
         mul(M, bbInv, mv);
       } else if (bb) { billboard(M, W.subarray(o, o + 16), bb, this.rot[j * 3 + 2]); d.bbMV = null; }
       else for (let q = 0; q < 16; q++) M[q] = W[o + q];
