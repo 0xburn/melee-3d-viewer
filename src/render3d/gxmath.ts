@@ -264,8 +264,10 @@ export function PSMTXIdentity(m: Mtx): Mtx {
 const tmpC = new Float32Array(12);
 
 /** PSMTXConcat: ab = a b (ab may be a or b). Each entry a row of a down a
- *  column of b: ps_muls0 then ps_madds1 and ps_madds0 in turn, the
- *  translation's last a ps_madds1 by the constant 1 (the others by 0) */
+ *  column of b: ps_muls0 then ps_madds1 and ps_madds0 in turn; the columns
+ *  go in pairs, and the second pair's (2 and 3) last a ps_madds1 by Unit01,
+ *  (0, 1): the translation's a3 times 1, column 2's a3 times 0 (a zero's
+ *  sign: -0 + a positive a3's +0 is +0). Columns 0 and 1 have no such step */
 export function PSMTXConcat(a: Mtx, b: Mtx, ab: Mtx): Mtx {
   const m = tmpC;
   for (let r = 0; r < 3; r++) {
@@ -274,7 +276,7 @@ export function PSMTXConcat(a: Mtx, b: Mtx, ab: Mtx): Mtx {
       let v = f32(a0 * b[c]);
       v = madd(a1, b[4 + c], v);
       v = madd(a2, b[8 + c], v);
-      v = madd(c === 3 ? 1 : 0, a3, v);
+      if (c >= 2) v = madd(c === 3 ? 1 : 0, a3, v);
       m[r * 4 + c] = v;
     }
   }

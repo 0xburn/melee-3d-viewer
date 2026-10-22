@@ -211,7 +211,7 @@ static void PSMTXConcat(Mtx a, Mtx b, Mtx ab)
             float v = a[r][0] * b[0][c];       /* ps_muls0 */
             v = fmaf(a[r][1], b[1][c], v);     /* ps_madds1 */
             v = fmaf(a[r][2], b[2][c], v);     /* ps_madds0 */
-            v = fmaf(c == 3 ? 1.0f : 0.0f, a[r][3], v); /* ps_madds1 by Unit01 */
+            if (c >= 2) v = fmaf(c == 3 ? 1.0f : 0.0f, a[r][3], v); /* the (2, 3) pair: ps_madds1 by Unit01 */
             m[r][c] = v;
         }
     memcpy(ab, m, sizeof(Mtx));
