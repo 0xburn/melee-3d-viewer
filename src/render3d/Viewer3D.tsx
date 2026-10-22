@@ -1894,11 +1894,22 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
         if (p) {
           const look = lookOf(fi, a, actorKey(a.player, a.nana));
           // (its low-detail model, as in a mirror: ftDrawCommon_80081200 switches every fighter to it first)
-          const low = look.kh?.skin ? null : fi.mirrorPassHidden();
+          const kh = look.kh;
+          const low = kh?.skin ? null : fi.mirrorPassHidden();
           if (low) { fi.skeleton.posePass(low); fi.skeleton.passHidden = low; }
-          else if (look.kh?.skin) fi.skeleton.passHidden = fi.hiddenUnderHat();
+          else if (kh?.skin) fi.skeleton.passHidden = fi.hiddenUnderHat();
           r.drawSkeleton(fi.skeleton, "opa");
           fi.skeleton.passHidden = null;
+          // (a colored hat's meshes are on his joints, so they are in it too, in their low-detail look:
+          // ftKb_UnkIntBoolFunc0 under ftDrawCommon_80081200's switch)
+          if (kh?.skin && kh.lowHidden) {
+            const owner = `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`;
+            poseSkin(kh, fi.skeleton, trackAt?.pose("fj", owner, fno - 123)?.joints, trackAt?.pose("fp", owner, fno - 123)?.joints);
+            kh.skin.posePass(kh.lowHidden);
+            kh.skin.passHidden = kh.lowHidden;
+            r.drawSkeleton(kh.skin, "opa");
+            kh.skin.passHidden = null;
+          }
         } else r.drawSkeleton(star!.star.skeleton, "opa");
         r.endShadow();
         // (made for every fighter, laid by none of Nana's materials: ftLib_800872BC keeps a sub fighter's inactive)
@@ -2010,6 +2021,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
             const owner = `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`;
             poseSkin(kh, fi.skeleton, trackAt?.pose("fj", owner, fno - 123)?.joints, trackAt?.pose("fp", owner, fno - 123)?.joints);
           }
+          // (in a mirror, its low-detail look, as his own model's: ftDrawCommon_80080C28)
+          const hatLow = mirror ? kh.lowHidden ?? null : null;
+          if (hatLow) kh.skin.posePass(hatLow);
           kh.face?.apply(a.face?.tex ?? null);
           // (Mr. Game & Watch's copy: its outline first, as his is drawn)
           if (kh.outline && pass === "opa") {
@@ -2023,7 +2037,9 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
             r.setTint(look.tint);
             kh.skin.passHidden = null;
           }
+          kh.skin.passHidden = hatLow;
           r.drawSkeleton(kh.skin, pass);
+          kh.skin.passHidden = null;
           if (kh.outline && pass === "opa") {
             kh.skin.passHidden = kh.outline.hidden;
             r.setTint(null);

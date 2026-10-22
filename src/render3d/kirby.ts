@@ -45,6 +45,10 @@ export interface KirbyHat {
   prop: Prop | null;
   /** a hat in Kirby's colors: a skeleton like his, posed as he is */
   skin: Skeleton | null;
+  /** a colored hat's meshes hidden in the passes that draw his low-detail model - the shadows' and a
+   *  mirror's (ftDrawCommon_80081200, ftDrawCommon_80080C28: ftParts_800750C8 hides lookup 0 and shows
+   *  lookup 1, which ftKb_UnkIntBoolFunc0 does to the hat's meshes too) */
+  lowHidden?: Set<number>;
   /** Mr. Game & Watch's: the outline's shells (drawn first, in its color,
    *  as his are), and how thin it is across (ftKb_SpecialN_800F14B4) */
   outline?: { shown: Set<number>; hidden: Set<number>; color: [number, number, number, number] };
@@ -75,8 +79,9 @@ export function hatFiles(kind: number, costume: number): [string, string | null]
 /** a parts visibility description (FtPartsDesc: model count, then the tables
  *  per costume): the meshes to hide - lookups 1 and 3 (the game shows every
  *  variant of a hat's lookup 0 while it draws: ftKb_UnkIntBoolFunc0,
- *  ftParts_80074CA0) */
-function hiddenBy(a: Archive, desc: number, costume = 0, metal = false): Set<number> {
+ *  ftParts_80074CA0); with `shownLookup` 1, its low-detail look's: lookups 0
+ *  and 3 hidden, every variant of lookup 1 shown */
+function hiddenBy(a: Archive, desc: number, costume = 0, metal = false, shownLookup = 0): Set<number> {
   const d = a.data, out = new Set<number>(), shown = new Set<number>();
   const n = d.getUint32(desc), vis = ptr(a, desc + 4);
   if (vis === null || n > 64) return out;
@@ -87,7 +92,7 @@ function hiddenBy(a: Archive, desc: number, costume = 0, metal = false): Set<num
       const count = d.getUint32(lk + m * 8), list = ptr(a, lk + m * 8 + 4);
       for (let v = 0; v < count && v < 64 && list !== null; v++) {
         const c = d.getUint32(list + v * 8), ids = ptr(a, list + v * 8 + 4);
-        for (let i = 0; i < c && i < 256 && ids !== null; i++) (k === 0 ? shown : out).add(d.getUint8(ids + i));
+        for (let i = 0; i < c && i < 256 && ids !== null; i++) (k === shownLookup ? shown : out).add(d.getUint8(ids + i));
       }
     }
   }
@@ -122,7 +127,8 @@ export function loadHat(kind: number, data: ArrayBuffer, colored: ArrayBuffer | 
     if (!share) return null;
     const { all, dobjs } = loadJoint(m, share[1]);
     const skin = new Skeleton(m, all, dobjs, `${tag}:kbhat`);
-    hiddenBy(a, sym, costume).forEach((i) => skin.hidden.add(i));
+    const normal = hiddenBy(a, sym, costume);
+    normal.forEach((i) => skin.hidden.add(i));
     const hat: KirbyHat = { prop: null, skin, mask: a.data.getUint32(sym + 0x10),
                             face: faceTextures(a, sym + 8, costume, m, skin, all) };
     // Mr. Game & Watch's copy: its outline's lookup (+0x18), and its looks
@@ -145,6 +151,9 @@ export function loadHat(kind: number, data: ArrayBuffer, colored: ArrayBuffer | 
       const w = d.getFloat32(looks);
       if (w > 0.001 && w < 10) hat.thin = w;
     }
+    // (the low-detail look: lookup 1's meshes for lookup 0's, the rest hidden as they always are)
+    hat.lowHidden = hiddenBy(a, sym, costume, false, 1);
+    skin.hidden.forEach((i) => { if (!normal.has(i)) hat.lowHidden!.add(i); });
     return hat;
   }
   const joint = ptr(a, sym);
