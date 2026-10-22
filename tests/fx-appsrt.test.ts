@@ -176,3 +176,41 @@ test("a follow-only transform's particle is drawn at the transform's place plus 
   const half = dist(q[0], q[2]) / 2;
   assert.ok(near(half, Math.hypot(2 * p.size, 2 * p.size), 1e-4), `${half}`);
 });
+
+test("0xB2: the place through the transform's matrix made again, each row reading the rows already written; none under a follow-only one", () => {
+  const { ps, bank } = system();
+  // (0x99's script: wait a frame, then 0xB2, then wait)
+  (bank as unknown as { cmds: CmdList[] }).cmds[0x99] = cmd({ cmd: new Uint8Array([0x01, 0xb2, 0x3f, 0xff, 0xff]) });
+  const g = ps.generator(bank, 0x99)!;
+  g.srt = srt({ status: APP_ONCE, used: 1, owner: g });
+  g.genLife = 1;
+  ps.step();
+  const p = ps.particles.find((q) => q.gen === g)!;
+  const s = p.srt!;
+  const used = s.used!;
+  p.px = 1.5; p.py = -2.25; p.pz = 0.75; p.vx = p.vy = p.vz = 0;
+  // (STILL since its first draw; the command makes the matrix again from where the transform is now)
+  appMatrix(s);
+  s.tx = 40;
+  const m = mtxSRT(new Float32Array(12), s);
+  const x = Math.fround(m[3] + madd(m[2], 0.75, madd(m[0], 1.5, Math.fround(m[1] * -2.25))));
+  const y = Math.fround(m[7] + madd(m[6], 0.75, madd(m[4], x, Math.fround(m[5] * -2.25))));
+  const z = Math.fround(m[11] + madd(m[10], 0.75, madd(m[8], x, Math.fround(m[9] * y))));
+  ps.step();
+  assert.equal(p.srt, null);
+  assert.equal(s.used, used - 1);
+  assert.deepEqual([p.px, p.py, p.pz], [x, y, z]);
+  assert.deepEqual(Array.from(s.mmtx!), Array.from(m));
+  // (under a follow-only transform, xA2, the command does nothing)
+  const { ps: ps2, bank: bank2 } = system();
+  (bank2 as unknown as { cmds: CmdList[] }).cmds[0x99] = cmd({ cmd: new Uint8Array([0x01, 0xb2, 0x3f, 0xff, 0xff]) });
+  const g2 = ps2.generator(bank2, 0x99)!;
+  g2.srt = srt({ used: 1, owner: g2, follow: true, view: true });
+  g2.genLife = 1;
+  ps2.step();
+  const p2 = ps2.particles.find((q) => q.gen === g2)!;
+  p2.px = 1.5; p2.vx = p2.vy = p2.vz = 0;
+  ps2.step();
+  assert.equal(p2.srt, g2.srt);
+  assert.equal(p2.px, 1.5);
+});
