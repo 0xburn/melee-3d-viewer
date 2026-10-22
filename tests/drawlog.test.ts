@@ -288,3 +288,12 @@ test("normalMatrix: the modelview's 3 x 3 inverse transposed", () => {
   const want = [0, -1 / 0.6, 0, 1 / 0.6, 0, 0, 0, 0, 1 / 0.6];
   n.forEach((v, i) => assertNode.ok(Math.abs(v - want[i]) < 1e-6, `${i}: ${v} vs ${want[i]}`));
 });
+
+test("a UV set's texture matrix row is logged as the game's effective one: its third column's constant in the fourth", async () => {
+  const { uvRow } = await import("../src/render3d/drawlog.ts");
+  // (a texture turned out of its plane, as Fountain of Dreams' water: s from the row's third column)
+  assertEquals(uvRow([7.2e-5, 0, 0.9989, 0.0001], 0), [7.2e-5, 0, 0, 0.9989 + 0.0001]);
+  assertEquals(uvRow([1, 0, 0, 0.5], 1), [1, 0, 0, 0.5]);
+  // (the others' rows as they are)
+  assertEquals(uvRow([1, 2, 3, 4], 4), [1, 2, 3, 4]);
+});

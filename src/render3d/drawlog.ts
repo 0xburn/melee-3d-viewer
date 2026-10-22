@@ -214,6 +214,14 @@ const MIN = ["near", "linear", "near_mip_near", "linear_mip_near", "near_mip_lin
 const FOG_TYPE: Record<number, string> = { 0: "none", 2: "linear", 4: "exp", 5: "exp2", 6: "revexp", 7: "revexp2" };
 const TEXGEN = ["uv0", "uv1", "reflection", "highlight", "mirror", "uv2"];
 
+/** a texture matrix row as the game's effective one: a UV set's texgen takes (s, t, 1, 1) (GX_TG_MTX2x4 on
+ *  GX_TG_TEXn, then the post-matrix, HSD_TObjSetupTextureCoordGen), so what the row's third column adds is
+ *  a constant like its fourth: the two as one, in the fourth (the rows of a texture turned out of its plane -
+ *  Fountain of Dreams' water - have one there) */
+export function uvRow(r: ArrayLike<number>, gen: number): number[] {
+  return gen === 0 || gen === 1 || gen === 5 ? [r[0], r[1], 0, r[2] + r[3]] : Array.from(r);
+}
+
 /** a number kept to 6 significant digits (the logs compare with tolerances) */
 export function rnd(x: number, digits = 6): number {
   if (x === 0 || !Number.isFinite(x)) return 0;
@@ -621,7 +629,7 @@ export class DrawLog {
       wrap: [WRAP[o.wrapS] ?? String(o.wrapS), WRAP[o.wrapT] ?? String(o.wrapT)],
       mag: o.magFilt ? "linear" : "near", min: o.lod ? MIN[o.lod.minFilt] ?? String(o.lod.minFilt) : null,
       lod_bias: o.lod ? this.num(o.lod.bias) : 0, texgen: TEXGEN[gen] ?? String(gen),
-      mtx: gameRows ?? [m.slice(0, 4), m.slice(4, 8)].map((r) => r.map(this.num)), blending: rnd(t.blending),
+      mtx: gameRows ?? [m.slice(0, 4), m.slice(4, 8)].map((r) => uvRow(r, gen).map(this.num)), blending: rnd(t.blending),
     };
     if (t.tlut) {
       rec.tlut = tlutId(a, t.tlut, t.image.format);
