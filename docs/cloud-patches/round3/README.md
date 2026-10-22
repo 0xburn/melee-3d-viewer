@@ -3,7 +3,7 @@
 Based on `visual-only/04-shake` at `f1eb1a73` (briandle00/melee-sim-light). Ten commits, one change each, as one series:
 
 - 0001 is the dynamics-counts fix (the same change as `docs/cloud-patches/dynamics-counts/`). It comes first so the swinging chains are solved with the file's driven-joint counts before `fj` records those joints (Peach's and Zelda's chains).
-- 0002 to 0010 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
+- 0002 to 0011 are in the viewer track, so they compile only with `MSL_VISUAL_TRACK_BUILD=1`.
 
 To apply, from a clone of briandle00/melee-sim-light:
 
@@ -145,4 +145,16 @@ For the pose check (`tools/pose_check.py` in the viewer repo). Off by default. S
   
   So the check covers what the simulator does pose; a joint left out here is not checked.
 - `wf`, `wi` and `ws` are added to `UNLOCKED_KINDS`.
+- **Production.** `.text`, `.rodata` and `.data` are identical.
+
+## 0011 Viewer track: `cns`, a fighter's XRotN hung on its captor's TransN2 (`x2226_b2`)
+
+```
+[frame,"cns",port,sub,1|0]
+```
+
+- **What it is.** A grab's victim is not hung on the captor's hand from the start. `ftCo_800DB368` puts a position constraint on its XRotN (`lb_8000C1C0` to the captor's TransN2) only once the pull brings it in (ftCo_CatchPull's distance test against `p_ftCommonData` +0x34C/+0x350), and sets `x2226_b2`. The throw's release (`ftCo_800DDDE4`: `lb_8000C390`, XRotN's translation put back) and a broken grab (`ftCo_CaptureCut`) clear it, while the victim can stay in its Thrown state for many frames after.
+- **When.** A state line, written once `x2226_b2` is set and then on every change.
+- **For the viewer.** It hangs the victim's XRotN on the captor's TransN2 only while `cns` is 1. Without the line it keeps its own rule (every captured or thrown frame). This is the pose check's f1 at bot-fox_falco 2630 (CapturePulledLw, frame 1: not hung yet) and f15 at bot-tp_peach_puff 1229 (ThrownHi after the release: let go).
+- `cns` is added to `UNLOCKED_KINDS`, so no lock changes.
 - **Production.** `.text`, `.rodata` and `.data` are identical.
