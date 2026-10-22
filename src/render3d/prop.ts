@@ -36,6 +36,11 @@ export class Prop {
   private anim: (AObj | null)[] | null;
   private matAnim: (MatAnim | null)[][] | null;
   private place: Mat = new Float32Array(16);
+  /** an item's model (loadArticle): its root's own scale is the item's (Item_8026849C sets it to the item's
+   *  scl, x60_scale, over the file's - lb_8000B804 lays the file's rest down first when it is picked up,
+   *  it_802742F4), so the file's rest scale of the root is not kept under the place's; a root whose
+   *  animation sets its scale keeps the animation's */
+  itemRoot = false;
   /** its joints as the game posed them, when the viewer track has them ("jp": by preorder joint, rot,
    *  scale, translate; NaN for a value not sent: the file's rest): laid over its animation's pose */
   trackPose: Map<number, Float32Array> | null = null;
@@ -52,6 +57,16 @@ export class Prop {
     if (blend) for (const d of this.skeleton.drawables) d.translucent = true;
     this.anim = animJoint === null ? null : loadAnimJoint(a, animJoint);
     this.matAnim = matAnimJoint === null ? null : loadMatAnimJoint(a, matAnimJoint);
+    this.rootScaled = !!this.anim?.[0]?.tracks.some((t) => t.type >= 8 && t.type <= 10);
+  }
+  /** whether its animation sets the root's scale (HSD_A_J_SCAX..SCAZ on joint 0) */
+  private rootScaled: boolean;
+
+  /** an item's root at the item's own scale alone (itemRoot): the file's rest scale of it dropped */
+  private itemRootScale() {
+    if (!this.itemRoot || this.rootScaled) return;
+    const sk = this.skeleton;
+    sk.scale[0] = sk.scale[1] = sk.scale[2] = 1;
   }
 
   /** every material drawn with no depth test (HSD's ZMODE_ALWAYS): over
@@ -87,6 +102,7 @@ export class Prop {
     if (this.anim) sk.applyAObjs(this.anim, jointFrame, loop);
     this.layTrackPose();
     if (this.rootAtOrigin || rootSet) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
+    this.itemRootScale();
     if (this.matAnim) {
       sk.resetMaterials();
       sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, loop);
@@ -164,6 +180,7 @@ export class Prop {
     if (this.anim) sk.applyAObjs(this.anim, frame, loop);
     this.layTrackPose();
     if (this.rootAtOrigin) sk.trans[0] = sk.trans[1] = sk.trans[2] = 0;
+    this.itemRootScale();
     if (this.matAnim) {
       sk.resetMaterials();
       sk.applyMatAnims(this.matAnim, (j) => this.joints[j]?.dobjs ?? NO_DOBJS, frame, loop);

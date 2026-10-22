@@ -131,6 +131,7 @@ export function loadArticle(a: Archive, art: number, state: number, tag: string)
     try { prop = new Prop(a, joint, null, null, tag, true); } catch { prop = null; }
   }
   if (!prop) return null;
+  prop.itemRoot = true;
   const sc = attr === null ? 1 : d.getFloat32(attr + 0x60);
   const ptcl = animPtclKeys(a, sd === null ? null : ptr(a, sd));
   // (the joint the game ties to its holder's hand when held: ItemModelDesc +8)
