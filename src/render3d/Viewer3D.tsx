@@ -26,7 +26,7 @@ import { Hud3D } from "./Hud3D";
 import { CRT_LOOKS, type CrtPreset, isCrtPreset, tubeOutline, unbend } from "./crt";
 import { invert, lookAt, mat, perspective, translation, mul } from "./math";
 import { CAM_ASPECT, CAM_STRIDE, cameraPlanes, CamActor, CameraRun, cameraRun, gameProjection, gameView, playerScales } from "./camera";
-import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf } from "./hitlag";
+import { chargeShakeAt, floorHeights, HIT_FEEL, hitShakeAt, quakeOf, shakeKindOf, trackShake } from "./hitlag";
 import { setBillboardView } from "./skeleton";
 import { DEFAULT_LIGHTING, Renderer } from "./renderer";
 import type { Lighting } from "./lightset";
@@ -869,16 +869,19 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     for (const fr of data.frames) for (const p of fr.players) if (p) { all.push(p.state); if (p.nanaState) all.push(p.nanaState); }
     return floorHeights(all);
   });
-  /** a fighter's shake this frame (hitlag.ts): a hit's, and a smash attack's
-   *  charge; the viewer track's first offset of a hit says its table and
-   *  floor. Null when it stands still */
+  /** a fighter's shake this frame (hitlag.ts): the viewer track's draw offset when it has one (the game's own
+   *  sum: a hit's shake, a held one's mash wobble, a smash attack's charge); without it, a hit's and a smash
+   *  attack's charge from the replay, the track's first offset of a hit saying its table and floor. Null when
+   *  it stands still */
   const shakeOf = (data: ReplayData, f: number, a: Actor, hf: typeof HIT_FEEL, fi: Fighter,
                    tr: ViewerTrack | null): [number, number] | null => {
+    const key = `${a.player}:${a.nana ? 1 : 0}`;
+    const told = trackShake(tr, key, f - 123);
+    if (told !== undefined) return told;
     const stAt = (g: number) => {
       const p = data.frames[g]?.players[a.player];
       return p ? (a.nana ? p.nanaState ?? undefined : p.state) : undefined;
     };
-    const key = `${a.player}:${a.nana ? 1 : 0}`;
     const hit = hitShakeAt(stAt, f, {
       hf, floorAt: floors(), by: (g, port) => data.frames[g]?.players[port]?.state,
       // (the floor it stands on, from the stage's collision data: its slope)

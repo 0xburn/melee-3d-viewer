@@ -282,6 +282,26 @@ export function shakeKindOf(v: V2, facing: number, hf: HitFeel = HIT_FEEL): { ki
   return len > 0.9 && len < 1.1 ? { kind: 1, normal: [nx / len, ny / len] } : null;
 }
 
+/** what a fighter's draw offset is read from in a viewer track (track.ts) */
+export interface ShakeTrack {
+  has(type: string): boolean;
+  valid(frame: number): boolean;
+  at(type: string, key: string, frame: number): (number | string)[] | null;
+}
+
+/** a fighter's draw offset on game frame `g` as the viewer track has it ("shake", by `port:sub`): the sum
+ *  ftCommon_8008021C makes each frame - the hit's shake (ftCo_80090690), the wobble of a held one mashing
+ *  (x2224_b5, a step of its table each mash: ftCommon_GrabMash) and a smash attack's charge
+ *  (ftCo_800DEEE8) - that ftDrawCommon_8008051C moves the fighter's draw by. The offset, null when it has
+ *  none then, undefined when the track does not say (it has no shake, or does not hold on that frame) */
+export function trackShake(tr: ShakeTrack | null | undefined, key: string, g: number): V2 | null | undefined {
+  if (!tr || !tr.has("shake") || !tr.valid(g)) return undefined;
+  const v = tr.at("shake", key, g);
+  if (!v) return null;
+  const x = Number(v[0]), y = Number(v[1]);
+  return x === 0 && y === 0 ? null : [x, y];
+}
+
 /** a smash attack's charge trembling on frame `f` (null when not): the
  *  charge holds the animation from its script's charge frame (`chargeFrame`
  *  of a state, null for one that does not charge) until the button is let
