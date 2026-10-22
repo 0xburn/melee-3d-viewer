@@ -8,7 +8,7 @@ import {
   AObj, Archive, DObj, Image, JObj, JOBJ, MatAnim, Mesh, MObj, PObj, TObj, Tlut, Track,
   aobjFrame, decodePObj, sample, splineAt,
 } from "./hsd";
-import { Mat, ident, invert, mul, srt } from "./math";
+import { Mat, ident, invert, mul } from "./math";
 import {
   HSD_MtxSRT, PSMTXConcat, PSMTXIdentity, PSMTXInverse, concatGL, madd, mkBillBoardMtx, mtxFromGL, mtxToGL,
 } from "./gxmath";
@@ -104,7 +104,7 @@ export interface Drawable {
 
 let stamps = 0;
 
-const tmpA = new Float32Array(16), tmpB = new Float32Array(16), tmpC = new Float32Array(16);
+const tmpB = new Float32Array(16), tmpC = new Float32Array(16);
 const tmpL = new Float32Array(12), tmpP12 = new Float32Array(12), tmpRS = new Float32Array(3);
 const tmpS3 = new Float32Array(3), tmpR3 = new Float32Array(3), tmpT3 = new Float32Array(3);
 const tmpP = [0, 0, 0];
@@ -400,23 +400,14 @@ export class Skeleton {
   }
 
   // PATH: the joint stands a share of the way along another joint's spline
-  // (Yoshi's Story's Randall rides his cloud path this way)
+  // (Yoshi's Story's Randall rides his cloud path this way). The curve's
+  // point is the joint's translate as it is (JObjUpdateFunc's HSD_A_J_PATH:
+  // splArcLengthPoint, then HSD_JObjSetTranslateX/Y/Z), not carried through
+  // the spline joint's own place - Randall's turned half round and moved
   private path(i: number, splineJoint: number | null, f: number) {
     const sj = splineJoint === null ? undefined : this.joints.find((j) => j.offset === splineJoint);
     if (!sj?.spline) return;
     splineAt(sj.spline, f, tmpP);
-    // the curve is drawn in its own joint's space: carried through that
-    // joint's place (Randall's is turned half round and moved), into the
-    // space the two joints share
-    const k = sj.index, r = k * 3;
-    if (this.parent[k] === this.parent[i]) {
-      srt(tmpA, this.scale[r], this.scale[r + 1], this.scale[r + 2], this.rot[r], this.rot[r + 1], this.rot[r + 2],
-          this.trans[r], this.trans[r + 1], this.trans[r + 2]);
-      const [x, y, z] = tmpP;
-      tmpP[0] = tmpA[0] * x + tmpA[4] * y + tmpA[8] * z + tmpA[12];
-      tmpP[1] = tmpA[1] * x + tmpA[5] * y + tmpA[9] * z + tmpA[13];
-      tmpP[2] = tmpA[2] * x + tmpA[6] * y + tmpA[10] * z + tmpA[14];
-    }
     this.trans[i * 3] = tmpP[0]; this.trans[i * 3 + 1] = tmpP[1]; this.trans[i * 3 + 2] = tmpP[2];
   }
 
