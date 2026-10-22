@@ -527,7 +527,11 @@ export class DrawLog {
     const hx = (v: number) => v.toString(16).padStart(8, "0");
     // (start and end as the registers hold them - worked back from A, B and C with the camera's near, as a reader
     // of the game's registers does - and as they were handed to GXSetFog: set_start, set_end)
-    const dec = r ? fogDecoded(r) : null;
+    // (with the near a reader of the captures takes: worked back, in double precision, from the GX projection's
+    // float32 numbers - near = p5 / (p4 - 1) - not the near GXSetFog was handed)
+    const g = this.inner.camGx;
+    const near = g && g[14] === -1 && g[10] !== 1 ? g[11] / (g[10] - 1) : null;
+    const dec = r ? fogDecoded(near !== null && Number.isFinite(near) ? { ...r, near } : r) : null;
     return { type: FOG_TYPE[f.type & 7] ?? String(f.type & 7), ortho: ((f.type >> 3) & 1) === 1,
              start: dec ? dec.start : this.num(f.start), end: dec ? dec.end : this.num(f.end),
              set_start: this.num(f.start), set_end: this.num(f.end),
