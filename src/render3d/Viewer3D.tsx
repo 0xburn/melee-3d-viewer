@@ -4208,7 +4208,9 @@ type HeldBy = number | "item" | { joint: number };
 /** held on this joint in all its states */
 const heldAll = (by: HeldBy): Record<number, HeldBy> => Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i, by]));
 const HOOK_HELD = heldAll(RTHUMB);
-const ARTICLES: Record<number, { art: number; tilt?: boolean | "z" | "child"; charge?: boolean; joint?: number; from?: Record<number, number>;
+const ARTICLES: Record<number, { art: number; tilt?: boolean | "z" | "child";
+                                 /** its tilt measured from the way it faces, not from straight ahead (a missile) */
+                                 tiltFromFacing?: boolean; charge?: boolean; joint?: number; from?: Record<number, number>;
                                  held?: Record<number, HeldBy>; ownerSize?: boolean; gone?: number[];
                                  trail?: { state: number; at: number[] };
                                  /** held still at a frame of its animation its owner's state says */
@@ -4255,8 +4257,9 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z" | "child"; ch
   0x5d: { art: 0, gone: [3] },     // Samus's bomb (state 3: going off)
   0x5e: { art: 1, charge: true },  // Samus's charge shot
   // Samus's missile (states 2 and 3: bursting), tilted on the root's child as the needle is (itsamusmissile.c:
-  // itSamusmissile_SetRotationX)
-  0x5f: { art: 2, tilt: "child", gone: [2, 3] },
+  // itSamusmissile_SetRotationX), by its turn x8 from the way it faces: inlineA0 flies it at its speed that way
+  // turned x8 * -facing about z (lbVector_Rotate), so x8 is -facing * atan2(facing * vy, facing * vx)
+  0x5f: { art: 2, tilt: "child", tiltFromFacing: true, gone: [2, 3] },
   // Peach's turnip, in her hand where she holds items while she pulls it and when she has it again (its states 0
   // and 4: itemhold.ts): it_802BD4AC picks it up with Item_8026AB54 on her ftData x8 +0x10 part, its attach
   // joint tied to it in place and turn (it_80274F48: lb_8000C2F8) - the replay's place has no depth, the hand's has
@@ -4792,7 +4795,7 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   // a needle (or missile) tilts along the way it flies
   const way = a.tilt ? (it.xVelocity || it.yVelocity ? [it.xVelocity, it.yVelocity] : lastFlight(data, frame, it)) : null;
   const along = (w: number[] | null) => !w ? 0 : a.tilt === "z" ? facing * Math.atan2(w[1], w[0] * facing)
-    : -facing * Math.atan2(w[1], w[0]);
+    : a.tiltFromFacing ? -facing * Math.atan2(facing * w[1], facing * w[0]) : -facing * Math.atan2(w[1], w[0]);
   const tilt = along(way);
   // an arrow in flight: its trail, two models of its own (its special
   // attributes +0x24, +0x28) where it was one and two frames before, turned
