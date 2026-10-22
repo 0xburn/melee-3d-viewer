@@ -234,4 +234,8 @@ test("a generator the stage's code places (grLib_801C96F8): its transform made O
   assert.equal(b.srt!.view, false);
   assert.equal(b.srt!.status ?? 0, 0);
   assert.deepEqual([b.srt!.tx, b.srt!.sx], [5, 2]);
+  // (one of the common bank, 0: the stage's scale all the same)
+  (w as unknown as { banks: Map<number, EffectBank> }).banks.set(0, { id: 0, cmds: [cmd()], texGroups: [] } as unknown as EffectBank);
+  const c = gen([0, "sgen", 0, 0, 0, 5, 6, 7, 1, -1, -1])!;
+  assert.equal(c.srt!.sx, 2);
 });

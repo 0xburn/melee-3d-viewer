@@ -1276,8 +1276,9 @@ export class FxWorld {
     if (mark === "kept") this.stageKept = g;
     if (own && !w) {
       // (grLib_801C96F8: a transform made ONCE, or the generator's own (kind 0x20000) no longer only following -
-      // its xA2 cleared, so its particles are placed through its matrix; at the place, times the stage's scale)
-      const s = file === 30 ? this.stageScale : 1;
+      // its xA2 cleared, so its particles are placed through its matrix; at the place, times the stage's scale,
+      // Ground_801C0498, whatever bank the generator is of: Zebes' and Mute City's of bank 0 too)
+      const s = this.stageScale;
       const srt: AppSRT = { tx: x, ty: y, tz: z, rx: 0, ry: 0, rz: 0, sx: s, sy: s, sz: s, follow: false, status: APP_ONCE };
       if (g.srt) Object.assign(g.srt, { tx: x, ty: y, tz: z, sx: g.srt.sx * s, sy: g.srt.sy * s, sz: g.srt.sz * s, view: false });
       else g.srt = srt;
