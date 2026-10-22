@@ -103,7 +103,7 @@ export class Prop {
   /** at frame `frame` of its animations (looped when loop), at (x, y, z),
    *  scaled by `scale`, turned `rotY` about the vertical and `rotZ` in the
    *  picture's plane (as the game sets an effect's root joint), and `rotX`
-   *  about its own x axis (a thrown needle's tilt). `rootSet`: the place is the
+   *  about its own x axis. `rootSet`: the place is the
    *  root joint's own, over the file's (an effect model the game's dispatch
    *  made at a place or on a joint: HSD_JObjSetTranslate on its root).
    *  `jointFrame`: the joints' animation at a frame of its own, the materials'
@@ -148,6 +148,16 @@ export class Prop {
   setRootRotationZ(value: number) {
     this.skeleton.rot[2] = value;
     this.skeleton.update(this.place);
+  }
+
+  /** after the pose, the turn about x of the root's first child set to `value` (an item's code:
+   *  HSD_JObjSetRotationX on HSD_JObjGetChild of its root - a thrown needle's or a missile's tilt) */
+  setChildRotationX(value: number) {
+    const sk = this.skeleton;
+    const child = sk.parent.indexOf(0);
+    if (child <= 0) return;
+    sk.rot[child * 3] = value;
+    sk.update(this.place);
   }
 
   /** after the pose, a joint's z place set to `value` (an effect's callback moving one of its joints) */

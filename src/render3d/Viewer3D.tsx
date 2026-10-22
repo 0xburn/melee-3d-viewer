@@ -4207,7 +4207,7 @@ type HeldBy = number | "item" | { joint: number };
 /** held on this joint in all its states */
 const heldAll = (by: HeldBy): Record<number, HeldBy> => Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i, by]));
 const HOOK_HELD = heldAll(RTHUMB);
-const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boolean; joint?: number; from?: Record<number, number>;
+const ARTICLES: Record<number, { art: number; tilt?: boolean | "z" | "child"; charge?: boolean; joint?: number; from?: Record<number, number>;
                                  held?: Record<number, HeldBy>; ownerSize?: boolean; gone?: number[];
                                  trail?: { state: number; at: number[] };
                                  /** held still at a frame of its animation its owner's state says */
@@ -4231,7 +4231,9 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   // Fox's and Falco's blasters, held in the hand (on the right thumb's joint) in all their states
   0x4a: { art: 1, held: heldAll(RTHUMB) },
   0x4b: { art: 1, held: heldAll(RTHUMB) },
-  0x4f: { art: 0, tilt: true },    // Sheik's needles, thrown
+  // Sheik's needles, thrown: tilted on the root's child, the root turned only to face (itseakneedlethrown.c:
+  // HSD_JObjSetRotationX on HSD_JObjGetChild, HSD_JObjSetRotationY on the root)
+  0x4f: { art: 0, tilt: "child" },
   // Dr. Mario's sheet (side-B), held on his right thumb in both its states: picked up as it is made
   // (it_802B2560: Item_8026AB54 with ftMr_SpecialS's FtPart_RThumbNb), its attach joint tied to the thumb
   // in place and turn (it_802742F4: it_80274F48, lb_8000C2F8's position and orientation constraints)
@@ -4251,7 +4253,9 @@ const ARTICLES: Record<number, { art: number; tilt?: boolean | "z"; charge?: boo
   0x56: { art: 0, gone: [2] },     // Yoshi's egg, thrown (state 2: broken, its pieces are effects)
   0x5d: { art: 0, gone: [3] },     // Samus's bomb (state 3: going off)
   0x5e: { art: 1, charge: true },  // Samus's charge shot
-  0x5f: { art: 2, tilt: true, gone: [2, 3] }, // Samus's missile (states 2 and 3: bursting)
+  // Samus's missile (states 2 and 3: bursting), tilted on the root's child as the needle is (itsamusmissile.c:
+  // itSamusmissile_SetRotationX)
+  0x5f: { art: 2, tilt: "child", gone: [2, 3] },
   // Peach's turnip, in her hand where she holds items while she pulls it and when she has it again (its states 0
   // and 4: itemhold.ts): it_802BD4AC picks it up with Item_8026AB54 on her ftData x8 +0x10 part, its attach
   // joint tied to it in place and turn (it_80274F48: lb_8000C2F8) - the replay's place has no depth, the hand's has
@@ -4803,7 +4807,7 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
       r.drawSkeleton(pr.skeleton, "xlu");
     });
   }
-  const byZ = a.tilt === "z";
+  const byZ = a.tilt === "z", onChild = a.tilt === "child";
   // (Samus's bomb: the way it last rolled, and its joints' faster clock near the end of its fuse, from its
   // special attributes +4 and +8: item-facing.ts)
   const bomb = it.typeId === 0x5d;
@@ -4823,7 +4827,10 @@ function drawArticle(r: Renderer, data: ReplayData, fs: Map<string, Fighter>, it
   }
   else {
     art.prop.pose(itemAnimAge(data, frame, it) + (a.from?.[it.state] ?? 0), it.xPosition, it.yPosition, 0, scale, rotationY, true, byZ ? tilt : 0,
-                  byZ ? 0 : tilt, false, clock?.joint);
+                  byZ || onChild ? 0 : tilt, false, clock?.joint);
+    // (the child's tilt: the track's own when it has the item's joints - "jp", the game's turn of it, the
+    // random spins of a needle knocked down included)
+    if (onChild && !art.prop.trackPose) art.prop.setChildRotationX(tilt);
   }
   if (shadowScale !== null) art.prop.setGrandchildScale(shadowScale);
   if (chargeScale !== null) art.prop.setGrandchildScale(chargeScale);
