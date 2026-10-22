@@ -2006,7 +2006,10 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
           if (poseHats) hp.poseMatrix(fi.skeleton.world.subarray(HAT_JOINT * 16, HAT_JOINT * 16 + 16), ya?.frame);
           r.drawSkeleton(hp.skeleton, pass);
         } else if (kh?.skin) {
-          if (poseHats) poseSkin(kh, fi.skeleton);
+          if (poseHats) {
+            const owner = `${a.player}:${a.nana ? 1 : 0}:${a.st.internalCharacterId}`;
+            poseSkin(kh, fi.skeleton, trackAt?.pose("fj", owner, fno - 123)?.joints, trackAt?.pose("fp", owner, fno - 123)?.joints);
+          }
           kh.face?.apply(a.face?.tex ?? null);
           // (Mr. Game & Watch's copy: its outline first, as his is drawn)
           if (kh.outline && pass === "opa") {

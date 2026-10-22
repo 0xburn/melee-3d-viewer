@@ -53,6 +53,8 @@ export interface KirbyHat {
    *  its symbol's +0x10), and its joints' map onto his (hatJointMap) */
   mask?: number;
   map?: number[];
+  /** and each of its joints' part in his part list (hatJointParts) */
+  parts?: number[];
   /** a colored hat's face: the textures turned with Kirby's own (its
    *  symbol's +8: ftKb_Init_UnkCallbackPairs0_1, face.ts) */
   face?: FaceTextures | null;
@@ -169,14 +171,25 @@ export function loadHat(kind: number, data: ArrayBuffer, colored: ArrayBuffer | 
  *  joints its copy adds where his part list keeps room for them (the
  *  entries of PlCo.dat's table its copy's mask names: ftKb_SpecialN_800EF040).
  *  For each of the hat's joints: his model's joint it moves as, or -1 for
- *  one of its own (left at its rest pose: the game swings them as loose
- *  bones, which is not done here) */
+ *  one of its own (the game swings them as loose bones: left at its rest
+ *  pose unless the viewer track has them, poseSkin) */
 export function hatJointMap(hatJoints: number, mask: number): number[] {
   const skips = partSkips(KIRBY), out: number[] = [];
   for (let p = 0; out.length < hatJoints && p < hatJoints + skips.length; p++) {
     const i = skips.indexOf(p);
     if (i < 0) out.push(partToModelJoint(KIRBY, p, skips));
     else if (mask & (1 << i)) out.push(-1);
+  }
+  return out;
+}
+
+/** each of a colored hat's joints' part in Kirby's part list (hatJointMap's walk): his own parts, and the
+ *  room his list keeps for the copy's extra joints, which ftKb_SpecialN_800EF040 fills with them */
+export function hatJointParts(hatJoints: number, mask: number): number[] {
+  const skips = partSkips(KIRBY), out: number[] = [];
+  for (let p = 0; out.length < hatJoints && p < hatJoints + skips.length; p++) {
+    const i = skips.indexOf(p);
+    if (i < 0 || mask & (1 << i)) out.push(p);
   }
   return out;
 }
@@ -207,15 +220,34 @@ export function yoshiHatAnim(state: (k: number) => number | undefined): { slot: 
   return { slot: first === YS_AIR_START || first === 419 || first === 420 ? 3 : 1, frame: k };
 }
 
-/** a skinned hat posed as Kirby is: his joints' pose copied, then its matrices */
-export function poseSkin(hat: KirbyHat, kirby: Skeleton) {
+/** a skinned hat posed as Kirby is: his joints' pose copied, then its matrices. `swung`: his joints as the
+ *  viewer track has them, by part (its "fj" and "fp" lines: rot, scale, translate, NaN for a value not sent),
+ *  laid on the hat's own joints - the copy's extra joints are his parts while he wears it, and the copy's
+ *  swinging chain (Mewtwo's tail: ftCo_8009DB50) moves them */
+export function poseSkin(hat: KirbyHat, kirby: Skeleton, ...swung: (Map<number, Float32Array> | null | undefined)[]) {
   const sk = hat.skin!;
   // (once PlCo.dat's table is in; until then joint for joint)
-  if (!hat.map && partSkips(KIRBY).length) hat.map = hatJointMap(sk.n, hat.mask ?? 0);
+  if (!hat.map && partSkips(KIRBY).length) {
+    hat.map = hatJointMap(sk.n, hat.mask ?? 0);
+    hat.parts = hatJointParts(sk.n, hat.mask ?? 0);
+  }
   const map = hat.map ?? Array.from({ length: sk.n }, (_, i) => i);
   sk.resetPose();
   map.forEach((j, h) => {
-    if (j < 0 || j >= kirby.n) return;
+    if (j < 0) {
+      const p = hat.parts?.[h];
+      for (const by of swung) {
+        const v = p === undefined ? undefined : by?.get(p);
+        if (!v) continue;
+        for (let k = 0; k < 3; k++) {
+          if (!Number.isNaN(v[k])) sk.rot[h * 3 + k] = v[k];
+          if (!Number.isNaN(v[3 + k])) sk.scale[h * 3 + k] = v[3 + k];
+          if (!Number.isNaN(v[6 + k])) sk.trans[h * 3 + k] = v[6 + k];
+        }
+      }
+      return;
+    }
+    if (j >= kirby.n) return;
     for (let k = 0; k < 3; k++) {
       sk.rot[h * 3 + k] = kirby.rot[j * 3 + k];
       sk.scale[h * 3 + k] = kirby.scale[j * 3 + k];
