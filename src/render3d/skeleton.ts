@@ -104,6 +104,8 @@ export interface Drawable {
 
 let stamps = 0;
 
+// (JObjUpdateFunc's floor for an animated scale, 1e-3F)
+const MIN_SCALE = Math.fround(1e-3);
 const tmpB = new Float32Array(16), tmpC = new Float32Array(16);
 const tmpL = new Float32Array(12), tmpP12 = new Float32Array(12), tmpRS = new Float32Array(3);
 const tmpS3 = new Float32Array(3), tmpR3 = new Float32Array(3), tmpT3 = new Float32Array(3);
@@ -383,7 +385,8 @@ export class Skeleton {
     }
   }
 
-  /** a stage animation: one AObj per joint, each on its own clock */
+  /** a stage animation: one AObj per joint, each on its own clock (HSD_AObjInterpretAnim with JObjUpdateFunc: a
+   *  scale nearer 0 than 1e-3 is set as 1e-3, so a joint shrunk away keeps a matrix of its own) */
   applyAObjs(aobjs: (AObj | null)[], frame: number, loop: boolean) {
     const n = Math.min(aobjs.length, this.n);
     for (let i = 0; i < n; i++) {
@@ -394,7 +397,7 @@ export class Skeleton {
         const v = sample(tr.keys, t);
         if (v === null) continue;
         if (tr.type === 4) this.path(i, ao.obj, v);
-        else this.set(i, tr.type, v);
+        else this.set(i, tr.type, tr.type >= 8 && tr.type <= 10 && Math.abs(v) < MIN_SCALE ? MIN_SCALE : v);
       }
     }
   }
