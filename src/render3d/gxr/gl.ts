@@ -47,6 +47,8 @@ export class GxGl implements GxBackend {
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;
+  /** called after a pass has been drawn (tests compare the EFB there) */
+  onFlush: (() => void) | null = null;
   passes = 0;
   /** timing of the last frame's work, ms (CPU front half, GPU submit) */
   stats = { cpuMs: 0, flushMs: 0 };
@@ -355,10 +357,11 @@ export class GxGl implements GxBackend {
 
   flush(): void {
     const nt = this.triOffsets.length;
+    // memory writes that have landed go to the GPU now, before anything that writes memory there (a copy) or reads it
+    if (this.attached) this.uploadDirty(this.attached);
     if (nt === 0) { this.used = []; return; }
     const t0 = performance.now();
     const gl = this.gl;
-    if (this.attached) this.uploadDirty(this.attached);
     // bins
     const counts = new Uint32Array(TILES_X * TILES_Y + 1);
     const bb = this.bb;
@@ -413,6 +416,7 @@ export class GxGl implements GxBackend {
     this.passes++;
     this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = [];
     this.stats.flushMs += performance.now() - t0;
+    this.onFlush?.();
   }
 
   /** wait for the GPU (timing, tests) */
@@ -483,6 +487,29 @@ export class GxGl implements GxBackend {
     gl.uniform1i(this.u(pr, "uPixFmt"), p.pixFmt);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.cur = 1 - this.cur;
+  }
+
+  /** bytes [a, a + n) of the GPU's copy of memory (slow: tests) */
+  readMem(a: number, n: number): Uint8Array {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.memFbo);
+    const row0 = a / MEM_ROW | 0, row1 = (a + n - 1) / MEM_ROW | 0;
+    const raw = new Uint32Array(MEM_ROW * (row1 - row0 + 1) * 4);
+    gl.readPixels(0, row0, MEM_ROW, row1 - row0 + 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, raw);
+    const out = new Uint8Array(n);
+    for (let i = 0; i < n; i++) out[i] = raw[(a - row0 * MEM_ROW + i) * 4];
+    return out;
+  }
+
+  /** the whole EFB: color words and depths (slow: tests) */
+  readEfb(): { color: Uint32Array; depth: Uint32Array } {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.efb[this.cur].fbo);
+    const raw = new Uint32Array(EFB_W * EFB_H * 4);
+    gl.readPixels(0, 0, EFB_W, EFB_H, gl.RGBA_INTEGER, gl.UNSIGNED_INT, raw);
+    const color = new Uint32Array(EFB_W * EFB_H), depth = new Uint32Array(EFB_W * EFB_H);
+    for (let i = 0; i < color.length; i++) { color[i] = raw[i * 4]; depth[i] = raw[i * 4 + 1]; }
+    return { color, depth };
   }
 
   /** the top 640 x 480 of the EFB as RGBA bytes (R, G, B, A) */
