@@ -11,7 +11,7 @@ const manifest = await (await fetch("/spec/manifest.json")).json();
 const only = q.get("windows")?.split(",");
 const t0 = performance.now();
 if (q.get("profile")) await fetch("/go");
-const be = new GxGl(gl);
+const be = new GxGl(gl, {}, { workers: Number(q.get("workers") ?? 0), factory: () => new Worker("/frontworker.js", { type: "module" }) });
 be.timing = q.get("timing") === "1";
 be.measure = q.get("nomeasure") !== "1";
 await be.prepare();
