@@ -17,13 +17,14 @@ import type { PlayerState } from "../../common/types";
 import { type Fighter } from "../fighter";
 import { EffectBank, type PtclKey } from "./bank";
 import { Spawn, spawnFor } from "./dispatch";
-import { AppSRT, Generator, hsdNext, Particle, ParticleSystem } from "./particles";
+import { AppSRT, Generator, hsdNext, Particle, ParticleSystem, Rng } from "./particles";
+import { APP_ONCE } from "./appsrt";
 import type { Once, ScriptEvent } from "./script";
 import { SWORD_ATTRS, SwordAttrs, SwordTrails, swordAttrs } from "./swordtrail";
 import type { Prop } from "../prop";
 import { partToModelJoint } from "../parts";
 import { effectsPaused } from "../hitlag";
-import { colAnimGfx, ColAnimGfx, ColAnimTables, FighterColAnim, keepsSecondColor, SECOND, startsOver, Tint } from "./colanim";
+import { colAnimGfx, ColAnimGfx, ColAnimTables, FighterColAnim, keepsSecondColor, Overlay, SECOND, startsOver, Tint } from "./colanim";
 import { storedAnim, storedStarts } from "./charges";
 import type { TrackEvent } from "../track";
 import { cutterAnimationFrame, NativeCallbackClock, nativeEffectEvents, nativeEffectFamily, nativeEffectIds,
@@ -112,6 +113,68 @@ const MODEL_KEY_JOINT_SIZE = new Set([0x2d, 0x2e, 0x31]);
 const MODEL_KEY_SRT = new Set([0x2d, 0x2e, 0x31, 0x127, 0x4a38, 0x4a39, 0x4a3a, 0xb798, 0xb799, 0xb79a,
                                0x2, 0x6, 0xa3, 0xa7, 0xaa, 0xf2, 0x12a, 0x132, 0x133]);
 
+/** An effect world as it stood after a frame (FxWorld.save), to be made again exactly (FxWorld.load): its own
+ *  state copied, what it only reads (the effect files, the models' props, the hooks) kept as it is */
+export interface FxSnapshot { frame: number; state: Record<string, unknown>; bytes: number }
+
+// the classes an effect world's state is made of, copied in a snapshot; any other object it holds is kept
+const COPIED = new Set<unknown>([ParticleSystem, Rng, SwordTrails, FighterColAnim, Overlay, NativeCallbackClock]);
+
+/** A copy of a world's state: plain objects, arrays, maps, sets and the classes above, one copy of each however
+ *  often it is held (a transform shared by a generator and its particles stays shared); typed arrays copied but
+ *  a byte view into a file (a particle's script); functions and every other object kept. Walked with a stack
+ *  (a particle list is a chain hundreds long). `size`: the bytes, roughly */
+function copyState<T>(root: T, size: { bytes: number }): T {
+  const memo = new Map<unknown, unknown>();
+  const work: [unknown, unknown][] = [];
+  const shell = (v: unknown): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    const seen = memo.get(v);
+    if (seen !== undefined) return seen;
+    let out: unknown;
+    if (ArrayBuffer.isView(v)) {
+      const t = v as Uint8Array;
+      if (t instanceof Uint8Array && t.byteLength !== t.buffer.byteLength) return v;
+      out = t.slice();
+      size.bytes += t.byteLength;
+      memo.set(v, out);
+      return out;
+    }
+    if (Array.isArray(v)) out = new Array(v.length);
+    else if (v instanceof Map) out = new Map();
+    else if (v instanceof Set) out = new Set();
+    else {
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null && !COPIED.has(proto.constructor)) return v;
+      out = Object.create(proto);
+    }
+    memo.set(v, out);
+    work.push([v, out]);
+    return out;
+  };
+  const top = shell(root);
+  while (work.length) {
+    const [src, dst] = work.pop()!;
+    size.bytes += 16;
+    if (Array.isArray(src)) {
+      const d = dst as unknown[];
+      for (let i = 0; i < src.length; i++) d[i] = shell(src[i]);
+      size.bytes += 8 * src.length;
+    } else if (src instanceof Map) {
+      for (const [k, v] of src) (dst as Map<unknown, unknown>).set(shell(k), shell(v));
+      size.bytes += 16 * src.size;
+    } else if (src instanceof Set) {
+      for (const v of src) (dst as Set<unknown>).add(shell(v));
+      size.bytes += 8 * src.size;
+    } else {
+      const d = dst as Record<string, unknown>;
+      for (const k of Object.keys(src as object)) d[k] = shell((src as Record<string, unknown>)[k]);
+      size.bytes += 8 * Object.keys(src as object).length;
+    }
+  }
+  return top as T;
+}
+
 /** how far back the stage's generators are warmed after a jump: longer than any stage particle lives */
 export const STAGE_WARM = 330;
 /** ... and the furthest back (FxWorld.stageFrames) */
@@ -123,6 +186,8 @@ export interface ModelFx {
   index: number;
   x: number; y: number; z: number;
   rotY: number; rotZ: number; scale: number;
+  /** its turn about x, when the dispatch gives it one (HSD_JObjSetRotationX: an egg's shell pieces, efSync 0x4CF) */
+  rotX?: number;
   age: number;
   life: number;
   follow: (() => Float32Array | null) | null;
@@ -155,6 +220,11 @@ export interface ModelFx {
   after?: (m: ModelFx) => void;
   /** never paused in its owner's hitlag (NEVER_PAUSED) */
   steady?: boolean;
+  /** what its update callback carries from frame to frame: the way it last flew (SetRotYZ_FromFighter), its
+   *  falling speed (SetOffset_FromParams, a flung shell), the frames its lifetime has left (LifetimeEndSpawn) */
+  way?: number;
+  fall?: number;
+  left?: number;
   /** its root joint's place is the one the game's dispatch set, over the file's own (a track's piece made at a
    *  place or on a joint: efLib_Create_Attach_Pos and the attach calls set the root's translation; a few
    *  models' roots have a place of their own in the file, 114 units toward the camera in one) */
@@ -171,6 +241,9 @@ export interface ModelFx {
   rootRotationZ?: boolean;
   /** held to the joint it is under by place and turn constraints (Prop.poseConstrained), not made its child */
   constrained?: boolean;
+  /** the root's first child's next joint and everything under it hidden, as its update callback last set
+   *  them (efLib_Cb_ftMr_SpecialLw, efLib_Cb_ftLg_SpecialLw) */
+  secondChildOff?: boolean;
 }
 
 /** The effects whose model the game's dispatch marks with state bit 0x80
@@ -430,6 +503,28 @@ export class FxWorld {
    *  the game's number for them (fx/dispatch.ts EFFECT_FILES) */
   constructor(public common: EffectBank, private partToJoint: (char: number, part: number) => number,
               public banks: Map<number, EffectBank> = new Map([[common.id, common]])) {}
+
+  /** the fields that are the world's state after a frame (everything reset() empties, and what it keeps) */
+  private static readonly STATE = ["ps", "models", "frame", "stepping", "stageKept", "spawned", "spawning", "tracks",
+    "nativeClocks", "worlds", "prevWorlds", "owned", "sts", "lateStart", "scriptStarted", "itemBorn", "cols", "bodyStates",
+    "charging", "rngAfter", "hudPlaces", "itemAt", "itemJoints", "swords"] as const;
+
+  /** the world as it stands now, to be made again by load(): a stepped world is the same frame for frame from
+   *  the same snapshot, so a jump made from the nearest one before it and stepped on is the game's, as playing
+   *  through to it is */
+  save(): FxSnapshot {
+    const size = { bytes: 0 };
+    const me = this as unknown as Record<string, unknown>;
+    const state = copyState(Object.fromEntries(FxWorld.STATE.map((k) => [k, me[k]])), size);
+    return { frame: this.frame, state, bytes: size.bytes };
+  }
+
+  /** the world made again as a snapshot has it (the snapshot itself left as it is, for another load) */
+  load(s: FxSnapshot) {
+    const me = this as unknown as Record<string, unknown>;
+    const state = copyState(s.state, { bytes: 0 });
+    for (const k of FxWorld.STATE) me[k] = state[k];
+  }
 
   reset(seed: number) {
     this.ps.clear();
@@ -740,7 +835,7 @@ export class FxWorld {
     }
     const events = clocked ?? a.fighter.scriptFor(st.actionStateId);
     // (a new move turns the trail off; one picked up under way has its script's say from its start)
-    this.swordStep(a, events, picked ? -1 : prev, now, t.entry === frame);
+    this.swordStep(a, frame, events, picked ? -1 : prev, now, t.entry === frame);
     let charge = -1;
     for (const e of events) {
       if (e.frame > now) break;
@@ -1183,9 +1278,12 @@ export class FxWorld {
     const mark = own ? e[o + 8] : undefined;
     if (mark === "kept") this.stageKept = g;
     if (own && !w) {
-      const s = file === 30 ? this.stageScale : 1;
-      const srt = { tx: x, ty: y, tz: z, rx: 0, ry: 0, rz: 0, sx: s, sy: s, sz: s, follow: false };
-      if (g.srt) Object.assign(g.srt, { tx: x, ty: y, tz: z, sx: g.srt.sx * s, sy: g.srt.sy * s, sz: g.srt.sz * s });
+      // (grLib_801C96F8: a transform made ONCE, or the generator's own (kind 0x20000) no longer only following -
+      // its xA2 cleared, so its particles are placed through its matrix; at the place, times the stage's scale,
+      // Ground_801C0498, whatever bank the generator is of: Zebes' and Mute City's of bank 0 too)
+      const s = this.stageScale;
+      const srt: AppSRT = { tx: x, ty: y, tz: z, rx: 0, ry: 0, rz: 0, sx: s, sy: s, sz: s, follow: false, status: APP_ONCE };
+      if (g.srt) Object.assign(g.srt, { tx: x, ty: y, tz: z, sx: g.srt.sx * s, sy: g.srt.sy * s, sz: g.srt.sz * s, view: false });
       else g.srt = srt;
       g.px = g.py = g.pz = 0;
       return g;
@@ -1236,12 +1334,11 @@ export class FxWorld {
       if (e[1] === "send") { this.stageEnd(e); continue; }
       const c = this.stageCmd(e), made = Number(e[0]) + 123;
       if (!c) continue;
-      if (c.genLife === 0) { this.stageGen(e); continue; }
       const used = frame - made;
-      if (used <= 0 || used >= c.genLife) continue;
+      if (c.genLife !== 0 && (used <= 0 || used >= c.genLife)) continue;
       const g = this.stageGen(e);
-      if (!g) continue;
-      g.genLife -= used;
+      if (!g || used <= 0) continue;
+      if (g.genLife !== 0) g.genLife -= used;
       g.age += used;
       if (g.random < 0) {
         let n = g.count;
@@ -1394,43 +1491,63 @@ export class FxWorld {
       // (efLib_Cb_SetRotYZ_FromFighter: a quarter turn to the side faced, and about z by a quarter turn less
       // the move's angle - Fire Fox's and Fire Bird's way of flying, which the replay's speeds give as they
       // give the fighter's own lean; kept while the speeds are 0)
-      let way = Math.PI / 2;
+      // (the way it last had kept on the model: what a step changes is the world's own, copied with it)
       turn = (m) => {
         const f = facing(), st = a ? this.sts.get(a.key) : undefined;
         const vx = st?.selfInducedAirXSpeed ?? 0, vy = st?.selfInducedAirYSpeed ?? 0;
-        if (vx !== 0 || vy !== 0) way = Math.atan2(vy, vx * f);
+        if (vx !== 0 || vy !== 0) m.way = Math.atan2(vy, vx * f);
+        const way = m.way ?? Math.PI / 2;
         m.rotY = f * Math.PI / 2;
         m.rotZ = f < 0 ? Math.PI / 2 - way : -(Math.PI / 2 - way);
       };
-    } else if (FACING_CALLBACKS.has(callback)) turn = (m) => { m.rotY = facing() * Math.PI / 2; };
+    } else if (FACING_CALLBACKS.has(callback) || (callback === "SetRotYAndTransition" && how !== "child")) {
+      // (efLib_Cb_SetRotYAndTransition too, on the two of Final Cutter's three that efalt.c 0x494 gives the fighter
+      // as their user data - the ones it attaches, not its child: the root's turn about y set to the side faced
+      // after each step of the animation)
+      turn = (m) => { m.rotY = facing() * Math.PI / 2; };
+    }
     else if (callback === "SetOffset_FromParams") {
       // flung by its parameters, falling 0.1 a frame faster each frame (an egg's shell)
-      let vy = p1;
-      turn = (m) => { vy -= 0.1; m.x += p0; m.y += vy; m.z += p2; };
+      turn = (m) => { m.fall = (m.fall ?? p1) - 0.1; m.x += p0; m.y += m.fall; m.z += p2; };
     } else if (callback === "SetOffsetY_FromParamY" && follow) {
       // where its joint is, raised by its parameter
       const on = follow;
       onJoint = null;
       turn = (m) => { const w = on(); if (w) { m.x = w[12]; m.y = w[13] + p1; m.z = w[14]; } };
     } else if (callback === "SetScale_FromParamX") turn = (m) => { m.scale *= p0 || 1; };
+    else if (callback === "ftMr_SpecialLw" || callback === "ftLg_SpecialLw") {
+      // (efLib_Cb_ftMr_SpecialLw, efLib_Cb_ftLg_SpecialLw: the root's first child's next and all under it
+      // shown while the fighter is in motion 349 (Mario's) or 357 (Luigi's), HSD_JObjSetFlagsAll HIDDEN
+      // on it otherwise)
+      const motion = callback === "ftMr_SpecialLw" ? 349 : 357;
+      turn = (m) => {
+        const st = a ? this.sts.get(a.key) : undefined;
+        if (st) m.secondChildOff = st.actionStateId !== motion;
+      };
+    }
     else if (callback && !KNOWN_CALLBACKS.has(callback)) this.unknownCallbacks.add(callback);
     // (a model made at a place stays there; one on a joint goes with it, a
     // child of it turned as it turns)
     const placed = how === "place" || how === "create" || !onJoint;
     const m: ModelFx = {
       bank, index, x: placed ? t[0] : here[0], y: placed ? t[1] : here[1], z: placed ? t[2] : here[2],
-      rotY: ry, rotZ: rz, scale: sx || 1, age: 0, life, follow: placed ? null : onJoint, owner: null, turn,
+      rotY: ry, rotZ: rz, rotX: v[13] || undefined, scale: sx || 1, age: 0, life, follow: placed ? null : onJoint, owner: null, turn,
       by: a?.key, whose: key, under: how === "child" ? onJoint : null, steady: NEVER_PAUSED.has(Number(e[2])),
       rootSet: how !== "child" && !(how === "create" && t[0] === 0 && t[1] === 0 && t[2] === 0),
     };
-    if (FACING_CALLBACKS.has(callback) || callback === "SetRotYZ_FromParamZ_FighterDir") turn?.(m);
+    if (callback === "SetRotYAndTransition" && turn) m.rootRotationY = true;
+    if (FACING_CALLBACKS.has(callback) || callback === "SetRotYZ_FromParamZ_FighterDir" || m.rootRotationY) turn?.(m);
+    // (efLib_Cb_SetScaleRotY_FromFighter: after each animation step the root's scale times the fighter's root
+    // joint's, its model scale (Fighter_UpdateModelScale) - the root's own being its animation's that step, the
+    // product is the same each frame)
+    if (callback === "SetScaleRotY_FromFighter" && a) m.scale *= a.fighter.modelScale;
     const endPart = LIFETIME_END_PART[Number(e[2])];
     if (callback === "LifetimeEndSpawn" && lifetime > 0 && a && key && endPart !== undefined && e.length >= 29) {
       // (the game counts the lifetime down once each frame the model runs, from the frame it is made)
-      let left = lifetime;
+      m.left = lifetime;
       const who = a.key;
       m.after = (mm) => {
-        if (--left !== 1) return;
+        if (--mm.left! !== 1) return;
         mm.after = undefined;
         mm.life = mm.age + LIFETIME_END_MORE;
         this.ps.rng.phase = 1;
@@ -1603,12 +1720,12 @@ export class FxWorld {
         if (!this.common.models[index]) continue;
         const ry = Math.PI * 2 * R.next(), rx = Math.PI * 2 * R.next();
         const vx = 2 * Math.cos(rx) * Math.sin(ry);
-        let vy = 2 * Math.sin(rx);
+        const vy = 2 * Math.sin(rx);
         const vz = 2 * Math.cos(rx) * Math.cos(ry);
         const m: ModelFx = {
-          bank: this.common, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2], rotY: ry, rotZ: rx,
+          bank: this.common, index, x: ctx.pos[0], y: ctx.pos[1], z: ctx.pos[2], rotY: ry, rotZ: 0, rotX: rx,
           scale: ctx.scale, age: 0, life: s.life, follow: null, owner: null, by: ctx.by,
-          turn: (p) => { vy -= 0.1; p.x += vx; p.y += vy; p.z += vz; }, steady: NEVER_PAUSED.has(this.spawning),
+          turn: (p) => { p.fall = (p.fall ?? vy) - 0.1; p.x += vx; p.y += p.fall; p.z += vz; }, steady: NEVER_PAUSED.has(this.spawning),
         };
         this.models.push(m);
       }
@@ -1793,7 +1910,8 @@ export class FxWorld {
         // emission turned as the joint is turned, and it ends with the model's owner's effects; no transform
         // but the one its command asks for, or efLib_SpawnParticleEffect's cases give it)
         g.maxAge = Infinity;
-        const on = this.keyJoint(m, k.joint);
+        g.model = m;
+        const on = this.keyJoint(k.joint);
         const own = MODEL_KEY_SRT.has(gfx);
         if (own) {
           // (those cases: a transform of the generator's own, which goes to the joint each frame (type 0x800)
@@ -1820,8 +1938,9 @@ export class FxWorld {
         const atJoint = gfx === 0xe3 ? k.joint : 0;
         const turnY = gfx !== 0xd4 && gfx !== 0x243 && gfx !== 0xe3, turnZ = gfx === 0xd4 || gfx === 0x243;
         const sc = gfx === 0xd4 || gfx === 0xe3 ? m.scale : 1;
+        // (efLib_AddGeneratorAppSRT and psAddGeneratorAppSRT_begin make it with status 1: ONCE)
         g.srt = { tx: w[atJoint * 16 + 12], ty: w[atJoint * 16 + 13], tz: w[atJoint * 16 + 14],
-                  rx: 0, ry: turnY ? m.rotY : 0, rz: turnZ ? m.rotZ : 0, sx: sc, sy: sc, sz: sc, follow: false };
+                  rx: 0, ry: turnY ? m.rotY : 0, rz: turnZ ? m.rotZ : 0, sx: sc, sy: sc, sz: sc, follow: false, status: APP_ONCE };
         m.kin?.push(g);
         continue;
       }
@@ -1833,12 +1952,14 @@ export class FxWorld {
         const joint = k.joint;
         g.srt.follow = true;
         g.bake = true;
-        g.follow = () => {
+        g.model = m;
+        g.follow = (self) => {
+          const m = self.model as ModelFx;
           if (m.age >= m.life) return null;
           const pr = m.bank.prop(m.index, 0, true);
           if (!pr) return null;
           const [x, y, z] = this.modelPlace(m);
-          pr.pose(m.age, x, y, z, m.scale, m.rotY, false, m.rotZ);
+          pr.pose(m.age, x, y, z, m.scale, m.rotY, false, m.rotZ, m.rotX ?? 0);
           const ww = pr.skeleton.world;
           return (joint + 1) * 16 <= ww.length ? ww.subarray(joint * 16, joint * 16 + 16) : null;
         };
@@ -1855,18 +1976,19 @@ export class FxWorld {
   /** a seeded model's joint as the game's particle update finds it on the frame being stepped: the model's
    *  animation has taken that frame's step by then (one more than its age here, which counts up after the
    *  particles). Once the model has run out the joint stays as it last was (the generator keeps it) */
-  private keyJoint(m: ModelFx, joint: number): () => Float32Array | null {
-    let last: Float32Array | null = null;
-    return () => {
-      if (m.age < m.life) {
+  private keyJoint(joint: number): (g: Generator) => Float32Array | null {
+    // (the model and the joint last found are the generator's own: g.model, g.keptJoint)
+    return (g) => {
+      const m = g.model as ModelFx;
+      if (m && m.age < m.life) {
         const pr = m.bank.prop(m.index, 0, true);
         if (pr) {
           this.poseModel(m, pr, m.age + 1);
           const ww = pr.skeleton.world;
-          if ((joint + 1) * 16 <= ww.length) last = ww.slice(joint * 16, joint * 16 + 16);
+          if ((joint + 1) * 16 <= ww.length) g.keptJoint = ww.slice(joint * 16, joint * 16 + 16);
         }
       }
-      return last;
+      return g.keptJoint ?? null;
     };
   }
 
@@ -1879,14 +2001,16 @@ export class FxWorld {
     if (parent) {
       if (m.constrained) pr.poseConstrained(age, parent, m.scale, false);
       else pr.poseChild(age, parent, m.scale, false);
+      if (m.secondChildOff) pr.hideSecondChild();
       return;
     }
     const [x, y, z] = this.modelPlace(m);
-    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, 0, m.rootSet);
+    pr.pose(age, x, y, z, m.scale, m.rootRotationY ? 0 : m.rotY, false, m.rootRotationZ ? 0 : m.rotZ, m.rotX ?? 0, m.rootSet);
     // (what its update callback sets after the animation: the root's turn, a joint's place)
     if (m.rootRotationY) pr.setRootRotationY(m.rotY);
     if (m.rootRotationZ) pr.setRootRotationZ(m.rotZ);
     if (m.jabZ) pr.setJointTranslationZ(1, m.z - 6 + 2 * age);
+    if (m.secondChildOff) pr.hideSecondChild();
   }
 
   private own(key: string) {
@@ -1910,15 +2034,15 @@ export class FxWorld {
 
   /** where a model effect is now (one that follows a joint moves with it) */
   /** a generator going with a joint, as the game's are when made on one (hsd_8039EFAC) */
-  private attach(g: Generator, follow: () => Float32Array | null, at: [number, number, number]) {
+  private attach(g: Generator, follow: (g: Generator) => Float32Array | null, at: [number, number, number]) {
     g.follow = follow;
     g.type |= g.kind & 0x20000 ? 0x500 : 0x700;
-    const mm = follow();
+    const mm = follow(g);
     const p: [number, number, number] = mm ? [mm[12], mm[13], mm[14]] : at;
     // (a generator whose particles go with what it is on, kind 0x20000 - it
     // does not move itself: the Thunder Jolt's spark on the jolt - a
     // transform of its own that follows)
-    if (!g.srt && g.kind & 0x20000) g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true };
+    if (!g.srt && g.kind & 0x20000) g.srt = { tx: 0, ty: 0, tz: 0, rx: 0, ry: 0, rz: 0, sx: 1, sy: 1, sz: 1, follow: true, view: true };
     if (g.srt) {
       // (one with a transform of its own: its particles are made about the
       // transform's origin, which follows - the generator itself stays at 0,
@@ -1964,13 +2088,17 @@ export class FxWorld {
     });
   }
 
-  private swordStep(a: ActorFrame, events: readonly ScriptEvent[], prev: number, now: number, entered: boolean) {
+  private swordStep(a: ActorFrame, frame: number, events: readonly ScriptEvent[], prev: number, now: number, entered: boolean) {
     const at = this.swordOf(a.fighter);
     if (!at) return;
     // (the sword's number is one of the game's parts: fp->parts, the model's joints in order)
     const j = partToModelJoint(a.st.internalCharacterId, at.part);
     const blade = j >= 0 && (j + 1) * 16 <= a.world.length ? a.world.subarray(j * 16, j * 16 + 16) : null;
-    this.swords.step(a.key, events, prev, now, entered, (a.st.hitlagRemaining ?? 0) > 0, blade);
+    // (held still by hitlag as the game reads it: Fighter_procCollResolve notes the blade unless x2219_b6, which
+    // Fighter_procHitlag copies from x2219_b5 after counting the frame before's hitlag down - before this frame's
+    // hits - so the frame a hit lands still notes it, and the frame its hitlag runs out too)
+    const held = this.stateAt ? (this.stateAt(a.key, frame - 1)?.hitlagRemaining ?? 0) - 1 > 0 : (a.st.hitlagRemaining ?? 0) > 0;
+    this.swords.step(a.key, events, prev, now, entered, held, blade);
   }
 
   private itemEvents(list: FxItem[]) {

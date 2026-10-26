@@ -7,8 +7,10 @@ import assertNode from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   DrawLog, RENDERER_NAMES, dlPrims, drawLogCommand, geoHash, gxHash, gxProjection, imageId, probes, tlutId, vertexSize,
+  gameTexMaps, normalMatrix,
 } from "../src/render3d/drawlog.ts";
-import { compileMaterial } from "../src/render3d/gx.ts";
+import { LOBJ, RENDER, compileMaterial } from "../src/render3d/gx.ts";
+import { LightSet } from "../src/render3d/lightset.ts";
 import type { Archive, MObj, PObj } from "../src/render3d/hsd.ts";
 import { perspective } from "../src/render3d/math.ts";
 
@@ -99,8 +101,11 @@ function standIn() {
   const r = {
     gl: { FUNC_REVERSE_SUBTRACT: 0x800b },
     draws: 0, cs: { cull: 0, blend: 1, src: 0x302, dst: 1, eq: 0x8006, dmask: 0, dfunc: 0x203, cmask: 1 },
-    camView: view, camVP: vp, shiftView: view, shiftVP: vp, shifted: false, mirrored: false, lighting: null,
+    camView: view, camVP: vp, camProj: proj, camGx: null, shiftView: view, shiftVP: vp, shifted: false, mirrored: false, lighting: null,
     overlayVP: null, viewProj: vp,
+    // (what the renderer uploads for a draw: view times each of its matrices)
+    mvBuf: new Float32Array(160),
+    cullOn: true,
     staticsOf(s: { mobj: MObj }) {
       const I = new Int32Array(32), F = new Float32Array(128);
       I[3] = 4 | (7 << 3);
@@ -109,7 +114,14 @@ function standIn() {
     },
     begin() {},
     setFog() {},
-    drawOne() { this.draws++; },
+    drawOne(d: { mats: Float32Array; nMats: number }) {
+      for (let k = 0; k < d.nMats; k++) for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+        let s = 0;
+        for (let q = 0; q < 4; q++) s += view[q * 4 + r] * d.mats[k * 16 + c * 4 + q];
+        this.mvBuf[k * 16 + c * 4 + r] = s;
+      }
+      this.draws++;
+    },
     drawGeometry() { this.draws++; },
     drawParticles() {},
     drawTrail() {},
@@ -163,6 +175,33 @@ test("a mesh's record: its primitives, matrices, pixel engine and probe", () => 
   for (const k of ["begin", "drawOne", "setFog"]) assert(any[k] === (before as Record<string, unknown>)[k], `${k} is the renderer's own again`);
 });
 
+test("a lit material's probe: its alpha the light sum's through the alpha channel when a light has LOBJ_ALPHA", () => {
+  const probeAlpha = (flags: number) => {
+    const r = standIn();
+    // deno-lint-ignore no-explicit-any
+    const any = r as any;
+    any.lighting = new LightSet([{ desc: 1, kind: "infinite", flags: LOBJ.INFINITE | LOBJ.DIFFUSE | flags,
+      color: [1, 1, 1, 1], position: [0, 0, 1], interest: null, raw: null, spot: null, dist: null, anim: null }]).at(0);
+    const dl = new Uint8Array(32);
+    dl.set(hex(TRI), 0);
+    const d = {
+      key: "f0:0:0:0", archive: archiveOf(dl), pobj: POBJ(0, 32), jobj: { index: 0 }, mats: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      nMats: 1, translucent: false, group: null,
+      state: { mobj: { ...MOBJ, renderMode: RENDER.DIFFUSE }, diffuse: new Float32Array([1, 1, 1, 1]), ambient: new Float32Array([0, 0, 0, 1]),
+               specular: new Float32Array([0, 0, 0, 1]), alpha: 1, tex: [], override: null, skip: null, mirror: null },
+    };
+    drawLogCommand(any, { start: true });
+    any.begin();
+    any.drawOne(d, null, null);
+    const frames = drawLogCommand(any, { take: true, stop: true }) as { draws: Record<string, unknown>[] }[];
+    return (frames[0].draws[1].probe as number[][])[0][3];
+  };
+  // (probe 0's light sum alpha 49: (255 * (49 + 0)) >> 8 = 48, HSD_State_80405A38_90 with ambient alpha 0)
+  assertEquals(probeAlpha(LOBJ.ALPHA), 48);
+  // (no light in HSD_LObjGetLightMaskAlpha: the unlit channel, HSD_State_80405A38_C0)
+  assertEquals(probeAlpha(0), 255);
+});
+
 test("nothing is logged without start, and particles keep their batches", () => {
   const r = standIn();
   // deno-lint-ignore no-explicit-any
@@ -183,4 +222,78 @@ test("nothing is logged without start, and particles keep their batches", () => 
   assertEquals(p.quads, 1);
   const b = p.bbox as number[];
   assert(b[0] < 320 && b[2] > 320 && b[1] < 240 && b[3] > 240, `around the middle: ${b}`);
+  // each quad's four corners, in vertex order, inside the batch's box
+  const corners = p.corners as [number, number][][];
+  assertEquals(corners.length, 1);
+  assertEquals(corners[0].length, 4);
+  for (const [x, y] of corners[0]) assert(x >= b[0] - 0.1 && x <= b[2] + 0.1 && y >= b[1] - 0.1 && y <= b[3] + 0.1, `corner ${x}, ${y}`);
+});
+
+test("numbers are written as the float32s uploaded, or to 6 digits when asked", () => {
+  const r = standIn();
+  // deno-lint-ignore no-explicit-any
+  const any = r as any;
+  const dl = new Uint8Array(32);
+  dl.set(hex(TRI), 0);
+  // a matrix the 6-digit rounding would change: a turn of a tenth of a radian, moved by a third
+  const c = Math.fround(Math.cos(0.1)), s = Math.fround(Math.sin(0.1)), t = Math.fround(1 / 3);
+  const world = new Float32Array([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, t, 0, 0, 1]);
+  const d = {
+    key: "stage:0:0", archive: archiveOf(dl), pobj: POBJ(0, 32), jobj: { index: 0 }, mats: world, nMats: 1, translucent: false, group: null,
+    state: { mobj: MOBJ, diffuse: new Float32Array([1, 1, 1, 1]), ambient: new Float32Array([0, 0, 0, 1]),
+             specular: new Float32Array([0, 0, 0, 1]), alpha: 1, tex: [], override: null, skip: null, mirror: null },
+  };
+  drawLogCommand(any, { start: true });
+  any.begin();
+  any.drawOne(d, null, null);
+  drawLogCommand(any, { exact: false });
+  any.begin();
+  any.drawOne(d, null, null);
+  const frames = drawLogCommand(any, { take: true, stop: true }) as { draws: Record<string, unknown>[] }[];
+  const exact = frames[0].draws[1].mtx as Record<string, number[][]>, rounded = frames[1].draws[1].mtx as Record<string, number[][]>;
+  // (the modelview as uploaded: the stand-in's view is 10 back)
+  assertEquals(exact["0"][0], [c, -s, 0, t]);
+  assert(exact["0"][0].every((v) => Math.fround(v) === v), "every number a float32");
+  assertEquals(rounded["0"][0], [0.995004, -0.0998334, 0, 0.333333]);
+  // the projection as uploaded: GL's -1 / (near - far) halves, kept as float32s
+  const proj = frames[0].draws[1].proj as number[];
+  assert(proj.slice(0, 6).every((v) => Math.fround(v) === v), `projection as float32s: ${proj}`);
+});
+
+test("while the log is on nothing is culled (GX culls no mesh), and the renderer's culling comes back after", () => {
+  const r = standIn();
+  // deno-lint-ignore no-explicit-any
+  const any = r as any;
+  const log = new DrawLog(any);
+  log.attach();
+  assertEquals(any.cullOn, false);
+  log.detach();
+  assertEquals(any.cullOn, true);
+});
+
+test("the draw log numbers texture maps as HSD_TObjAssignResources does: the bump map after the plain ones", () => {
+  const BUMP = 1 << 24;
+  // (Link's sword: a UV texture, the bump map, a reflection)
+  assertNode.deepEqual(gameTexMaps([0x10, 0x10 | BUMP, 0x11]), [0, 2, 1]);
+  // a toon texture last; of two bump maps the last is kept
+  assertNode.deepEqual(gameTexMaps([4, BUMP, 0, BUMP]), [2, -1, 0, 1]);
+  // at most 8 plain ones, 6 with a bump map
+  assertNode.deepEqual(gameTexMaps([0, 0, 0, 0, 0, 0, 0, BUMP]), [0, 1, 2, 3, 4, 5, -1, 6]);
+});
+
+test("normalMatrix: the modelview's 3 x 3 inverse transposed", () => {
+  // (a turn about z by 90 degrees, scaled 0.6: the normal matrix is the turn over 0.6)
+  const m = new Float32Array([0, 0.6, 0, 0, -0.6, 0, 0, 0, 0, 0, 0.6, 0, 5, 6, 7, 1]);
+  const n = normalMatrix(m);
+  const want = [0, -1 / 0.6, 0, 1 / 0.6, 0, 0, 0, 0, 1 / 0.6];
+  n.forEach((v, i) => assertNode.ok(Math.abs(v - want[i]) < 1e-6, `${i}: ${v} vs ${want[i]}`));
+});
+
+test("a UV set's texture matrix row is logged as the game's effective one: its third column's constant in the fourth", async () => {
+  const { uvRow } = await import("../src/render3d/drawlog.ts");
+  // (a texture turned out of its plane, as Fountain of Dreams' water: s from the row's third column)
+  assertEquals(uvRow([7.2e-5, 0, 0.9989, 0.0001], 0), [7.2e-5, 0, 0, 0.9989 + 0.0001]);
+  assertEquals(uvRow([1, 0, 0, 0.5], 1), [1, 0, 0, 0.5]);
+  // (the others' rows as they are)
+  assertEquals(uvRow([1, 2, 3, 4], 4), [1, 2, 3, 4]);
 });
