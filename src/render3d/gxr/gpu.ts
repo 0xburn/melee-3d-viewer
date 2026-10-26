@@ -1,0 +1,179 @@
+/* GX renderer: the graphics processor. Reads a GX command stream - what the game's GX calls write to the write-gather
+ * pipe - and runs it: register loads (BP 0x61, CP 0x08, XF 0x10, indexed XF 0x20 to 0x38), display list calls (0x40) and
+ * draws (0x80 to 0xB8), the draws into the renderer's EFB. A frame is the commands between two copies to the screen.
+ *
+ * A run of draw commands with no register command between them is one GL draw (the registers are what they were for
+ * each of them); a register command ends the run.
+ */
+import { Dff, GxFrame, Memory } from "./dff";
+import { bits, GxRegs } from "./state";
+import { VertexData, VertexLayout, vertexLayout } from "./vertex";
+
+export interface GpuEvent {
+  /** "xfb" (the frame is done), "texture" (a copy into memory) */
+  kind: string;
+  rect?: number[];
+  detail?: string;
+}
+
+/** what the processor needs of a renderer: the draws and the copies. `prims` lists the draw commands of the run, in order
+ *  (the primitive type of the opcode, the first vertex and the vertex count); registers are what they were for all of them. */
+export interface GxBackend {
+  draw(regs: GxRegs, mem: Memory, vd: VertexData, tris: number[], lines: number[], points: number[], prims: { type: number; base: number; count: number }[]): void;
+  copy(regs: GxRegs, mem: Memory, value: number): { toXfb: boolean; rect: number[]; clear: boolean };
+  copyClear(regs: GxRegs): void;
+}
+
+const EMPTY: number[] = [];
+
+export class GxGpu {
+  readonly regs: GxRegs;
+  readonly mem = new Memory();
+  readonly events: GpuEvent[] = [];
+  /** called when the game copies the EFB to the screen */
+  onXfb: ((rect: number[]) => void) | null = null;
+  drawCount = 0;
+  /** ms spent decoding vertices and applying memory writes (a cost breakdown for tests) */
+  timers = { vertex: 0, memory: 0 };
+  private cpVersion = 0;
+  private layouts = new Map<number, { v: number; l: VertexLayout }>();
+  private vd = new VertexData(null as never);
+  private run: { vd: VertexData; tris: number[]; lines: number[]; points: number[]; prims: { type: number; base: number; count: number }[] } | null = null;
+
+  constructor(readonly renderer: GxBackend, dff: Dff, mem1?: Uint8Array | null) {
+    this.regs = new GxRegs(dff.bp, dff.cp, dff.xfMem, dff.xfRegs);
+    if (dff.texMem.length) this.regs.tmem.set(dff.texMem.subarray(0, this.regs.tmem.length));
+    if (mem1) { this.mem.data.set(mem1.subarray(0, this.mem.data.length)); this.mem.touch(0, this.mem.data.length); }
+  }
+
+  private layout(vat: number): VertexLayout {
+    const c = this.layouts.get(vat);
+    if (c && c.v === this.cpVersion) return c.l;
+    const l = vertexLayout(this.regs.cp, vat);
+    this.layouts.set(vat, { v: this.cpVersion, l });
+    return l;
+  }
+
+  private flush(): void {
+    const r = this.run;
+    if (!r) return;
+    this.run = null;
+    this.drawCount++;
+    this.renderer.draw(this.regs, this.mem, r.vd, r.tris, r.lines, r.points, r.prims);
+  }
+
+  /** run one frame's commands, applying its memory writes where they were read */
+  runFrame(frame: GxFrame): void {
+    const data = frame.fifo, ups = frame.updates;
+    let ui = 0;
+    const apply = (pos: number) => {
+      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = performance.now(); this.mem.write(ups[ui].addr, ups[ui].data); this.timers.memory += performance.now() - t0; ui++; }
+    };
+    this.execute(data, apply);
+    apply(Number.MAX_SAFE_INTEGER);
+    this.flush();
+  }
+
+  /** the commands of one buffer (a frame, or a called display list) */
+  execute(data: Uint8Array, apply: (pos: number) => void = () => {}): void {
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const n = data.length;
+    const regs = this.regs;
+    let pos = 0;
+    while (pos < n) {
+      const op = data[pos];
+      apply(pos);
+      if (op === 0x00) { pos++; continue; }
+      if ((op & 0xc0) === 0x80) {
+        if (pos + 3 > n) break;
+        const prim = (op >> 3) & 7, vat = op & 7;
+        const count = dv.getUint16(pos + 1);
+        const L = this.layout(vat);
+        const end = pos + 3 + L.size * count;
+        if (end > n) break;
+        let run = this.run;
+        if (run && run.vd.layout !== L) { this.flush(); run = null; }
+        if (!run) {
+          const xf = regs.xf;
+          const dflt = [bits(xf[0x1018], 6, 6), bits(xf[0x1018], 12, 6), bits(xf[0x1018], 18, 6), bits(xf[0x1018], 24, 6),
+            bits(xf[0x1019], 0, 6), bits(xf[0x1019], 6, 6), bits(xf[0x1019], 12, 6), bits(xf[0x1019], 18, 6)];
+          this.vd.setup(L, bits(xf[0x1018], 0, 6), dflt);
+          run = this.run = { vd: this.vd, tris: EMPTY, lines: EMPTY, points: EMPTY, prims: [] };
+        }
+        const base = run.vd.n;
+        const tv = performance.now();
+        run.vd.add(data, pos + 3, count, regs.cp, this.mem.data, this.mem.view);
+        this.timers.vertex += performance.now() - tv;
+        run.prims.push({ type: prim, base, count });
+        pos = end;
+        continue;
+      }
+      this.flush();
+      switch (op) {
+        case 0x61: {
+          if (pos + 5 > n) return;
+          const ev = regs.loadBp(dv.getUint32(pos + 1));
+          if (ev.kind === "tlut") {
+            regs.tluts.set(ev.tmem, this.mem.read(ev.addr, ev.count).slice());
+          } else if (ev.kind === "preload") {
+            regs.tmem.set(this.mem.read(ev.src, ev.bytes).subarray(0, Math.max(0, regs.tmem.length - ev.tmem)), ev.tmem);
+            regs.tmemVersion++;
+          } else if (ev.kind === "copy") {
+            const c = this.renderer.copy(regs, this.mem, ev.value);
+            if (c.toXfb) { this.events.push({ kind: "xfb", rect: c.rect }); this.onXfb?.(c.rect); }
+            else this.events.push({ kind: "texture", rect: c.rect });
+            if (c.clear) this.renderer.copyClear(regs);
+          }
+          pos += 5;
+          break;
+        }
+        case 0x08:
+          if (pos + 6 > n) return;
+          regs.loadCp(data[pos + 1], dv.getUint32(pos + 2));
+          this.cpVersion++;
+          pos += 6;
+          break;
+        case 0x10: {
+          if (pos + 5 > n) return;
+          const head = dv.getUint32(pos + 1);
+          const cnt = (head >>> 16) + 1;
+          if (pos + 5 + 4 * cnt > n) return;
+          const vals = new Uint32Array(cnt);
+          for (let i = 0; i < cnt; i++) vals[i] = dv.getUint32(pos + 5 + 4 * i);
+          regs.loadXf(head & 0xffff, vals);
+          pos += 5 + 4 * cnt;
+          break;
+        }
+        case 0x20: case 0x28: case 0x30: case 0x38: {
+          if (pos + 5 > n) return;
+          const word = dv.getUint32(pos + 1);
+          const array = 12 + ((op - 0x20) >> 3);
+          const index = word >>> 16, size = bits(word, 12, 4) + 1, addr = word & 0xfff;
+          const base = regs.cp[0xa0 + array] & 0x03ffffff, stride = regs.cp[0xb0 + array];
+          const b = this.mem.read(base + stride * index, size * 4);
+          const vals = new Uint32Array(size);
+          const bv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+          for (let i = 0; i < size && i * 4 + 4 <= b.length; i++) vals[i] = bv.getUint32(i * 4);
+          regs.loadXf(addr, vals);
+          pos += 5;
+          break;
+        }
+        case 0x40: {
+          // a display list call: the recorder inlines these, a stream from the simulator may not
+          if (pos + 9 > n) return;
+          const addr = dv.getUint32(pos + 1), size = dv.getUint32(pos + 5);
+          if (size > 0) this.execute(this.mem.read(addr, size).slice());
+          pos += 9;
+          break;
+        }
+        case 0x44: case 0x48: case 0x01:
+          pos += 1;
+          break;
+        default:
+          this.events.push({ kind: "error", detail: `unknown command ${op.toString(16)} at ${pos}` });
+          return;
+      }
+    }
+    if (this.run && n > 0) { /* runs continue across buffers */ }
+  }
+}

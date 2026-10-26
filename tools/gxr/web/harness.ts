@@ -1,0 +1,75 @@
+import { parseDff } from "../../../src/render3d/gxr/dff.ts";
+import { GxGpu } from "../../../src/render3d/gxr/gpu.ts";
+import { GxGl } from "../../../src/render3d/gxr/gl.ts";
+
+const q = new URLSearchParams(location.search);
+const log = (s: string) => fetch("/log", { method: "POST", body: s });
+const get = async (u: string) => new Uint8Array(await (await fetch(u)).arrayBuffer());
+const canvas = document.createElement("canvas");
+const gl = canvas.getContext("webgl2", { antialias: false, depth: false, stencil: false, alpha: false, preserveDrawingBuffer: false })!;
+const manifest = await (await fetch("/spec/manifest.json")).json();
+const only = q.get("windows")?.split(",");
+const t0 = performance.now();
+const be = new GxGl(gl);
+be.timing = q.get("timing") === "1";
+await be.prepare();
+await log(`compiled in ${(performance.now() - t0).toFixed(0)} ms`);
+let failed = false;
+for (const w of manifest.windows) {
+  if (only && !only.includes(w.name)) continue;
+  try {
+    const dff = parseDff(await get("/spec/" + w.recording));
+    const mem1 = await get("/spec/" + w.memory);
+    be.reset();
+    const gpu = new GxGpu(be, dff, mem1);
+    const pic = q.get("pic") !== "0";
+    if (pic) be.onPicture = (rgba, k) => {
+      const f = new Uint8Array(12 + rgba.length);
+      const dv = new DataView(f.buffer);
+      dv.setUint32(0, 640, true); dv.setUint32(4, 480, true); dv.setUint32(8, 28, true);
+      f.set(rgba, 12);
+      fetch(`/save/${w.name}/efb_${String(k).padStart(6, "0")}.raw`, { method: "POST", body: f });
+    };
+    const t1 = performance.now();
+    if (q.get("loops")) {
+      // throughput: the drawn frames over and over without reading pictures back; one wait at the end
+      const n = Number(q.get("loops"));
+      for (let i = 0; i < dff.frames.length; i++) { be.drawing = i > 0; gpu.runFrame(dff.frames[i]); }
+      be.finish();
+      const l0 = performance.now();
+      for (let r = 0; r < n; r++) for (let i = 1; i < dff.frames.length; i++) { be.drawing = true; gpu.runFrame(dff.frames[i]); }
+      be.finish();
+      const per = (performance.now() - l0) / (n * (dff.frames.length - 1));
+      await log(`${w.name}: ${per.toFixed(1)} ms per frame over ${n * (dff.frames.length - 1)} frames (${(1000 / per).toFixed(0)} fps), tris/frame ${(be.tris / (n + 1) / 4) | 0}`);
+      continue;
+    }
+    const frameMs: number[] = [];
+    let cpuAcc = 0, flushAcc = 0, gpuAcc = 0, vtxAcc = 0, memAcc = 0; const gpuTimes: Record<string, number> = {};
+    for (let i = 0; i < dff.frames.length; i++) {
+      be.drawing = i > 0;
+      be.stats.cpuMs = 0; be.stats.flushMs = 0; gpu.timers.vertex = 0; gpu.timers.memory = 0;
+      const f0 = performance.now();
+      gpu.runFrame(dff.frames[i]);
+      const g0 = performance.now(); be.finish(); gpuAcc += i > 0 ? performance.now() - g0 : 0;
+      frameMs.push(performance.now() - f0);
+      if (i > 0) { cpuAcc += be.stats.cpuMs; flushAcc += be.stats.flushMs; vtxAcc += gpu.timers.vertex; memAcc += gpu.timers.memory; }
+      const gt = be.collectTimes(); if (i > 0) for (const k in gt) gpuTimes[k] = (gpuTimes[k] ?? 0) + gt[k] / 4;
+    }
+    if (q.get("presenttest")) {
+      const pic = be.readPicture(0);
+      be.present(640, 480);
+      const px = new Uint8Array(640 * 480 * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.readPixels(0, 0, 640, 480, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let bad = 0;
+      for (let y = 0; y < 480; y++) for (let x = 0; x < 640; x++) for (let c = 0; c < 3; c++) if (px[((479 - y) * 640 + x) * 4 + c] !== pic[(y * 640 + x) * 4 + c]) bad++;
+      await log(`present: ${bad} differing values of ${640 * 480 * 3}`);
+    }
+    await log(`${w.name}: ${(performance.now() - t1).toFixed(0)} ms, frames ${frameMs.map((x) => x.toFixed(0)).join("/")} ms, tris ${be.tris}, passes ${be.passes}, per drawn frame: vertex decode ${(vtxAcc / 4).toFixed(1)} ms, memory writes ${(memAcc / 4).toFixed(1)} ms, front half ${(cpuAcc / 4).toFixed(1)} ms, bin+upload ${(flushAcc / 4).toFixed(1)} ms, gpu wait ${(gpuAcc / 4).toFixed(1)} ms, gpu passes ${JSON.stringify(gpuTimes, (k, v) => typeof v === "number" ? Math.round(v * 10) / 10 : v)}`);
+  } catch (e) {
+    failed = true;
+    await log(`${w.name}: ERROR ${(e as Error).stack}`);
+    break;
+  }
+}
+await fetch("/done", { method: "POST", body: failed ? "error" : "ok" });
