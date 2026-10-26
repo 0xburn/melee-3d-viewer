@@ -10,6 +10,8 @@ export interface PlaybackHooks {
   /** the state changed: playing, speed, row, seeking, the end */
   onState(): void;
   onError(e: unknown): void;
+  /** the game parted from the replay and the other settings are being tried (text), or that is over (null) */
+  onRetry?(text: string | null): void;
 }
 
 /** the speeds offered (1 is the game's) */
@@ -92,12 +94,30 @@ export class GxPlayback {
         if (this.clock() - t0 > 14 && n > 0) { this.acc += n; break; }
       }
       this.hooks.onState();
+      if (s.wantsRetry) this.retry();
     } catch (e) {
       this.playing = false;
       this.hooks.onError(e);
     } finally {
       this.busy = false;
     }
+  }
+
+  /** the game parted from the replay: try the other drive choices with playback held, then go on from where it was */
+  private retry(): void {
+    const s = this.session, row = Math.max(0, s.shown), wasPlaying = this.playing;
+    this.playing = false;
+    this.restarting = true;
+    this.hooks.onState();
+    void s.retryDrives((text) => this.hooks.onRetry?.(text)).then(async (switched) => {
+      this.hooks.onRetry?.(null);
+      this.restarting = false;
+      if (switched) { this.seeking = row; }
+      this.playing = wasPlaying;
+      this.last = this.clock();
+      this.hooks.onState();
+      this.kick();
+    }, (e) => { this.restarting = false; this.hooks.onRetry?.(null); this.hooks.onError(e); });
   }
 
   private kick(): void { if (!this.raf && typeof requestAnimationFrame === "function") this.loop(); }

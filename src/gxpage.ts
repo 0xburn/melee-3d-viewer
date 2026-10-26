@@ -32,6 +32,7 @@ let filesFrom: GameFilesFrom | null = q.get("files") ? { kind: "url", base: new 
 const coreUrl = new URL(q.get("core") ?? "gx/gx-core.js", location.href).href;
 let gameFiles: GameFiles | null = null;
 let picture: ImageData | null = null;
+let retryText: string | null = null;
 
 async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Promise<SessionBackend> {
   if (q.get("backend") !== "cpu") {
@@ -85,6 +86,7 @@ async function loadReplay(url: string, frame: number) {
     onPicture: (rgba) => show(rgba),
     onState: update,
     onError: fail,
+    onRetry: (text) => { retryText = text; update(); },
   });
   playback.setSpeed(Number(q.get("speed") ?? 1) || 1);
   post({ type: "loaded", frames: tape.count });
@@ -109,7 +111,8 @@ function update() {
     `step ${s.times.step.toFixed(2)} ms  hand-off ${s.times.handoff.toFixed(2)} ms  render ${s.times.render.toFixed(2)} ms` +
     `  (means ${(T.step / n).toFixed(2)} / ${(T.handoff / n).toFixed(2)} / ${(T.render / n).toFixed(2)})` +
     `\nstream ${(T.streamBytes / n / 1024).toFixed(0)} KiB a frame, memory sent ${(T.regionBytes / 1048576).toFixed(1)} MiB, simulator heap ${(s.memoryBytes / 1048576).toFixed(0)} MiB` +
-    (s.diverged ? `\nthe game parts from the replay at frame ${s.diverged.frame} (${s.diverged.lane})` : ""),
+    (retryText ? `\n${retryText}` : s.diverged ? `\nthe game parts from the replay at frame ${s.diverged.frame} (${s.diverged.lane})` : "") +
+    (s.drivesTried.length > 1 ? `\nsettings tried: ${s.drivesTried.map((d) => `${d.index + 1} held to row ${d.row}`).join(", ")}; playing ${s.driveIndex + 1}` : ""),
   );
   post({ type: "frame", frame: gf, running: p.playing });
 }

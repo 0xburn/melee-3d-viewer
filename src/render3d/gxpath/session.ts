@@ -40,6 +40,8 @@ export interface SessionOptions {
   files: GameFiles;
   tape: Tape;
   drive?: DriveOptions;
+  /** at most this many drive choices are tried when the game parts from the replay (default 3, as the track simulator) */
+  maxDrives?: number;
   /** a renderer, made with the way to the GPU's memory it reads (the CPU reference needs it); the same one is used for every restart
    *  when it has reset(), else this is called again */
   makeBackend: (env: () => { mem: Uint8Array; tmem: Uint8Array; tluts: Map<number, Uint8Array> }) => SessionBackend | Promise<SessionBackend>;
@@ -55,6 +57,10 @@ export class GxSession {
   times: FrameTimes = { step: 0, handoff: 0, render: 0 };
   /** sums over every frame stepped since the match opened */
   totals = { frames: 0, step: 0, handoff: 0, render: 0, streamBytes: 0, regionBytes: 0, maxStep: 0, maxFrame: 0 };
+  /** which of the tape's drive choices (UCF switches, arithmetic: tape.ts driveOrder) the match plays, and how far each held */
+  driveIndex = 0;
+  drivesTried: { index: number; row: number }[] = [];
+  private retried = false;
   private core: GxCore | null = null;
   private gpu: GxGpu | null = null;
   private backend: SessionBackend | null = null;
@@ -77,7 +83,7 @@ export class GxSession {
     this.core = null;
     const core = await GxCore.create((opt) => this.o.factory({ ...opt, ...this.o.coreOptions }), files.files);
     if (this.closed) { core.destroy(); return; }
-    const drive = this.o.drive ?? driveOrder(tape, 1)[0];
+    const drive = this.o.drive ?? driveOrder(tape, this.o.maxDrives ?? 3)[this.driveIndex] ?? driveOrder(tape, 1)[0];
     tape.frame(0, this.w);
     tapeFrameOf(this.w, this.t);
     core.openMatch(tapeConfigOf(tape.config(drive), tape.count, tape.gx), this.t, files.names);
@@ -164,5 +170,49 @@ export class GxSession {
     this.core?.destroy();
     this.core = null;
     this.gpu = null;
+  }
+
+  /** the game parted from the replay and the other drive choices have not been tried */
+  get wantsRetry(): boolean { return this.diverged !== null && !this.retried && (this.o.maxDrives ?? 3) > 1 && !this.o.drive; }
+
+  /**
+   * The game parted from the replay at `diverged.row` with this drive choice. Play the others from the start, the simulator alone (one
+   * instance at a time, sliced so the page stays alive), and keep the choice that goes furthest (src/sim/drive.ts does the same for the
+   * track). Resolves true when another choice held longer and the match is now on it, started again from the first row (the caller seeks back).
+   */
+  async retryDrives(onProgress?: (text: string) => void, now = () => performance.now(), pause = () => new Promise<void>((r) => setTimeout(r, 0))): Promise<boolean> {
+    this.retried = true;
+    const { tape, files } = this.o;
+    const choices = driveOrder(tape, this.o.maxDrives ?? 3);
+    this.drivesTried = [{ index: this.driveIndex, row: this.diverged?.row ?? tape.count }];
+    let best = this.drivesTried[0];
+    const w = new Uint8Array(STREAM_FRAME.size), t = new Uint8Array(TAPE_FRAME_SIZE);
+    for (let d = 0; d < choices.length && best.row < tape.count; d++) {
+      if (d === this.driveIndex) continue;
+      onProgress?.(`the game parts from the replay at frame ${this.diverged?.frame}: trying setting ${d + 1} of ${choices.length}`);
+      const core = await GxCore.create((opt) => this.o.factory({ ...opt, ...this.o.coreOptions }), files.files);
+      let reached = tape.count;
+      try {
+        tape.frame(0, w); tapeFrameOf(w, t);
+        core.openMatch(tapeConfigOf(tape.config(choices[d]), tape.count, tape.gx), t, files.names);
+        let i = 0, t0 = now();
+        for (; i < tape.count; i++) {
+          tape.frame(i, w); tapeFrameOf(w, t);
+          core.step(t);
+          if (i > 0 && differs(core.output(), tape.expected(i))) { reached = i; break; }
+          if (now() - t0 > 12) { await pause(); t0 = now(); if (this.closed) return false; }
+        }
+      } catch {
+        reached = 0; // (a build that cannot play this choice)
+      } finally {
+        core.destroy();
+      }
+      this.drivesTried.push({ index: d, row: reached });
+      if (reached > best.row) best = this.drivesTried[this.drivesTried.length - 1];
+    }
+    if (best.index === this.driveIndex) return false;
+    this.driveIndex = best.index;
+    await this.start();
+    return true;
   }
 }
