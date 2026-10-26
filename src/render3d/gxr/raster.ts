@@ -139,7 +139,7 @@ export class DrawPixels {
   }
 
   /** s and t (floats) of generator n at the pixel (px, py) */
-  private st2(tri: Tri, n: number, px: number, py: number, out: number[]): void {
+  st2(tri: Tri, n: number, px: number, py: number, out: number[]): void {
     const dx = f(tri.ox + flt(px - tri.xi)), dy = f(tri.oy + flt(py - tri.yi));
     const pl = (k: number): number => {
       const o = k * 3, P = tri.planes;
@@ -156,7 +156,7 @@ export class DrawPixels {
   }
 
   /** LOD of map m for the coordinates of generator n in the block of (x, y) (8.4); returns [lod, linear] */
-  private lodOf(tri: Tri, m: number, n: number, x: number, y: number): [number, boolean] {
+  lodOf(tri: Tri, m: number, n: number, x: number, y: number): [number, boolean] {
     const bx = x & ~1, by = y & ~1;
     const c = [0, 0];
     const s = [0, 0, 0, 0], t = [0, 0, 0, 0];
@@ -302,6 +302,7 @@ export class DrawPixels {
               const [lod, linear] = this.lodOf(tri, texmap, texcoord, x, y);
               prevS = S; prevT = T;
               sample(m, S, T, lod, linear, bits(this.mode0[texmap], 5, 3), texel);
+              if ((globalThis as any).DBG?.(x, y)) console.log(`stage ${si} map ${texmap} gen ${texcoord} S=${S} T=${T} lod=${lod} linear=${linear} fmt=${m.fmt} W=${m.W} H=${m.H} wrap=${m.wrapS}${m.wrapT} texel=${texel}`);
               swz(tsw, texel, tex);
               lastTexel = tex.slice();
             }

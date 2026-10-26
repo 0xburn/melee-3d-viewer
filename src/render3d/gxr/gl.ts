@@ -50,15 +50,17 @@ export class GxGl implements GxBackend {
   /** called after a pass has been drawn (tests compare the EFB there) */
   onFlush: (() => void) | null = null;
   passes = 0;
+  /** the features of the last pass's program (tests) */
+  lastFeatures = 0;
   /** timing of the last frame's work, ms (CPU front half, GPU submit) */
   stats = { cpuMs: 0, flushMs: 0 };
 
   private gl: WebGL2RenderingContext;
   private progPixel: WebGLProgram;
-  private progPixelIndirect: WebGLProgram | null = null;
-  /** some queued draw uses the indirect texture unit */
-  private needIndirect = false;
-  private stateIndirect: boolean[] = [];
+  private progPixels = new Map<string, WebGLProgram>();
+  /** what the queued draws need beyond the base shader: 1 the indirect unit, 2 the exponential fog and range adjustment */
+  private needFeatures = 0;
+  private stateFeatures: number[] = [];
   private progCopy: WebGLProgram;
   private progClear: WebGLProgram;
   private progPicture: WebGLProgram;
@@ -152,6 +154,14 @@ export class GxGl implements GxBackend {
       gl.clearBufferuiv(gl.COLOR, 0, new Uint32Array([0, 0, 0, 0]));
     }
     this.cur = 0; this.pictures = 0; this.tris = 0; this.passes = 0;
+  }
+
+  /** the pixel program for a set of features (compiled when first needed) */
+  private pixelProgram(features: number): WebGLProgram {
+    if (features === 0) return this.progPixel;
+    let p = this.progPixels.get(String(features));
+    if (!p) { p = compile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })); this.progPixels.set(String(features), p); }
+    return p;
   }
 
   private fboOf(t: IntTex): WebGLFramebuffer {
@@ -252,7 +262,7 @@ export class GxGl implements GxBackend {
 
   private resetStates(): void {
     this.stateCount = 0; this.stateUploaded = 0; this.states.n = 0;
-    this.stateIndex.clear(); this.stateRanges = []; this.stateIndirect = [];
+    this.stateIndex.clear(); this.stateRanges = []; this.stateFeatures = [];
     this.lastStateVersion = [-1, -1, -1];
   }
 
@@ -290,7 +300,7 @@ export class GxGl implements GxBackend {
       }
       if (fmt === 8 || fmt === 9 || fmt === 10) {
         const pal = regs.tluts.get(bits(tl, 0, 10));
-        if (pal) w[264 + m] = this.paletteAddress(pal);
+        if (pal) { w[264 + m] = this.paletteAddress(pal); w[274 + m] = pal.length; }
       }
     }
     // hash and find
@@ -314,9 +324,10 @@ export class GxGl implements GxBackend {
       this.states.n = this.stateCount * STATE_WORDS;
       if (cands) cands.push(found); else this.stateIndex.set(h, [found]);
       this.stateRanges[found] = ranges;
-      let ind = false;
-      if (bits(regs.bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (regs.bp[0x10 + si] !== 0) ind = true;
-      this.stateIndirect[found] = ind;
+      let feat = 0;
+      if (bits(regs.bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (regs.bp[0x10 + si] !== 0) feat |= 1;
+      if (bits(regs.bp[0xf1], 21, 3) > 2 || (bits(regs.bp[0xf1], 21, 3) !== 0 && bits(regs.bp[0xe8], 10, 1))) feat |= 2;
+      this.stateFeatures[found] = feat;
     }
     this.lastStateVersion = [regs.bpVersion, regs.xfVersion, tv];
     this.lastState = found;
@@ -333,7 +344,7 @@ export class GxGl implements GxBackend {
     if (regs.tmemVersion !== this.tmemVersion) { this.flush(); this.uploadTmem(regs); }
     const st = this.stateFor(regs);
     const ranges = this.stateRanges[st];
-    if (this.stateIndirect[st]) this.needIndirect = true;
+    this.needFeatures |= this.stateFeatures[st];
     for (let i = 0; i < ranges.length; i += 2) this.used.push(ranges[i], ranges[i + 1]);
     const pool = this.pool;
     pool.clear();
@@ -436,8 +447,8 @@ export class GxGl implements GxBackend {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
     gl.viewport(0, 0, EFB_W, EFB_H);
     gl.disable(gl.SCISSOR_TEST);
-    if (this.needIndirect && !this.progPixelIndirect) this.progPixelIndirect = compile(gl, FULLSCREEN_VS, pixelShader({ indirect: true }));
-    const p = this.needIndirect ? this.progPixelIndirect! : this.progPixel;
+    const p = this.pixelProgram(this.needFeatures);
+    this.lastFeatures = this.needFeatures;
     gl.useProgram(p);
     this.bindTex(p, 0, "uMem", this.mem);
     this.bindTex(p, 1, "uData", set.data);
@@ -452,7 +463,7 @@ export class GxGl implements GxBackend {
     this.timeEnd(tq, "pixel");
     this.cur = 1 - this.cur;
     this.passes++;
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = []; this.needIndirect = false;
+    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = []; this.needFeatures = 0;
     this.stats.flushMs += performance.now() - t0;
     this.onFlush?.();
   }

@@ -11,7 +11,7 @@
  *  - uData: words; a triangle is HEADER_WORDS words then its planes (3 words each: f0, dfdx, dfdy);
  *  - uTiles: (first, count) into uList for every tile; uList: word offsets of triangles in uData;
  *  - uStates: STATE_WORDS words per state: BP registers 0..255, the constant colors K0..K3 (words 256..263), the palette address of
- *    each of the 8 texture maps (264..271), the texgen projection flags (272), the viewport half width as float bits (273);
+ *    each of the 8 texture maps (264..271), the texgen projection flags (272), the viewport half width as float bits (273), the byte length of each map's palette (274..281);
  *  - uEfb: (color word, depth) per pixel of the previous pass.
  */
 import { SOFT_FLOAT_GLSL } from "./glsl-float";
@@ -22,13 +22,14 @@ export const MEM_PAL_SIZE = 0x40000;
 export const MEM_BYTES = MEM_PAL + MEM_PAL_SIZE;
 export const MEM_ROW = 4096;
 export const HEADER_WORDS = 20;
-export const STATE_WORDS = 280;
+export const STATE_WORDS = 288;
 export const TILE = 16;
 
-/** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5), compiled only for draws that use it */
-export function pixelShader(opts: { indirect?: boolean } = {}): string {
+/** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5) and `fogExtra` the exponential fog forms and the range adjustment (11.3), compiled only for draws that use them */
+export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean } = {}): string {
   return /* glsl */ `#version 300 es
 ${opts.indirect ? "#define INDIRECT 1" : ""}
+${opts.fogExtra ? "#define FOG_EXTRA 1" : ""}
 precision highp float;
 precision highp int;
 precision highp usampler2D;
@@ -63,7 +64,7 @@ uint S(uint k) { return wd(uStates, sbase + k); }
 // texture unit (spec 9)
 
 struct MapI {
-  uint fmt; int W; int H; int ws; int wt; uint pf; bool tmem; uint base; uint l1; uint l2; uint pal; uint mode0; uint mode1;
+  uint fmt; int W; int H; int ws; int wt; uint pf; bool tmem; uint base; uint l1; uint l2; uint pal; uint palLen; uint mode0; uint mode1;
 };
 
 MapI loadMap(uint m) {
@@ -86,6 +87,7 @@ MapI loadMap(uint m) {
   mp.l1 = bf(img1, 0, 15) * 32u;
   mp.l2 = bf(img2, 0, 15) * 32u;
   mp.pal = S(264u + m);
+  mp.palLen = S(274u + m);
   return mp;
 }
 
@@ -182,7 +184,7 @@ ivec4 fetchTexel(MapI mp, uint off, int W, int s, int t) {
   }
   if (indexed) {
     uint pe = 0u;
-    if (mp.pal != NO_PAL) pe = (mbyte(mp.pal + pidx * 2u) << 8) | mbyte(mp.pal + pidx * 2u + 1u);
+    if (mp.pal != NO_PAL && pidx * 2u + 1u < mp.palLen) pe = (mbyte(mp.pal + pidx * 2u) << 8) | mbyte(mp.pal + pidx * 2u + 1u);
     r = palColor(pe, mp.pf);
   }
   return r;
@@ -262,14 +264,17 @@ uint planeAt(uint k, uint dx, uint dy) {
 // s and t of generator n at pixel (px, py)
 void genST(uint n, int px, int py, out uint s, out uint t) {
   uint dx = f_add(gOx, f_from_int(px - gXi)), dy = f_add(gOy, f_from_int(py - gYi));
-  uint iw = f_div(F_ONE, planeAt(0u, dx, dy));
+  // the four planes (1/w, u, v, w) through one copy of the evaluation
+  uint pv[4];
+  for (int k = 0; k < uK.x; k++) pv[k] = planeAt(k == 0 ? 0u : 9u + n * 3u + uint(k), dx, dy);
+  uint iw = f_div(F_ONE, pv[0]);
   uint proj = iw;
   if (((S(272u) >> n) & 1u) == 1u) {
-    uint q = f_mul(planeAt(10u + n * 3u + 2u, dx, dy), iw);
+    uint q = f_mul(pv[3], iw);
     proj = f_iszero(q) ? iw : f_div(iw, q);
   }
-  s = f_mul(planeAt(10u + n * 3u, dx, dy), proj);
-  t = f_mul(planeAt(10u + n * 3u + 1u, dx, dy), proj);
+  s = f_mul(pv[1], proj);
+  t = f_mul(pv[2], proj);
 }
 
 uint f_max(uint a, uint b) { return f_lt(a, b) ? b : a; }
@@ -281,14 +286,17 @@ void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out in
   int bx = x & ~1, by = y & ~1;
   uint sv[4], tv[4];
   for (int j = 0; j < uK.x; j++) genST(n, bx + (j & 1), by + (j >> 1), sv[j], tv[j]);
-  uint ds, dt;
-  if (bf(mp.mode0, 8, 1) == 1u) {
-    ds = f_abs(f_sub(sv[0], sv[3])); dt = f_abs(f_sub(tv[0], tv[3]));
-  } else {
-    ds = f_max(f_abs(f_sub(sv[0], sv[1])), f_abs(f_sub(sv[0], sv[2])));
-    dt = f_max(f_abs(f_sub(tv[0], tv[1])), f_abs(f_sub(tv[0], tv[2])));
+  // the largest change of s and of t across the block, one copy of the differences for both
+  uint dm[2];
+  bool diag = bf(mp.mode0, 8, 1) == 1u;
+  for (int m = 0; m < uK.w; m++) {
+    uint c0 = m == 0 ? sv[0] : tv[0];
+    uint d1 = f_abs(f_sub(c0, m == 0 ? sv[1] : tv[1]));
+    uint d2 = f_abs(f_sub(c0, m == 0 ? sv[2] : tv[2]));
+    uint d3 = f_abs(f_sub(c0, m == 0 ? sv[3] : tv[3]));
+    dm[m] = diag ? d3 : f_max(d1, d2);
   }
-  uint d = f_max(ds, dt);
+  uint d = f_max(dm[0], dm[1]);
   int bias = int(bf(mp.mode0, 9, 8) << 24) >> 24;
   lod = log2fix(d) + (bias >> 1);
   uint mf = bf(mp.mode0, 5, 3);
@@ -302,7 +310,7 @@ void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out in
 
 #ifdef INDIRECT
 // the indirect unit for one TEV stage (spec 10.5): the stage's coordinates (S, T) become (oS, oT); bump is its alpha bump
-void indirectStage(uint ind, int x, int y, int S, int T, int prevS, int prevT, out int oS, out int oT, out int bump) {
+void indirectStage(uint ind, int x, int y, int cs, int ct, int prevS, int prevT, out int oS, out int oT, out int bump) {
   int bt = bfi(ind, 0, 2), fmt = bfi(ind, 2, 2), biasBits = bfi(ind, 4, 3), bs = bfi(ind, 7, 2), mid = bfi(ind, 9, 4);
   int sw = bfi(ind, 13, 3), tw = bfi(ind, 16, 3);
   uint iref = S(0x27u);
@@ -331,12 +339,12 @@ void indirectStage(uint ind, int x, int y, int S, int T, int prevS, int prevT, o
     int shift = 17 - ex;
     int type = mid & 12;
     if (type == 0) { o0 = (ma * v.x + mc * v.y + me * v.z) >> 3; o1 = (mb * v.x + md * v.y + mf * v.z) >> 3; }
-    else if (type == 4) { o0 = idiv(S * v.x, 256); o1 = idiv(T * v.x, 256); }
-    else if (type == 8) { o0 = idiv(S * v.y, 256); o1 = idiv(T * v.y, 256); }
+    else if (type == 4) { o0 = idiv(cs * v.x, 256); o1 = idiv(ct * v.x, 256); }
+    else if (type == 8) { o0 = idiv(cs * v.y, 256); o1 = idiv(ct * v.y, 256); }
     if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
   }
-  int ws = sw == 0 ? S : (sw >= 6 ? 0 : (S & (((256 >> (sw - 1)) << 7) - 1)));
-  int wt = tw == 0 ? T : (tw >= 6 ? 0 : (T & (((256 >> (tw - 1)) << 7) - 1)));
+  int ws = sw == 0 ? cs : (sw >= 6 ? 0 : (cs & (((256 >> (sw - 1)) << 7) - 1)));
+  int wt = tw == 0 ? ct : (tw >= 6 ? 0 : (ct & (((256 >> (tw - 1)) << 7) - 1)));
   int rs = ws + o0, rt = wt + o1;
   if (bf(ind, 20, 1) == 1u) { rs += prevS; rt += prevT; }
   oS = (rs << 8) >> 8;
@@ -377,6 +385,36 @@ int tevRegular(bool isAlpha, int a, int b, int c, int d, int bias, int op, int s
   int r = ((d + B) << ls) + t;
   r = r >> rs;
   return clampTev(r, clampBit);
+}
+
+ivec3 clampTev3(ivec3 r, int clampBit) {
+  r = (r << 16) >> 16;
+  return clampBit == 1 ? clamp(r, 0, 255) : clamp(r, -1024, 1023);
+}
+
+// the color combiner's regular arithmetic (10.4) on all three components at once
+ivec3 tevColor3(ivec3 a, ivec3 b, ivec3 c, ivec3 d, int bias, int op, int scale, int clampBit) {
+  int ls = scale == 1 ? 1 : (scale == 2 ? 2 : 0), rs = scale == 3 ? 1 : 0;
+  int B = bias == 1 ? 128 : (bias == 2 ? -128 : 0);
+  ivec3 cw = c + (c >> 7);
+  ivec3 t = (a * (256 - cw) + b * cw) << ls;
+  t = (t + (scale == 3 ? 0 : (op == 1 ? 127 : 128))) >> 8;
+  t = op == 1 ? -t : t;
+  return clampTev3((((d + B) << ls) + t) >> rs, clampBit);
+}
+
+// the compare modes (10.4) of the color combiner: a result per component
+bvec3 compare3(int mode, ivec3 A, ivec3 B) {
+  if (mode == 6) return greaterThan(A, B);
+  if (mode == 7) return equal(A, B);
+  bool r;
+  if (mode == 0) r = A.x > B.x;
+  else if (mode == 1) r = A.x == B.x;
+  else if (mode == 2) r = ((A.y << 8) | A.x) > ((B.y << 8) | B.x);
+  else if (mode == 3) r = ((A.y << 8) | A.x) == ((B.y << 8) | B.x);
+  else if (mode == 4) r = ((A.z << 16) | (A.y << 8) | A.x) > ((B.z << 16) | (B.y << 8) | B.x);
+  else r = ((A.z << 16) | (A.y << 8) | A.x) == ((B.z << 16) | (B.y << 8) | B.x);
+  return bvec3(r);
 }
 
 bool compareCond(int mode, ivec3 A, ivec3 B, int k) {
@@ -463,6 +501,56 @@ uint fogFloat(uint w) {
   return (((w >> 19) & 1u) << 31) | (((w >> 11) & 255u) << 23) | ((w & 0x7ffu) << 12);
 }
 
+#ifdef FOG_EXTRA
+// correctly rounded square root of a non-negative float (the fog range adjustment): the integer square root of the mantissa scaled to
+// 48 bits, found from the GPU's own estimate and corrected against exact products
+uint f_sqrt(uint a) {
+  int e = int(a >> 23) - 127;
+  uint m = (a & 0x7fffffu) | 0x800000u;
+  bool odd = (e & 1) != 0;
+  uint M = odd ? m << 1 : m;
+  e = odd ? e - 1 : e;
+  // N = M * 2^23 as (hi, lo) of 24 bits each
+  uint nh = M >> 1, nl = (M & 1u) << 23;
+  uint s = uint(sqrt(float(M) * 8388608.0));
+  s = clamp(s, 0x800000u, 0xffffffu);
+  for (int i = 0; i < uK.z; i++) {
+    // s * s as (hi, lo)
+    uint sh = s >> 12, sl = s & 0xfffu;
+    uint mid = 2u * sh * sl;
+    uint lo = sl * sl + ((mid & 0xfffu) << 12);
+    uint hi = sh * sh + (mid >> 12) + (lo >> 24);
+    lo &= 0xffffffu;
+    bool tooBig = hi > nh || (hi == nh && lo > nl);
+    s = tooBig ? s - 1u : s;
+    // (s + 1)^2
+    uint t = s + 1u;
+    uint th = t >> 12, tl = t & 0xfffu;
+    uint tmid = 2u * th * tl;
+    uint tlo = tl * tl + ((tmid & 0xfffu) << 12);
+    uint thi = th * th + (tmid >> 12) + (tlo >> 24);
+    tlo &= 0xffffffu;
+    bool fits = thi < nh || (thi == nh && tlo <= nl);
+    s = fits ? s + 1u : s;
+  }
+  // remainder N - s^2, to round to nearest: up when it exceeds s
+  uint sh2 = s >> 12, sl2 = s & 0xfffu;
+  uint mid2 = 2u * sh2 * sl2;
+  uint lo2 = sl2 * sl2 + ((mid2 & 0xfffu) << 12);
+  uint hi2 = sh2 * sh2 + (mid2 >> 12) + (lo2 >> 24);
+  lo2 &= 0xffffffu;
+  uint rem = ((nh - hi2) << 24) + nl - lo2;
+  uint r = s + (rem > s ? 1u : 0u);
+  bool carry = r == 0x1000000u;
+  r = carry ? 0x800000u : r;
+  int er = (e >> 1) + (carry ? 1 : 0) + 127;
+  uint res = (uint(er) << 23) | (r & 0x7fffffu);
+  return (a << 1) == 0u ? 0u : res;
+}
+
+uint f_exp2(uint e) { return floatBitsToUint(exp2(uintBitsToFloat(e))); }
+#endif
+
 void fogPixel(uint fsel, int z, int x, inout ivec4 c) {
   uint A = fogFloat(S(0xeeu)), C = fogFloat(S(0xf1u) & 0xfffffu);
   uint Bm = S(0xefu);
@@ -470,8 +558,28 @@ void fogPixel(uint fsel, int z, int x, inout ivec4 c) {
   uint ze;
   if (bf(S(0xf1u), 20, 1) == 0u) ze = f_div(f_mul(A, 0x4b7fffffu), f_from_int(int(Bm) - (z >> Bs)));
   else ze = f_mul(A, f_div(f_from_int(z), 0x4b7fffffu));
+#ifdef FOG_EXTRA
+  if (bf(S(0xe8u), 10, 1) == 1u) {
+    uint o = f_div(f_from_int(x - (bfi(S(0xe8u), 0, 10) - 342)), S(273u));
+    uint fidx = f_sub(0x41100000u, f_mul(f_abs(o), 0x41100000u));
+    fidx = f_lt(fidx, 0u) ? 0u : (f_gt(fidx, 0x41100000u) ? 0x41100000u : fidx);
+    int lo = f_trunc(fidx), up = lo + 1;
+    uint wlo = S(0xe9u + uint(lo >> 1)), wup = S(0xe9u + uint(up >> 1));
+    uint Klo = f_mul(f_div(f_from_int(int((lo & 1) == 1 ? (wlo & 0xfffu) : ((wlo >> 12) & 0xfffu))), 0x43800000u), 0x40800000u);
+    uint Kup = f_mul(f_div(f_from_int(int((up & 1) == 1 ? (wup & 0xfffu) : ((wup >> 12) & 0xfffu))), 0x43800000u), 0x40800000u);
+    uint factor = f_sub(f_from_int(up), fidx);
+    uint k = f_add(f_mul(Klo, factor), f_mul(Kup, f_sub(F_ONE, factor)));
+    ze = f_mul(ze, f_div(f_sqrt(f_add(f_mul(o, o), f_mul(k, k))), k));
+  }
+#endif
   ze = f_sub(ze, C);
   uint fog = f_lt(ze, 0u) ? 0u : (f_gt(ze, F_ONE) ? F_ONE : ze);
+#ifdef FOG_EXTRA
+  if (fsel == 4u) fog = f_sub(F_ONE, f_exp2(f_mul(0xc1000000u, fog)));
+  else if (fsel == 5u) fog = f_sub(F_ONE, f_exp2(f_mul(f_mul(0xc1000000u, fog), fog)));
+  else if (fsel == 6u) fog = f_exp2(f_mul(0xc1000000u, f_sub(F_ONE, fog)));
+  else if (fsel == 7u) { uint g = f_sub(F_ONE, fog); fog = f_exp2(f_mul(f_mul(0xc1000000u, g), g)); }
+#endif
   int fi = f_trunc(f_mul(fog, 0x43800000u));
   uint fc = S(0xf2u);
   ivec3 fr = ivec3(int((fc >> 16) & 255u), int((fc >> 8) & 255u), int(fc & 255u));
@@ -647,18 +755,12 @@ void shade(int x, int y, inout uint col, inout uint dep) {
     int cbias = bfi(cc, 16, 2), cop = bfi(cc, 18, 1), cclamp = bfi(cc, 19, 1), cscale = bfi(cc, 20, 2), cdest = bfi(cc, 22, 2);
     int aa = asel(bfi(ac, 13, 3), kas), ab = asel(bfi(ac, 10, 3), kas), ac_ = asel(bfi(ac, 7, 3), kas), ad = asel(bfi(ac, 4, 3), kas);
     int abias = bfi(ac, 16, 2), aop = bfi(ac, 18, 1), aclamp = bfi(ac, 19, 1), ascale = bfi(ac, 20, 2), adest = bfi(ac, 22, 2);
-    int rc[3];
+    ivec3 rcv;
+    ivec3 dv = ivec3(sx11(uint(cd.x) & 0x7ffu), sx11(uint(cd.y) & 0x7ffu), sx11(uint(cd.z) & 0x7ffu));
+    if (cbias == 3) rcv = clampTev3(dv + ivec3(compare3((cscale << 1) | cop, ca & 255, cb & 255)) * (ccc & 255), cclamp);
+    else rcv = tevColor3(ca & 255, cb & 255, ccc & 255, dv, cbias, cop, cscale, cclamp);
+    int rc[3] = int[3](rcv.x, rcv.y, rcv.z);
     int ra;
-    if (cbias == 3) {
-      int mode = (cscale << 1) | cop;
-      ivec3 A = ca & 255, B = cb & 255;
-      for (int k = 0; k < 3; k++) {
-        bool cond = compareCond(mode, A, B, k);
-        rc[k] = clampTev(sx11(uint(cd[k]) & 0x7ffu) + (cond ? (ccc[k] & 255) : 0), cclamp);
-      }
-    } else {
-      for (int k = 0; k < 3; k++) rc[k] = tevRegular(false, ca[k] & 255, cb[k] & 255, ccc[k] & 255, sx11(uint(cd[k]) & 0x7ffu), cbias, cop, cscale, cclamp);
-    }
     if (abias == 3) {
       int mode = (ascale << 1) | aop;
       bool cond;
