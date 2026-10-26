@@ -15,23 +15,29 @@ import type { GameFilesFrom } from "./sim/protocol";
 import { readTape } from "./sim/tape";
 import type { GxCoreFactory } from "./render3d/gxpath/core";
 import { GxPlayback, SPEEDS } from "./render3d/gxpath/playback";
+import { ControllerOverlay, isOverlayShow, type OverlayShow } from "./render3d/gxpath/overlay";
+import { GxScreen } from "./render3d/gxpath/screen";
+import { CRT_PRESETS, CURVE_MAX, isCrtPreset, type CrtPreset } from "./render3d/crt";
 import { GxSession, type GameFiles, type SessionBackend } from "./render3d/gxpath/session";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const q = new URLSearchParams(location.search);
-const canvas = $<HTMLCanvasElement>("screen");
-const ctx = canvas.getContext("2d")!;
 const FIRST_FRAME = -123;
 const post = (m: object) => { if (window.parent !== window) window.parent.postMessage(m, "*"); };
 const logLine = (s: string) => { try { void fetch("/log", { method: "POST", body: s }); } catch { /* no test server */ } };
-const info = (s: string) => { $("info").textContent = s; console.log("gx: " + s.split(String.fromCharCode(10))[0]); };
+let lastLogged = "";
+const info = (s: string) => { $("info").textContent = s; const first = s.split(String.fromCharCode(10))[0]; if (first.startsWith("step ")) return; if (first !== lastLogged) { lastLogged = first; console.log("gx: " + first); } };
 
 let playback: GxPlayback | null = null;
 let session: GxSession | null = null;
 let filesFrom: GameFilesFrom | null = q.get("files") ? { kind: "url", base: new URL(q.get("files")!, location.href).href } : null;
 const coreUrl = new URL(q.get("core") ?? "gx/gx-core.js", location.href).href;
 let gameFiles: GameFiles | null = null;
-let picture: ImageData | null = null;
+const screen = new GxScreen($("view"));
+const pads = new ControllerOverlay($("view"), () => session?.tape ?? null);
+let padShow: OverlayShow = isOverlayShow(q.get("controllers")) ? (q.get("controllers") as OverlayShow) : "off";
+let crtPreset: CrtPreset = isCrtPreset(q.get("crt")) ? (q.get("crt") as CrtPreset) : "off";
+screen.setCrt(crtPreset);
 let retryText: string | null = null;
 
 async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Promise<SessionBackend> {
@@ -53,12 +59,6 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
     }
   } else post({ type: "renderer", renderer: "gx-cpu", reason: null });
   return new CpuBackend(env as never) as unknown as SessionBackend;
-}
-
-function show(rgba: Uint8Array) {
-  if (!picture) picture = new ImageData(640, 480);
-  picture.data.set(rgba.subarray(0, 640 * 480 * 4));
-  ctx.putImageData(picture, 0, 0);
 }
 
 async function loadReplay(url: string, frame: number) {
@@ -83,7 +83,7 @@ async function loadReplay(url: string, frame: number) {
   });
   await session.start();
   playback = new GxPlayback(session, {
-    onPicture: (rgba) => show(rgba),
+    onPicture: (rgba) => screen.show(rgba),
     onState: update,
     onError: fail,
     onRetry: (text) => { retryText = text; update(); },
@@ -93,9 +93,11 @@ async function loadReplay(url: string, frame: number) {
   (window as unknown as { __gx: object }).__gx = { session, playback };
   await playback.seek(Math.max(0, frame - FIRST_FRAME));
   if (q.get("paused") !== "1" && frame === FIRST_FRAME) playback.play();
+  pads.set(padShow, you);
   update();
 }
 
+let you: number | null = null;
 function update() {
   const p = playback, s = session;
   if (!p || !s) return;
@@ -104,6 +106,7 @@ function update() {
   const row = Math.max(0, s.shown);
   $("seekfill").style.width = `${(100 * row) / Math.max(1, s.frameCount - 1)}%`;
   const gf = s.tape.gameFrame(row);
+  pads.update(row);
   $("where").textContent = `frame ${gf} (${row + 1} / ${s.frameCount})`;
   document.querySelectorAll<HTMLButtonElement>("#speeds button").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.speed) === p.speed)));
   const T = s.totals, n = Math.max(1, T.frames);
@@ -123,6 +126,12 @@ function fail(e: unknown) {
   logLine("error: " + text);
 }
 
+const label = (v: string) => v.charAt(0).toUpperCase() + v.slice(1);
+const showButtons = () => { $("crt").textContent = `TV: ${label(crtPreset)}`; $("pads").textContent = `Controllers: ${label(padShow)}`; };
+showButtons();
+$("crt").onclick = () => { crtPreset = CRT_PRESETS[(CRT_PRESETS.indexOf(crtPreset) + 1) % CRT_PRESETS.length]; screen.setCrt(crtPreset, crtPreset === "off" ? 0 : undefined); showButtons(); };
+const PAD_CHOICES: OverlayShow[] = ["off", "both", "left", "right"];
+$("pads").onclick = () => { padShow = PAD_CHOICES[(PAD_CHOICES.indexOf(padShow) + 1) % PAD_CHOICES.length]; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); };
 $("play").onclick = () => playback?.toggle();
 $("fwd").onclick = () => playback?.stepForward();
 $("back").onclick = () => { void playback?.stepBack(); };
@@ -152,6 +161,16 @@ window.addEventListener("message", (e) => {
     case "play": playback?.play(); break;
     case "pause": playback?.pause(); break;
     case "toggle": playback?.toggle(); break;
+    case "crt":
+      if (isCrtPreset(m.crt)) { crtPreset = m.crt; const c = Number(m.curve); screen.setCrt(crtPreset, Number.isFinite(c) ? Math.min(CURVE_MAX, Math.max(0, c)) : undefined); showButtons(); }
+      break;
+    case "controllers":
+      if (isOverlayShow(m.show)) { padShow = m.show; const n = Number(m.you); you = Number.isInteger(n) && n >= 1 && n <= 4 ? n - 1 : null; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); }
+      break;
+    case "hudslots":
+      // (the HUD is the game's own, in the slots the game puts it: only the game's layout exists here)
+      post({ type: "hudslots", slots: "game", note: "the HUD is drawn by the game, in its own slots" });
+      break;
     case "speed": if (typeof m.speed === "number") playback?.setSpeed(m.speed); break;
   }
 });

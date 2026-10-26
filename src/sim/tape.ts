@@ -59,7 +59,7 @@ export interface Tape {
   gameFrame(i: number): number;
   /** what the graphics build of the simulator reads beyond the wire config (render3d/gxpath/tapebridge.ts): the patch bits its
    *  admission derives from the code list (MSL_PATCH_*), and each slot's level byte (a human's, 1..9, for Nana's AI) */
-  gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2 };
+  gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2; ports: number[] };
 }
 
 /** a replay the simulator does not play, and why (the tape is not made) */
@@ -350,6 +350,8 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
     gx: {
       patches: simPatches(codes),
       stadium,
+      // (each slot's controller port, 0 to 3)
+      ports: slots.map((s) => s.port - 1),
       // (a human with a level byte of 1..9 is MSL_CORE_HUMAN_LEVEL | level)
       levels: slots.map((s) => {
         if (s.cpu) return s.cpu;
