@@ -18,6 +18,8 @@ import { tapeConfigOf, tapeFrameOf, TAPE_FRAME_SIZE } from "./tapebridge";
 export interface SessionBackend extends GxBackend {
   /** draws are skipped while this is false (registers and memory stay exact) */
   drawing: boolean;
+  /** the frame is only played through: no draws, no copies of the frame buffer */
+  fastForward?: boolean;
   /** the picture the game copies to the screen: 640 x 480 RGBA, and its number */
   onPicture: ((rgba: Uint8Array, index: number) => void) | null;
   /** back to the state before any frame (GxGl has it) */
@@ -117,7 +119,9 @@ export class GxSession {
     const frame: GxFrame = { fifo: core.stream(), updates: core.updates() };
     const t2 = performance.now();
     // (frame 0 sets the registers up and draws nothing, as the reference player's first frame)
-    this.backend!.drawing = draw && i > 0;
+    // (frame 0 sets the registers up and draws nothing; a frame only played through for a seek is fast-forwarded: no draws, no copies)
+    this.backend!.drawing = i > 0;
+    this.backend!.fastForward = !draw;
     gpu.runFrame(frame);
     const t3 = performance.now();
     this.times = { step: t1 - t0, handoff: t2 - t1, render: t3 - t2 };
