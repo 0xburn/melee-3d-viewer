@@ -10,7 +10,7 @@
  */
 import { decode } from "@shelacek/ubjson";
 import { CpuBackend } from "./render3d/gxr/cpu";
-import { namesToRead, profileNames, readGameFiles } from "./sim/gamefiles";
+import { gxNames, namesToRead, readGameFiles } from "./sim/gamefiles";
 import type { GameFilesFrom } from "./sim/protocol";
 import { readTape } from "./sim/tape";
 import type { GxCoreFactory } from "./render3d/gxpath/core";
@@ -69,7 +69,7 @@ async function loadReplay(url: string, frame: number) {
   if (!gameFiles) {
     info("reading the game files...");
     const names = await namesToRead(filesFrom, new URL("sim-files.json", coreUrl).href)
-      .catch(() => (filesFrom!.kind === "files" ? profileNames(filesFrom!.list.map((f) => f.name)) : Promise.reject(new Error("no file list"))));
+      .catch(() => (filesFrom!.kind === "files" ? gxNames(filesFrom!.list.map((f) => f.name)) : Promise.reject(new Error("no file list"))));
     gameFiles = { names, files: await readGameFiles(filesFrom, names) };
   }
   info("starting the simulator...");

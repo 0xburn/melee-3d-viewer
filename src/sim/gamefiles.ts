@@ -22,6 +22,19 @@ const FIGHTER_PREFIXES = [
   "PlNn", "PlPk", "PlPc", "PlKb", "PlDk", "PlGn", "PlYs", "PlKp", "PlMt", "PlGw", "PlNs", "PlLk", "PlCl",
 ];
 
+// (the graphics build's display pass loads these too: the HUD archive, the screen flash and refraction files, the name tags' font,
+// Pokemon Stadium's English text; main.dol when it is there)
+const GX_EXTRA = ["IfAll.usd", "LbBf.dat", "LbRf.dat", "SdIntro.dat", "GrPs.usd"];
+const GX_OPTIONAL = ["main.dol", "IfAll.dat", "IfVsCam.dat", "IfVsCam.usd"];
+
+/** the names the graphics build reads: the simulator's, and the display pass's files */
+export function gxNames(have: string[]): string[] {
+  const set = new Set(have);
+  const missing = GX_EXTRA.filter((n) => !set.has(n));
+  if (missing.length) throw new Error(`the game's draw path needs ${missing.join(", ")}`);
+  return [...profileNames(have), ...GX_EXTRA, ...GX_OPTIONAL.filter((n) => set.has(n))].filter((n, i, a) => a.indexOf(n) === i);
+}
+
 /** the names to read from a folder's file names, the extraction's way; throws naming what is missing */
 export function profileNames(have: string[]): string[] {
   const set = new Set(have);
