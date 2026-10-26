@@ -69,11 +69,15 @@ function plane(dst: Float32Array, o: number, f0: number, f1: number, f2: number)
 
 /** set up one triangle from pool vertices a, b, c (in this order). Returns false when it covers no block; otherwise the header is in
  *  `TS` and the planes (TS.np of them, 3 floats each) are written to dst from dstOff. */
-export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: number, c: number, dst: Float32Array, dstOff: number): boolean {
+export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: number, c: number, dst: Float32Array, dstOff: number, screen: Float64Array | null = null): boolean {
   const D = pool.data;
-  viewport(x, D, a, sp); SX[0] = sp[0]; SY[0] = sp[1]; SZ[0] = sp[2];
-  viewport(x, D, b, sp); SX[1] = sp[0]; SY[1] = sp[1]; SZ[1] = sp[2];
-  viewport(x, D, c, sp); SX[2] = sp[0]; SY[2] = sp[1]; SZ[2] = sp[2];
+  if (screen) {
+    for (let i = 0; i < 3; i++) { SX[i] = screen[i * 3]; SY[i] = screen[i * 3 + 1]; SZ[i] = screen[i * 3 + 2]; }
+  } else {
+    viewport(x, D, a, sp); SX[0] = sp[0]; SY[0] = sp[1]; SZ[0] = sp[2];
+    viewport(x, D, b, sp); SX[1] = sp[0]; SY[1] = sp[1]; SZ[1] = sp[2];
+    viewport(x, D, c, sp); SX[2] = sp[0]; SY[2] = sp[1]; SZ[2] = sp[2];
+  }
   for (let i = 0; i < 3; i++) { X[i] = (snap(f(16 * SX[i])) - 9) | 0; Y[i] = (snap(f(16 * SY[i])) - 9) | 0; }
   const DX12 = (X[0] - X[1]) | 0, DX23 = (X[1] - X[2]) | 0, DX31 = (X[2] - X[0]) | 0;
   const DY12 = (Y[0] - Y[1]) | 0, DY23 = (Y[1] - Y[2]) | 0, DY31 = (Y[2] - Y[0]) | 0;

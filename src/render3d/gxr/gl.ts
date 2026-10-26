@@ -17,7 +17,7 @@ import { planeCount, setupCtx, setupTriInto, TS } from "./setup";
 import { bits, GxRegs } from "./state";
 import { formatInfo, levelOffset } from "./texunit";
 import { VertexData } from "./vertex";
-import { assemble, cullClipInto, Pool, poly, polyState, transformVertices, V_STRIDE, xfDraw } from "./xform";
+import { assemble, clipLine, cullClipInto, lineTriangles, Pool, poly, polyState, transformVertices, V_STRIDE, xfDraw } from "./xform";
 
 const EFB_W = 640, EFB_H = 528;
 const TILES_X = EFB_W / TILE, TILES_Y = EFB_H / TILE;
@@ -92,6 +92,7 @@ export class GxGl implements GxBackend {
   private tmemVersion = -1;
   private pool = new Pool();
   private trip: number[] = [];
+  private lineIdx: number[] = [];
   private need = new Uint8Array(4096);
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
   /** GPU time of the passes (ms), when the browser has timer queries and `timing` is on */
@@ -371,11 +372,19 @@ export class GxGl implements GxBackend {
     const trip = this.trip;
     trip.length = 0;
     for (let i = 0; i < prims.length; i++) assemble(prims[i].type, prims[i].count, prims[i].base, trip);
-    // only the vertices a triangle uses are transformed (a run also holds points and lines, which draw nothing)
+    // only the vertices a triangle uses are transformed (a run also holds points, which draw nothing)
     if (this.need.length < vd.n) this.need = new Uint8Array(Math.max(vd.n, this.need.length * 2));
     const need = this.need;
     need.fill(0, 0, vd.n);
     for (let i = 0; i < trip.length; i++) need[trip[i]] = 1;
+    const lineIdx = this.lineIdx;
+    lineIdx.length = 0;
+    for (let i = 0; i < prims.length; i++) {
+      const p = prims[i];
+      if (p.type === 5) for (let k = 0; k + 1 < p.count; k += 2) lineIdx.push(p.base + k, p.base + k + 1);
+      else if (p.type === 6) for (let k = 0; k + 1 < p.count; k++) lineIdx.push(p.base + k, p.base + k + 1);
+    }
+    for (let i = 0; i < lineIdx.length; i++) need[lineIdx[i]] = 1;
     const base = transformVertices(x, regs, vd, pool, need);
     const sc = setupCtx(regs.bp);
     const cull = bits(regs.bp[0], 14, 2);
@@ -391,20 +400,44 @@ export class GxGl implements GxBackend {
         q.ensure(words);
         const o = q.n;
         if (!setupTriInto(pool, x, sc, poly[0], poly[k], poly[k + 1], q.floats, o + HEADER_WORDS)) continue;
-        const I = q.ints, U = q.words;
-        I[o] = TS.DX12; I[o + 1] = TS.DY12; I[o + 2] = TS.DX23; I[o + 3] = TS.DY23; I[o + 4] = TS.DX31; I[o + 5] = TS.DY31;
-        I[o + 6] = TS.C1; I[o + 7] = TS.C2; I[o + 8] = TS.C3;
-        I[o + 9] = TS.minx; I[o + 10] = TS.maxx; I[o + 11] = TS.miny; I[o + 12] = TS.maxy;
-        I[o + 13] = TS.xi; I[o + 14] = TS.yi;
-        U[o + 15] = bitsOf(TS.ox); U[o + 16] = bitsOf(TS.oy);
-        U[o + 17] = st; U[o + 18] = TS.np;
-        this.triOffsets.push(o);
+        this.pushHeader(o, st);
         q.n += words;
-        this.bb.push(Math.max(0, TS.minx), Math.max(0, TS.miny), Math.min(EFB_W - 1, TS.maxx), Math.min(EFB_H - 1, TS.maxy));
-        this.tris++;
+      }
+    }
+    // lines (unverified by the recorded windows): clipped, then two triangles of the line width each
+    if (lineIdx.length) {
+      const size = bits(regs.bp[0x22], 0, 8);
+      for (let i = 0; i + 1 < lineIdx.length; i += 2) {
+        pool.n = mark;
+        const cl = clipLine(pool, base + lineIdx[i] * V_STRIDE, base + lineIdx[i + 1] * V_STRIDE);
+        if (!cl) continue;
+        const pieces: { scr: Float64Array; v: [number, number, number] }[] = [];
+        lineTriangles(pool, x, cl[0], cl[1], size, pieces);
+        for (const pc of pieces) {
+          q.ensure(words);
+          const o = q.n;
+          if (!setupTriInto(pool, x, sc, pc.v[0], pc.v[1], pc.v[2], q.floats, o + HEADER_WORDS, pc.scr)) continue;
+          this.pushHeader(o, st);
+          q.n += words;
+        }
       }
     }
     this.stats.cpuMs += performance.now() - t0;
+  }
+
+  /** the header words of the triangle set up last (TS), at word o of the queue, and its place in the bins */
+  private pushHeader(o: number, st: number): void {
+    const q = this.q;
+    const I = q.ints, U = q.words;
+    I[o] = TS.DX12; I[o + 1] = TS.DY12; I[o + 2] = TS.DX23; I[o + 3] = TS.DY23; I[o + 4] = TS.DX31; I[o + 5] = TS.DY31;
+    I[o + 6] = TS.C1; I[o + 7] = TS.C2; I[o + 8] = TS.C3;
+    I[o + 9] = TS.minx; I[o + 10] = TS.maxx; I[o + 11] = TS.miny; I[o + 12] = TS.maxy;
+    I[o + 13] = TS.xi; I[o + 14] = TS.yi;
+    U[o + 15] = bitsOf(TS.ox); U[o + 16] = bitsOf(TS.oy);
+    U[o + 17] = st; U[o + 18] = TS.np;
+    this.triOffsets.push(o);
+    this.bb.push(Math.max(0, TS.minx), Math.max(0, TS.miny), Math.min(EFB_W - 1, TS.maxx), Math.min(EFB_H - 1, TS.maxy));
+    this.tris++;
   }
 
   // -------------------------------------------------------------------------------------------------------------------

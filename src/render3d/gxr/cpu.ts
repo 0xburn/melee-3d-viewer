@@ -4,10 +4,10 @@
 import { Memory } from "./dff";
 import { clearRect, copyParams, encodeCopy } from "./copy";
 import { DrawPixels, Efb, Env, EFB_H, EFB_W, PixState, readColor } from "./raster";
-import { setupCtx, setupTri } from "./setup";
+import { planeCount, setupCtx, setupTri, setupTriInto, TS } from "./setup";
 import { bits, GxRegs } from "./state";
 import { VertexData } from "./vertex";
-import { assemble, cullClip, Pool, transformVertices, xfDraw } from "./xform";
+import { assemble, clipLine, cullClip, lineTriangles, Pool, transformVertices, xfDraw } from "./xform";
 import type { GxBackend } from "./gpu";
 
 /** the pixel state of the registers now */
@@ -51,6 +51,27 @@ export class CpuBackend implements GxBackend {
       for (let k = 1; k + 1 < poly.length; k++) {
         const t = setupTri(pool, x, sc, 0, poly[0], poly[k], poly[k + 1]);
         if (!t) continue;
+        this.tris++;
+        dp.draw(this.efb, t);
+      }
+    }
+    // lines (unverified by the recorded windows): clipped, then two triangles of the line width each
+    const lineIdx: number[] = [];
+    for (const p of prims) {
+      if (p.type === 5) for (let k = 0; k + 1 < p.count; k += 2) lineIdx.push(p.base + k, p.base + k + 1);
+      else if (p.type === 6) for (let k = 0; k + 1 < p.count; k++) lineIdx.push(p.base + k, p.base + k + 1);
+    }
+    const size = bits(regs.bp[0x22], 0, 8);
+    for (let i = 0; i + 1 < lineIdx.length; i += 2) {
+      pool.n = mark;
+      const cl = clipLine(pool, base + lineIdx[i] * 48, base + lineIdx[i + 1] * 48);
+      if (!cl) continue;
+      const pieces: { scr: Float64Array; v: [number, number, number] }[] = [];
+      lineTriangles(pool, x, cl[0], cl[1], size, pieces);
+      for (const pc of pieces) {
+        const planes = new Float32Array(planeCount(sc) * 3);
+        if (!setupTriInto(pool, x, sc, pc.v[0], pc.v[1], pc.v[2], planes, 0, pc.scr)) continue;
+        const t = { state: 0, X0: TS.X0, Y0: TS.Y0, DX12: TS.DX12, DY12: TS.DY12, DX23: TS.DX23, DY23: TS.DY23, DX31: TS.DX31, DY31: TS.DY31, C1: TS.C1, C2: TS.C2, C3: TS.C3, minx: TS.minx, maxx: TS.maxx, miny: TS.miny, maxy: TS.maxy, xi: TS.xi, yi: TS.yi, ox: TS.ox, oy: TS.oy, planes, np: TS.np };
         this.tris++;
         dp.draw(this.efb, t);
       }

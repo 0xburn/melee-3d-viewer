@@ -327,7 +327,7 @@ function planeDist(D: Float64Array, o: number, k: number): number {
 }
 
 /** a new vertex a + (b - a) * t in the pool */
-function lerpVertex(pool: Pool, t: number, a: number, b: number): number {
+export function lerpVertex(pool: Pool, t: number, a: number, b: number): number {
   const o = pool.alloc();
   const D = pool.data;
   for (let k = 0; k < V_COL; k++) D[o + k] = f(D[a + k] + f(f(D[b + k] - D[a + k]) * t));
@@ -403,4 +403,63 @@ export function cullClipInto(pool: Pool, cullMode: number, a: number, b: number,
 export function cullClip(pool: Pool, cullMode: number, a: number, b: number, c: number): number[] | null {
   if (!cullClipInto(pool, cullMode, a, b, c)) return null;
   return Array.from(poly.subarray(0, polyState.n));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// lines (4.4, 5.4, 8.5): UNVERIFIED by the recorded windows
+
+const LC = [0, 0, 0, 0, -1, 1];
+
+function lineDist(D: Float64Array, o: number, k: number): number {
+  return f(f(f(f(D[o + V_C] * PA[k]) + f(D[o + V_C + 1] * PB[k])) + f(D[o + V_C + 2] * LC[k])) + f(D[o + V_C + 3] * PD[k]));
+}
+
+/** clip a line (5.4): the pool offsets of its ends (new vertices where an end was cut), or null when it is discarded */
+export function clipLine(pool: Pool, a: number, b: number): [number, number] | null {
+  const D = pool.data;
+  const c0 = clipCode(D, a), c1 = clipCode(D, b);
+  const orc = c0 | c1;
+  if (orc === 0) return [a, b];
+  let t0 = 0, t1 = 0;
+  for (let k = 0; k < 6; k++) {
+    if (!(orc & (1 << k))) continue;
+    const d0 = lineDist(D, a, k), d1 = lineDist(D, b, k);
+    if (d0 < 0 && d1 < 0) return null;
+    if (d1 < 0) { const t = f(d1 / f(d1 - d0)); if (t > t1) t1 = t; }
+    else if (d0 < 0) { const t = f(d0 / f(d0 - d1)); if (t > t0) t0 = t; }
+  }
+  const na = c0 !== 0 ? lerpVertex(pool, t0, a, b) : a;
+  const nb = c1 !== 0 ? lerpVertex(pool, t1, b, a) : b;
+  return [na, nb];
+}
+
+/** The two triangles of a clipped line (8.5), as screen positions (9 numbers each: x, y, depth for three corners) and the pool vertices whose
+ *  color, depth and coordinates they carry. The pieces have clip w 0 (the spec's quirk). `size` is BP 0x22 bits 0..7. */
+export function lineTriangles(pool: Pool, x: XfDraw, a: number, b: number, size: number, out: { scr: Float64Array; v: [number, number, number] }[]): void {
+  const D = pool.data;
+  const p0 = new Float64Array(3), p1 = new Float64Array(3);
+  viewport(x, D, a, p0); viewport(x, D, b, p1);
+  const dx = f(p1[0] - p0[0]), dy = f(p1[1] - p0[1]);
+  let ox: number, oy: number;
+  if (Math.abs(dx) > Math.abs(dy)) { ox = 0; oy = dx > 0 ? f(size / -12) : f(size / 12); }
+  else { oy = 0; ox = dy > 0 ? f(size / 12) : f(size / -12); }
+  // four pieces' vertices: ends with their colors, depths and coordinates, clip w 0
+  const mk = (src: number): number => {
+    const o = pool.alloc();
+    const E = pool.data;
+    for (let k = 0; k < V_STRIDE; k++) E[o + k] = E[src + k];
+    E[o + V_C + 3] = 0;
+    for (let k = 4; k < 8; k++) E[o + V_COL + k] = 0;
+    return o;
+  };
+  const va = mk(a), vb = mk(b);
+  const P = (p: Float64Array, sx: number, sy: number): [number, number, number] => [f(p[0] + sx), f(p[1] + sy), p[2]];
+  const tri = (c: [number, number, number][], v: [number, number, number]) => {
+    const scr = new Float64Array(9);
+    for (let i = 0; i < 3; i++) { scr[i * 3] = c[i][0]; scr[i * 3 + 1] = c[i][1]; scr[i * 3 + 2] = c[i][2]; }
+    out.push({ scr, v });
+  };
+  // triangle A: (p1 - o, p1 + o, p0 + o), triangle B: (p0 + o, p0 - o, p1 - o)
+  tri([P(p1, -ox, -oy), P(p1, ox, oy), P(p0, ox, oy)], [vb, vb, va]);
+  tri([P(p0, ox, oy), P(p0, -ox, -oy), P(p1, -ox, -oy)], [va, va, vb]);
 }
