@@ -1,17 +1,19 @@
-import { PIXEL_FS } from "../../../src/render3d/gxr/glsl-pixel.ts";
+import { PIXEL_FS, pixelShader } from "../../../src/render3d/gxr/glsl-pixel.ts";
 import { compile, FULLSCREEN_VS, intTexture, uploadRows } from "../../../src/render3d/gxr/glutil.ts";
 
 export const gl = document.createElement("canvas").getContext("webgl2", { antialias: false, alpha: false })!;
 gl.getExtension("EXT_color_buffer_float");
 
-const BODY = PIXEL_FS.slice(0, PIXEL_FS.lastIndexOf("void main() {"));
+const bodyOf = (fs: string) => fs.slice(0, fs.lastIndexOf("void main() {"));
+const BODY = bodyOf(PIXEL_FS);
+const BODY_INDIRECT = bodyOf(pixelShader({ indirect: true }));
 const progs = new Map<string, WebGLProgram>();
 
 /** run `main` (GLSL statements that read in0..in3 (uvec4) and the case index i, and set `res`) for every case */
-export function runFn(name: string, main: string, inputs: Uint32Array, nCases: number, states: Uint32Array | null, mem: Uint8Array | null, extraData: Uint32Array | null = null): Uint32Array {
+export function runFn(name: string, main: string, inputs: Uint32Array, nCases: number, states: Uint32Array | null, mem: Uint8Array | null, extraData: Uint32Array | null = null, indirect = false): Uint32Array {
   let p = progs.get(name);
   if (!p) {
-    const fs = BODY + `
+    const fs = (indirect ? BODY_INDIRECT : BODY) + `
 uniform usampler2D uIn;
 uvec4 inp(int i, int k) { int t = i * 4 + k; return texelFetch(uIn, ivec2(t & 4095, t >> 12), 0); }
 void main() {

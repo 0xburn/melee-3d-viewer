@@ -23,8 +23,8 @@ export function snapshot(regs: GxRegs): PixState {
 export class CpuBackend implements GxBackend {
   readonly efb = new Efb();
   readonly pool = new Pool();
-  /** draws are skipped until this is set (the reference draws nothing in the first frame) */
-  drawing = false;
+  /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording) */
+  drawing = true;
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;

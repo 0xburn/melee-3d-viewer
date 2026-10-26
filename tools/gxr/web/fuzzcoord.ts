@@ -59,7 +59,7 @@ for (let b0 = 0; b0 < N; b0 += BATCH) {
     const words = HEADER_WORDS + tri.np * 3;
     const pw = new Uint32Array(tri.planes.buffer, tri.planes.byteOffset, tri.np * 3);
     data.set(pw, off + HEADER_WORDS);
-    data[off + 13] = tri.xi >>> 0; data[off + 14] = tri.yi >>> 0; data[off + 15] = bitsOf(tri.ox); data[off + 16] = bitsOf(tri.oy);
+    data[off + 18] = tri.np; data[off + 13] = tri.xi >>> 0; data[off + 14] = tri.yi >>> 0; data[off + 15] = bitsOf(tri.ox); data[off + 16] = bitsOf(tri.oy);
     // state: map modes
     const mode0 = ri(2) | (ri(2) << 2) | (ri(2) << 4) | ([0, 1, 2, 4, 5, 6][ri(6)] << 5) | (ri(2) << 8) | ((rnd() < 0.7 ? 0 : (ri(40) - 20) & 255) << 9);
     const mode1 = (rnd() < 0.8 ? 0 : ri(24)) | ((rnd() < 0.8 ? 255 : 8 + ri(40)) << 8);
@@ -85,7 +85,7 @@ for (let b0 = 0; b0 < N; b0 += BATCH) {
     void TS; void setupTriInto;
   }
   const out = runFn("fuzzcoord", `
-    sbase = in0.x * STATE_WORDS; gTri = in0.y; gXi = int(wd(uData, gTri + 13u)); gYi = int(wd(uData, gTri + 14u)); gOx = wd(uData, gTri + 15u); gOy = wd(uData, gTri + 16u);
+    sbase = in0.x * STATE_WORDS; gTri = in0.y; gXi = int(wd(uData, gTri + 13u)); gYi = int(wd(uData, gTri + 14u)); gOx = wd(uData, gTri + 15u); gOy = wd(uData, gTri + 16u); gNp = wd(uData, gTri + 18u);
     MapI mp = loadMap(0u);
     int S, T, lod; bool lin;
     stageCoords(mp, in1.x, int(in0.z), int(in0.w), S, T, lod, lin);

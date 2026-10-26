@@ -42,8 +42,8 @@ class Growable {
 }
 
 export class GxGl implements GxBackend {
-  /** draws are skipped until this is set (the reference draws nothing in the first frame) */
-  drawing = false;
+  /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording; a viewer leaves it on) */
+  drawing = true;
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;
@@ -53,7 +53,7 @@ export class GxGl implements GxBackend {
   /** the features of the last pass's program (tests) */
   lastFeatures = 0;
   /** timing of the last frame's work, ms (CPU front half, GPU submit) */
-  stats = { cpuMs: 0, flushMs: 0 };
+  stats = { cpuMs: 0, flushMs: 0, uploadMs: 0, memBytes: 0 };
 
   private gl: WebGL2RenderingContext;
   private pending: Map<string, Compiling>;
@@ -88,7 +88,8 @@ export class GxGl implements GxBackend {
   private palNext = 0;
   private attached: Memory | null = null;
   private dirty: number[] = [];
-  private used: number[] = [];
+  /** the texture ranges the queued triangles read: start -> length */
+  private used = new Map<number, number>();
   private tmemVersion = -1;
   private pool = new Pool();
   private trip: number[] = [];
@@ -99,11 +100,13 @@ export class GxGl implements GxBackend {
   timing = false;
   private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
 
-  constructor(gl: WebGL2RenderingContext) {
+  /** options of the pixel shader (test aids) */
+  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number] } = {}) {
     this.gl = gl;
+    if (gl.getParameter(gl.MAX_TEXTURE_SIZE) < MEM_ROWS) throw new Error(`the GX renderer needs textures of ${MEM_ROWS} texels (this GPU's limit is ${gl.getParameter(gl.MAX_TEXTURE_SIZE)})`);
     // the programs compile in the background (when the browser can); `prepare()` waits for them, and the first draw would
     this.pending = new Map([
-      ["pixel", startCompile(gl, FULLSCREEN_VS, pixelShader())], ["copy", startCompile(gl, FULLSCREEN_VS, COPY_FS)],
+      ["pixel", startCompile(gl, FULLSCREEN_VS, pixelShader(shaderOptions))], ["copy", startCompile(gl, FULLSCREEN_VS, COPY_FS)],
       ["clear", startCompile(gl, FULLSCREEN_VS, CLEAR_FS)], ["picture", startCompile(gl, FULLSCREEN_VS, PICTURE_FS)],
       ["present", startCompile(gl, FULLSCREEN_VS, PRESENT_FS)],
     ]);
@@ -148,7 +151,7 @@ export class GxGl implements GxBackend {
     const gl = this.gl;
     if (this.attached) { this.attached.onTouch = null; this.attached.beforeWrite = null; }
     this.attached = null;
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = []; this.dirty = [];
+    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.dirty = [];
     this.palMap.clear(); this.palNext = 0;
     this.resetStates();
     this.tmemVersion = -1;
@@ -169,7 +172,7 @@ export class GxGl implements GxBackend {
    *  (1: the indirect texture unit, 2: the exponential fog and range adjustment) so that no draw has to wait for them later */
   async prepare(features = 0): Promise<void> {
     for (const f of [1, 2, 3]) if ((features & f) === f && !this.pending.has("pixel" + f) && !this.progs.has("pixel" + f)) {
-      this.pending.set("pixel" + f, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (f & 1) !== 0, fogExtra: (f & 2) !== 0 })));
+      this.pending.set("pixel" + f, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ ...this.shaderOptions, indirect: (f & 1) !== 0, fogExtra: (f & 2) !== 0 })));
     }
     for (const [name, c] of [...this.pending]) {
       while (!compileDone(this.gl, c)) await new Promise((r) => setTimeout(r, 10));
@@ -181,7 +184,7 @@ export class GxGl implements GxBackend {
   private pixelProgram(features: number): WebGLProgram {
     if (features === 0) return this.progPixel;
     const key = "pixel" + features;
-    if (!this.progs.has(key) && !this.pending.has(key)) this.pending.set(key, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })));
+    if (!this.progs.has(key) && !this.pending.has(key)) this.pending.set(key, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ ...this.shaderOptions, indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })));
     return this.program(key);
   }
 
@@ -220,8 +223,8 @@ export class GxGl implements GxBackend {
     this.dirty = [];
     mem.onTouch = (a, n) => { this.dirty.push(a, n); };
     mem.beforeWrite = (a, n) => {
-      for (let i = 0; i < this.used.length; i += 2) {
-        if (a < this.used[i] + this.used[i + 1] && this.used[i] < a + n) { this.flush(); break; }
+      for (const [start, len] of this.used) {
+        if (a < start + len && start < a + n) { this.flush(); break; }
       }
     };
   }
@@ -251,6 +254,7 @@ export class GxGl implements GxBackend {
     if (!this.dirty.length) return;
     const d = this.dirty;
     this.dirty = [];
+    for (let i = 1; i < d.length; i += 2) this.stats.memBytes += d[i];
     // merge into ranges by start
     const idx: number[] = [];
     for (let i = 0; i < d.length; i += 2) idx.push(i);
@@ -289,6 +293,7 @@ export class GxGl implements GxBackend {
 
   /** the state index for the registers now (queued draws share it until a register changes) */
   private stateFor(regs: GxRegs): number {
+    if (this.stateCount > 20000) { this.flush(); this.palMap.clear(); this.palNext = 0; this.resetStates(); }
     const tv = regs.tmemVersion;
     if (this.lastStateVersion[0] === regs.bpVersion && this.lastStateVersion[1] === regs.xfVersion && this.lastStateVersion[2] === tv) return this.lastState;
     const w = new Uint32Array(STATE_WORDS);
@@ -366,7 +371,7 @@ export class GxGl implements GxBackend {
     const st = this.stateFor(regs);
     const ranges = this.stateRanges[st];
     this.needFeatures |= this.stateFeatures[st];
-    for (let i = 0; i < ranges.length; i += 2) this.used.push(ranges[i], ranges[i + 1]);
+    for (let i = 0; i < ranges.length; i += 2) if ((this.used.get(ranges[i]) ?? 0) < ranges[i + 1]) this.used.set(ranges[i], ranges[i + 1]);
     const pool = this.pool;
     pool.clear();
     const x = xfDraw(regs, vd);
@@ -456,8 +461,10 @@ export class GxGl implements GxBackend {
   flush(): void {
     const nt = this.triOffsets.length;
     // memory writes that have landed go to the GPU now, before anything that writes memory there (a copy) or reads it
+    const tu = performance.now();
     if (this.attached) this.uploadDirty(this.attached);
-    if (nt === 0) { this.used = []; return; }
+    this.stats.uploadMs += performance.now() - tu;
+    if (nt === 0) { this.used.clear(); return; }
     const t0 = performance.now();
     const gl = this.gl;
     // bins
@@ -516,7 +523,7 @@ export class GxGl implements GxBackend {
     this.timeEnd(tq, "pixel");
     this.cur = 1 - this.cur;
     this.passes++;
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = []; this.needFeatures = 0;
+    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.needFeatures = 0;
     this.stats.flushMs += performance.now() - t0;
     this.onFlush?.();
   }

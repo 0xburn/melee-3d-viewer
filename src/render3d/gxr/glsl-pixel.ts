@@ -26,10 +26,13 @@ export const STATE_WORDS = 288;
 export const TILE = 16;
 
 /** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5) and `fogExtra` the exponential fog forms and the range adjustment (11.3), compiled only for draws that use them */
-export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean } = {}): string {
+export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean; debugRegs?: [number, number] } = {}): string {
   return /* glsl */ `#version 300 es
 ${opts.indirect ? "#define INDIRECT 1" : ""}
 ${opts.fogExtra ? "#define FOG_EXTRA 1" : ""}
+${opts.debugRegs ? `#define DEBUG_REGS 1
+#define DEBUG_A ${opts.debugRegs[0]}
+#define DEBUG_B ${opts.debugRegs[1]}` : ""}
 precision highp float;
 precision highp int;
 precision highp usampler2D;
@@ -253,11 +256,14 @@ ivec4 sampleMap(MapI mp, int s, int t, int lod, bool linear) {
 // planes and texture coordinates (spec 7.4, 8.3, 8.4)
 
 uint gTri;      // word offset of the current triangle in uData
+uint gNp;       // number of planes of the current triangle
 uint gOx, gOy;  // float bits
 int gXi, gYi;
 
 uint planeAt(uint k, uint dx, uint dy) {
   uint b = gTri + HEADER_WORDS + k * 3u;
+  // a plane the triangle does not carry (a generator past BP's count) reads zero
+  if (k >= gNp) return 0u;
   return f_add(f_add(wd(uData, b), f_mul(wd(uData, b + 1u), dx)), f_mul(wd(uData, b + 2u), dy));
 }
 
@@ -331,7 +337,8 @@ void indirectOffsets(uint ind, ivec4 tx, int cs, int ct, int prevS, int prevT, o
     if (type == 0) { o0 = (ma * v.x + mc * v.y + me * v.z) >> 3; o1 = (mb * v.x + md * v.y + mf * v.z) >> 3; }
     else if (type == 4) { o0 = idiv(cs * v.x, 256); o1 = idiv(ct * v.x, 256); }
     else if (type == 8) { o0 = idiv(cs * v.y, 256); o1 = idiv(ct * v.y, 256); }
-    if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
+    // shift counts are taken modulo 32 (as the CPU reference's shifts do)
+    if (shift >= 0) { o0 >>= (shift & 31); o1 >>= (shift & 31); } else { o0 <<= ((-shift) & 31); o1 <<= ((-shift) & 31); }
   }
   int ws = sw == 0 ? cs : (sw >= 6 ? 0 : (cs & (((256 >> (sw - 1)) << 7) - 1)));
   int wt = tw == 0 ? ct : (tw >= 6 ? 0 : (ct & (((256 >> (tw - 1)) << 7) - 1)));
@@ -697,7 +704,7 @@ void shade(int x, int y, inout uint col, inout uint dep) {
     gRasCh[i] = (v16 & ~(v16 >> 8)) & 0xff;
   }
   loadColorRegs();
-  for (int i = 0; i < 4; i++) gLastTex[i] = 0;
+  for (int i = 0; i < 4; i++) { gLastTex[i] = 0; gTex[i] = 0; }
   int prevS = 0, prevT = 0;
   for (int si = 0; si < nStages; si++) {
     uint ord = S(0x28u + uint(si >> 1)) >> ((si & 1) == 1 ? 12u : 0u);
@@ -816,6 +823,10 @@ void shade(int x, int y, inout uint col, inout uint dep) {
   ivec4 dst = readColor(col, pixFmt);
   ivec4 res = blendPixel(S(0x41u), S(0x42u), src, dst);
   col = writeColor(col, pixFmt, S(0x41u), res);
+#ifdef DEBUG_REGS
+  // a test aid: the color word carries two of the TEV registers' components instead of the pixel
+  col = (uint(gRegs[DEBUG_A] & 0xfff) << 12) | uint(gRegs[DEBUG_B] & 0xfff);
+#endif
   dep = newDep;
 }
 
@@ -839,6 +850,7 @@ void main() {
     gTri = tri;
     gXi = int(wd(uData, tri + 13u)); gYi = int(wd(uData, tri + 14u));
     gOx = wd(uData, tri + 15u); gOy = wd(uData, tri + 16u);
+    gNp = wd(uData, tri + 18u);
     shade(p.x, p.y, col, dep);
   }
   o = uvec4(col, dep, 0u, 0u);
