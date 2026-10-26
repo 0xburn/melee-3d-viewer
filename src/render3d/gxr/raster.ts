@@ -100,6 +100,38 @@ function colorRegs(words: Uint32Array, out: number[]): void {
   }
 }
 
+/** the offsets and the alpha bump an indirect sample `tx` gives a TEV stage (spec 10.5); (S, T) are the stage's own coordinates */
+export function indirectOffsets(bp: Uint32Array, ind: number, tx: number[], S: number, T: number, prevS: number, prevT: number): [number, number, number] {
+  const fmt = bits(ind, 2, 2), biasBits = bits(ind, 4, 3), bs = bits(ind, 7, 2), mid = bits(ind, 9, 4);
+  const sw = bits(ind, 13, 3), tw = bits(ind, 16, 3), addprev = bits(ind, 20, 1);
+    const i = [tx[3], tx[2], tx[1]];
+    const mask = fmt === 0 ? 0xf8 : fmt === 1 ? 0xe0 : fmt === 2 ? 0xf0 : 0xf8;
+    const bump = bs === 0 ? 0 : i[bs - 1] & mask;
+    const vmask = fmt === 0 ? 0xff : fmt === 1 ? 0x1f : fmt === 2 ? 0x0f : 0x07;
+    const v = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      v[k] = i[k] & vmask;
+      if ((biasBits >> k) & 1) v[k] += fmt === 0 ? -128 : 1;
+    }
+    let o0 = 0, o1 = 0;
+    const m = mid & 3;
+    if (m !== 0) {
+      const A = bp[0x06 + 3 * (m - 1)], B = bp[0x07 + 3 * (m - 1)], C = bp[0x08 + 3 * (m - 1)];
+      const ma = sext11(A & 0x7ff), mb = sext11((A >> 11) & 0x7ff), mc = sext11(B & 0x7ff), md = sext11((B >> 11) & 0x7ff), me = sext11(C & 0x7ff), mf = sext11((C >> 11) & 0x7ff);
+      const exp = bits(A, 22, 2) | (bits(B, 22, 2) << 2) | (bits(C, 22, 2) << 4);
+      const shift = 17 - exp;
+      const type = mid & 12;
+      if (type === 0) { o0 = (ma * v[0] + mc * v[1] + me * v[2]) >> 3; o1 = (mb * v[0] + md * v[1] + mf * v[2]) >> 3; }
+      else if (type === 4) { o0 = Math.trunc((S * v[0]) / 256); o1 = Math.trunc((T * v[0]) / 256); }
+      else if (type === 8) { o0 = Math.trunc((S * v[1]) / 256); o1 = Math.trunc((T * v[1]) / 256); }
+      if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
+    }
+    const wrapMask = (c: number, w: number): number => (w === 0 ? c : w === 6 || w === 7 ? 0 : c & (((256 >> (w - 1)) << 7) - 1));
+    let rs = wrapMask(S, sw) + o0, rt = wrapMask(T, tw) + o1;
+    if (addprev) { rs += prevS; rt += prevT; }
+    return [(rs << 8) >> 8, (rt << 8) >> 8, bump];
+  }
+
 /** prepared state of a draw for the CPU pixel stage */
 export class DrawPixels {
   readonly bp: Uint32Array;
@@ -141,7 +173,9 @@ export class DrawPixels {
   /** s and t (floats) of generator n at the pixel (px, py) */
   st2(tri: Tri, n: number, px: number, py: number, out: number[]): void {
     const dx = f(tri.ox + flt(px - tri.xi)), dy = f(tri.oy + flt(py - tri.yi));
+    // a generator the triangle has no planes for (numbered past BP's count) reads zeros
     const pl = (k: number): number => {
+      if (k >= tri.np) return 0;
       const o = k * 3, P = tri.planes;
       return f(f(P[o] + f(P[o + 1] * dx)) + f(P[o + 2] * dy));
     };
@@ -199,32 +233,9 @@ export class DrawPixels {
     const [lod, linear] = this.lodOf(tri, imap & 3, icoord & 3, x, y);
     const tx = [0, 0, 0, 0];
     sample(this.map(imap), IS >> ss, IT >> ts, lod, linear, bits(this.mode0[imap], 5, 3), tx);
-    const i = [tx[3], tx[2], tx[1]];
-    const mask = fmt === 0 ? 0xf8 : fmt === 1 ? 0xe0 : fmt === 2 ? 0xf0 : 0xf8;
-    const bump = bs === 0 ? 0 : i[bs - 1] & mask;
-    const vmask = fmt === 0 ? 0xff : fmt === 1 ? 0x1f : fmt === 2 ? 0x0f : 0x07;
-    const v = [0, 0, 0];
-    for (let k = 0; k < 3; k++) {
-      v[k] = i[k] & vmask;
-      if ((biasBits >> k) & 1) v[k] += fmt === 0 ? -128 : 1;
-    }
-    let o0 = 0, o1 = 0;
-    const m = mid & 3;
-    if (m !== 0) {
-      const A = bp[0x06 + 3 * (m - 1)], B = bp[0x07 + 3 * (m - 1)], C = bp[0x08 + 3 * (m - 1)];
-      const ma = sext11(A & 0x7ff), mb = sext11((A >> 11) & 0x7ff), mc = sext11(B & 0x7ff), md = sext11((B >> 11) & 0x7ff), me = sext11(C & 0x7ff), mf = sext11((C >> 11) & 0x7ff);
-      const exp = bits(A, 22, 2) | (bits(B, 22, 2) << 2) | (bits(C, 22, 2) << 4);
-      const shift = 17 - exp;
-      const type = mid & 12;
-      if (type === 0) { o0 = (ma * v[0] + mc * v[1] + me * v[2]) >> 3; o1 = (mb * v[0] + md * v[1] + mf * v[2]) >> 3; }
-      else if (type === 4) { o0 = Math.trunc((S * v[0]) / 256); o1 = Math.trunc((T * v[0]) / 256); }
-      else if (type === 8) { o0 = Math.trunc((S * v[1]) / 256); o1 = Math.trunc((T * v[1]) / 256); }
-      if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
-    }
-    const wrapMask = (c: number, w: number): number => (w === 0 ? c : w === 6 || w === 7 ? 0 : c & (((256 >> (w - 1)) << 7) - 1));
-    let rs = wrapMask(S, sw) + o0, rt = wrapMask(T, tw) + o1;
-    if (addprev) { rs += prevS; rt += prevT; }
-    return [(rs << 8) >> 8, (rt << 8) >> 8, bump];
+    const res = indirectOffsets(bp, ind, tx, S, T, prevS, prevT);
+    if ((globalThis as any).DBG?.(x, y)) console.log(`indirect ind=${ind.toString(16)} bt=${bt} imap=${imap} icoord=${icoord} ss=${ss} ts=${ts} IS=${IS} IT=${IT} lod=${lod} linear=${linear} tx=${tx} stage S,T=${S},${T} prev=${prevS},${prevT} -> ${res}`);
+    return res;
   }
 
   /** draw a triangle into the EFB */
@@ -272,6 +283,8 @@ export class DrawPixels {
           // TEV
           for (let i = 0; i < 16; i++) regs[i] = this.reg0[i];
           let lastTexel = [0, 0, 0, 0];
+          // a stage whose texture is off keeps the value of the stage before; the first has none (zero)
+          tex[0] = tex[1] = tex[2] = tex[3] = 0;
           let prevS = 0, prevT = 0;
           for (let si = 0; si < nStages; si++) {
             const ord = bp[0x28 + (si >> 1)] >> (si & 1 ? 12 : 0);
@@ -359,6 +372,7 @@ export class DrawPixels {
             } else ra = tevRegular(true, aa & 255, ab & 255, ac_ & 255, sext11(ad & 0x7ff), abias, aop, ascale, aclamp);
             regs[cdest * 4] = rc[0]; regs[cdest * 4 + 1] = rc[1]; regs[cdest * 4 + 2] = rc[2];
             regs[adest * 4 + 3] = ra;
+            if ((globalThis as any).DBG?.(x, y)) console.log(`stage ${si}: ca=${ca} cb=${cb} cc=${ccc} cd=${cd} aa=${aa} ab=${ab} ac=${ac_} ad=${ad} tex=${tex} ras=${rs} -> rc=${rc} ra=${ra} dest ${cdest}/${adest}; regs=${regs}`);
           }
           // result: the last stage's destinations
           const lastC = bits(bp[0xc0 + 2 * (nStages - 1)], 22, 2), lastA = bits(bp[0xc1 + 2 * (nStages - 1)], 22, 2);

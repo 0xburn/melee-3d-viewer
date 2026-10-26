@@ -8,10 +8,14 @@ const q = new URLSearchParams(location.search);
 const log = (s: string) => fetch("/log", { method: "POST", body: s });
 const get = async (u: string) => new Uint8Array(await (await fetch(u)).arrayBuffer());
 const gl = document.createElement("canvas").getContext("webgl2", { antialias: false, alpha: false })!;
-const manifest = await (await fetch("/spec/manifest.json")).json();
-const w = manifest.windows.find((x: any) => x.name === q.get("window"))!;
-const dff = parseDff(await get("/spec/" + w.recording));
-const mem1 = await get("/spec/" + w.memory);
+// either a window of the spec harness (window=name) or a bare stream with no initial memory (dff=path under the spec folder, from=first drawn frame)
+const dffPath = q.get("dff");
+const manifest = dffPath ? null : await (await fetch("/spec/manifest.json")).json();
+const w = manifest?.windows.find((x: any) => x.name === q.get("window"));
+const dff = parseDff(await get("/spec/" + (dffPath ?? w.recording)));
+const mem1 = dffPath ? new Uint8Array(0x1800000) : await get("/spec/" + w.memory);
+const fromFrame = Number(q.get("from") ?? 1);
+const toFrame = Number(q.get("to") ?? dff.frames.length - 1);
 const frameSel = Number(q.get("frame") ?? 1);
 const gpuBe = new GxGl(gl);
 let gpu!: GxGpu;
@@ -50,6 +54,16 @@ function compare(why: string) {
     log(`frame ${frame}: EFB differs after ${why} (pass ${passNo}, draws ${lastPassDraw}..${drawIdx - 1}): ${n} pixels, first (${first % 640},${(first / 640) | 0}) gpu ${g.color[first].toString(16)}/${g.depth[first]} cpu ${c.color[first].toString(16)}/${c.depth[first]}`);
   }
 }
+// the pictures (the frame buffer at each copy to the screen) must agree too
+const gpuPics: Uint8Array[] = [];
+gpuBe.onPicture = (rgba) => { gpuPics.push(rgba.slice()); };
+cpuBe.onPicture = (rgba) => {
+  const g = gpuPics.shift();
+  if (!g) { log(`frame ${frame}: gpu made no picture`); return; }
+  let n = 0, first = -1;
+  for (let i = 0; i < rgba.length; i += 4) if (rgba[i] !== g[i] || rgba[i + 1] !== g[i + 1] || rgba[i + 2] !== g[i + 2]) { n++; if (first < 0) first = i >> 2; }
+  log(`frame ${frame}: picture ${n ? n + " pixels differ, first (" + (first % 640) + "," + ((first / 640) | 0) + ")" : "equal"}`);
+};
 gpuBe.onFlush = () => { compare("flush"); passNo++; lastPassDraw = drawIdx; };
 gpu = new GxGpu(both as any, dff, mem1);
 cpuMem.set(gpu.mem.data);
@@ -57,9 +71,10 @@ const origWrite = gpu.mem.write.bind(gpu.mem);
 gpu.mem.write = (a: number, b: Uint8Array) => { if (frame === 1 && a < 0x700000 && a + b.length > 0x4f0000) log(`write ${a.toString(16)} len ${b.length} at draw ${drawIdx} passNo ${passNo}`); origWrite(a, b); };
 const origTouch = gpu.mem.touch.bind(gpu.mem);
 gpu.mem.touch = (a: number, n: number) => { origTouch(a, n); cpuMem.set(gpu.mem.data.subarray(a, a + n), a); };
-for (let i = 0; i < dff.frames.length && !reported; i++) {
+for (let i = 0; i <= toFrame && !reported; i++) {
   frame = i;
-  gpuBe.drawing = cpuBe.drawing = i > 0;
+  gpuBe.drawing = cpuBe.drawing = i >= fromFrame;
+  gpuBe.fastForward = cpuBe.fastForward = i < fromFrame;
   gpu.runFrame(dff.frames[i]);
 }
 await log(reported ? "mismatch found" : "no mismatch");

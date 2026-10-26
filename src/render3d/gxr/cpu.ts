@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /* GX renderer: the whole pipeline on the CPU (transform, clip, setup, pixel stage, copies) as one GxBackend. It is the
  * reference implementation of GX-RASTER-SPEC: slow, plain, exact. The WebGL renderer (gl.ts) shares its front half (xform.ts,
  * setup.ts) and replaces the pixel stage. */
@@ -23,16 +24,32 @@ export function snapshot(regs: GxRegs): PixState {
 export class CpuBackend implements GxBackend {
   readonly efb = new Efb();
   readonly pool = new Pool();
-  /** draws are skipped until this is set (the reference draws nothing in the first frame) */
-  drawing = false;
+  /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording) */
+  drawing = true;
+  /** playing through frames to reach a later one: draws are skipped (as with `drawing` false) and so are the frames' copies and clears */
+  fastForward = false;
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;
+  stats = { cpuMs: 0, flushMs: 0 };
+  private last: Uint8Array | null = null;
+  /** back to a fresh processor: an empty frame buffer, no picture */
+  reset(): void {
+    this.efb.color.fill(0); this.efb.depth.fill(0);
+    this.pictures = 0; this.tris = 0; this.last = null;
+  }
+
+  /** draw the last picture (the frame buffer at the last copy to the screen) into a canvas */
+  present(target: { putImageData(d: ImageData, x: number, y: number): void } | { getContext(k: "2d"): { putImageData(d: ImageData, x: number, y: number): void } | null }): void {
+    if (!this.last) return;
+    const ctx = "putImageData" in target ? target : target.getContext("2d");
+    ctx?.putImageData(new ImageData(new Uint8ClampedArray(this.last.buffer, this.last.byteOffset, this.last.length) as unknown as ImageDataArray, 640, 480), 0, 0);
+  }
 
   constructor(private env: () => Env) {}
 
   draw(regs: GxRegs, mem: Memory, vd: VertexData, tris: number[], lines: number[], points: number[], prims: { type: number; base: number; count: number }[]): void {
-    if (!this.drawing) return;
+    if (!this.drawing || this.fastForward) return;
     const pool = this.pool;
     pool.clear();
     const x = xfDraw(regs, vd);
@@ -82,14 +99,15 @@ export class CpuBackend implements GxBackend {
     const p = copyParams(regs.bp);
     p.pixFmt = bits(regs.bp[0x43], 0, 3);
     if (p.toScreen) {
-      if (this.onPicture) {
+      {
         const out = new Uint8Array(EFB_W * 480 * 4);
         const px = [0, 0, 0, 0];
         for (let i = 0; i < EFB_W * 480; i++) {
           readColor(this.efb.color[i], p.pixFmt, px);
           out[i * 4] = px[0]; out[i * 4 + 1] = px[1]; out[i * 4 + 2] = px[2]; out[i * 4 + 3] = px[3];
         }
-        this.onPicture(out, this.pictures);
+        this.last = out;
+        this.onPicture?.(out, this.pictures);
       }
       this.pictures++;
     } else {

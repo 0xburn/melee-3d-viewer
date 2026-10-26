@@ -10,8 +10,10 @@ const gl = canvas.getContext("webgl2", { antialias: false, depth: false, stencil
 const manifest = await (await fetch("/spec/manifest.json")).json();
 const only = q.get("windows")?.split(",");
 const t0 = performance.now();
+if (q.get("profile")) await fetch("/go");
 const be = new GxGl(gl);
 be.timing = q.get("timing") === "1";
+be.measure = q.get("nomeasure") !== "1";
 await be.prepare();
 await log(`compiled in ${(performance.now() - t0).toFixed(0)} ms`);
 let failed = false;
@@ -22,6 +24,7 @@ for (const w of manifest.windows) {
     const mem1 = await get("/spec/" + w.memory);
     be.reset();
     const gpu = new GxGpu(be, dff, mem1);
+    gpu.measure = be.measure;
     const pic = q.get("pic") !== "0";
     if (pic) be.onPicture = (rgba, k) => {
       const f = new Uint8Array(12 + rgba.length);
@@ -36,10 +39,15 @@ for (const w of manifest.windows) {
       const n = Number(q.get("loops"));
       for (let i = 0; i < dff.frames.length; i++) { be.drawing = i > 0; gpu.runFrame(dff.frames[i]); }
       be.finish();
+      be.stats.cpuMs = 0; be.stats.flushMs = 0; be.stats.uploadMs = 0; be.stats.memBytes = 0; be.stats.listEntries = 0;
+      const heap0 = (performance as any).memory?.usedJSHeapSize ?? 0;
       const l0 = performance.now();
       for (let r = 0; r < n; r++) for (let i = 1; i < dff.frames.length; i++) { be.drawing = true; gpu.runFrame(dff.frames[i]); }
       be.finish();
+      await log(`   js heap ${(heap0 / 1048576).toFixed(0)} -> ${(((performance as any).memory?.usedJSHeapSize ?? 0) / 1048576).toFixed(0)} MiB, states ${(be as any).stateCount}`);
       const per = (performance.now() - l0) / (n * (dff.frames.length - 1));
+      await log(`   list entries per frame ${(be.stats.listEntries / (n * 4 + 4)).toFixed(0)} (per pixel ${(be.stats.listEntries / (n * 4 + 4) * 256 / (640 * 528)).toFixed(1)})`);
+      await log(`   uploads: ${(be.stats.uploadMs / (n * 4 + 4)).toFixed(2)} ms and ${(be.stats.memBytes / (n * 4 + 4) / 1024).toFixed(0)} KiB per frame, bin+upload ${(be.stats.flushMs / (n * 4 + 4)).toFixed(2)} ms, front half ${(be.stats.cpuMs / (n * 4 + 4)).toFixed(2)} ms`);
       await log(`${w.name}: ${per.toFixed(1)} ms per frame over ${n * (dff.frames.length - 1)} frames (${(1000 / per).toFixed(0)} fps), tris/frame ${(be.tris / (n + 1) / 4) | 0}`);
       continue;
     }

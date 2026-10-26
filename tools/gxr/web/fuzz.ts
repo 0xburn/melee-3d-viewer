@@ -10,7 +10,7 @@ import { basicScene, FifoWriter } from "../../../src/render3d/gxr/encode.ts";
 const q = new URLSearchParams(location.search);
 const log = (s: string) => fetch("/log", { method: "POST", body: s });
 const gl = document.createElement("canvas").getContext("webgl2", { antialias: false, alpha: false })!;
-const be = new GxGl(gl);
+const be = new GxGl(gl, { debugRegs: q.get("dbgregs") ? (q.get("dbgregs")!.split(",").map(Number) as [number, number]) : undefined });
 
 class Rng {
   s: number;
@@ -127,6 +127,7 @@ function buildScene(seed: number, o: Opts): { stream: Uint8Array; mem: Uint8Arra
     w.bp(0xf2, r.int(1 << 24));
     if (r.chance(0.4)) { w.bp(0xe8, 342 + 320 | (1 << 10)); w.bp(0xe9, r.int(1 << 24)); w.bp(0xea, r.int(1 << 24)); w.bp(0xeb, r.int(1 << 24)); w.bp(0xec, r.int(1 << 24)); w.bp(0xed, r.int(1 << 24)); }
   }
+  for (const o2 of (q.get("ov") ?? "").split(",").filter(Boolean)) { const [a, v] = o2.split(":"); w.bp(Number(a), Number(v)); }
   const only = q.get("ns");
   if (only) w.bp(0x00, (bp0 & ~(15 << 10)) | ((Number(only) - 1) << 10));
   // triangles
@@ -192,6 +193,7 @@ for (let seed = n0; seed < n0 + n; seed++) {
     for (let i = 0; i < a.color.length; i++) { if (a.color[i] !== a2.color[i] || a.depth[i] !== a2.depth[i]) da++; if (b.color[i] !== b2.color[i] || b.depth[i] !== b2.depth[i]) db++; }
     if (da || db) await log(`seed ${seed}: rerun differs: cpu ${da} px, gpu ${db} px`);
   }
+  if (q.get("px")) { const [px, py] = q.get("px")!.split(",").map(Number); const i = py * 640 + px; await log(`pixel ${px},${py}: cpu ${a.color[i].toString(16)} gpu ${b.color[i].toString(16)}`); }
   let diff = 0, first = -1;
   for (let i = 0; i < a.color.length; i++) if (a.color[i] !== b.color[i] || a.depth[i] !== b.depth[i]) { diff++; if (first < 0) first = i; }
   if (diff) {

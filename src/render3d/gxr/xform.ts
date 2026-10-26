@@ -100,6 +100,8 @@ function lightTerms(F: Float32Array, ctrl: number, b: number, ex: number, ey: nu
 }
 
 const Lc = new Float64Array(3);
+// the light terms already computed for the current vertex (by light): the key (functions + 1, 0 when none), attenuation and diffuse
+const lcKey = new Int32Array(8), lcAttn = new Float64Array(8), lcDif = new Float64Array(8);
 const SHIFTS = [24, 16, 8];
 
 /** one channel's 4 bytes, written to D[o .. o + 3]: the color control word at XF 0x100E + ch, the alpha control at 0x1010 + ch */
@@ -120,8 +122,10 @@ function channelBytes(x: XfDraw, ch: number, vcol: Uint8Array | null, vi: number
     for (let n = 0; n < 8; n++) {
       if (!((ctrl >> (n < 4 ? 2 + n : 7 + n)) & 1)) continue;
       const b = 0x600 + 16 * n;
-      lightTerms(F, ctrl, b, ex, ey, ez, nx, ny, nz);
-      const attn = L_attn, dif = L_dif;
+      // the terms depend on the diffuse and attenuation functions only: the channels and parts of a vertex that share them share the numbers
+      const key = ((ctrl >> 7) & 15) + 1;
+      if (lcKey[n] !== key) { lightTerms(F, ctrl, b, ex, ey, ez, nx, ny, nz); lcKey[n] = key; lcAttn[n] = L_attn; lcDif[n] = L_dif; }
+      const attn = lcAttn[n], dif = lcDif[n];
       const color = W[b + 3];
       if (part === 0) {
         const s = dfn === 0 ? attn : dfn === 1 ? f(attn * dif) : f(attn * max0(dif));
@@ -201,6 +205,7 @@ export function transformVertices(x: XfDraw, regs: GxRegs, vd: VertexData, pool:
       }
     }
     // channel colors
+    lcKey.fill(0);
     for (let ch = 0; ch < 2; ch++) {
       if (ch < nch) channelBytes(x, ch, L.col[ch].kind ? vd.col[ch] : null, i, ex, ey, ez, nx, ny, nz, D, o + V_COL + ch * 4);
       else { const k = o + V_COL + ch * 4; D[k] = 0; D[k + 1] = 0; D[k + 2] = 0; D[k + 3] = 0; }

@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /* GX renderer: small WebGL 2 helpers (programs, integer textures, a full-screen pass). */
 
 /** a program being compiled: with KHR_parallel_shader_compile the browser compiles on another thread and `ready()` says when it is done */

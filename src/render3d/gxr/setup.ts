@@ -69,7 +69,7 @@ function plane(dst: Float32Array, o: number, f0: number, f1: number, f2: number)
 
 /** set up one triangle from pool vertices a, b, c (in this order). Returns false when it covers no block; otherwise the header is in
  *  `TS` and the planes (TS.np of them, 3 floats each) are written to dst from dstOff. */
-export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: number, c: number, dst: Float32Array, dstOff: number, screen: Float64Array | null = null): boolean {
+export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: number, c: number, dst: Float32Array, dstOff: number, screen: Float64Array | null = null, stride = 3): boolean {
   const D = pool.data;
   if (screen) {
     for (let i = 0; i < 3; i++) { SX[i] = screen[i * 3]; SY[i] = screen[i * 3 + 1]; SZ[i] = screen[i * 3 + 2]; }
@@ -101,19 +101,19 @@ export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: 
   g_nfdy12 = -fdy12;
   g_cden = f(f(-g_fdx12 * g_fdy31) - f(g_fdx31 * g_nfdy12));
   IW[0] = f(1 / D[a + V_C + 3]); IW[1] = f(1 / D[b + V_C + 3]); IW[2] = f(1 / D[c + V_C + 3]);
-  plane(dst, dstOff + P_INVW * 3, IW[0], IW[1], IW[2]);
-  if (sc.zFreeze) { const o = dstOff + P_Z * 3; dst[o] = lastZ[0]; dst[o + 1] = lastZ[1]; dst[o + 2] = lastZ[2]; }
-  else { plane(dst, dstOff + P_Z * 3, SZ[0], SZ[1], SZ[2]); const o = dstOff + P_Z * 3; lastZ[0] = dst[o]; lastZ[1] = dst[o + 1]; lastZ[2] = dst[o + 2]; }
+  plane(dst, dstOff + P_INVW * stride, IW[0], IW[1], IW[2]);
+  if (sc.zFreeze) { const o = dstOff + P_Z * stride; dst[o] = lastZ[0]; dst[o + 1] = lastZ[1]; dst[o + 2] = lastZ[2]; }
+  else { plane(dst, dstOff + P_Z * stride, SZ[0], SZ[1], SZ[2]); const o = dstOff + P_Z * stride; lastZ[0] = dst[o]; lastZ[1] = dst[o + 1]; lastZ[2] = dst[o + 2]; }
   const nc = sc.numCols * 4;
   for (let k = 0; k < 8; k++) {
-    if (k < nc) plane(dst, dstOff + (P_COL + k) * 3, D[a + V_COL + k], D[b + V_COL + k], D[c + V_COL + k]);
-    else { const o = dstOff + (P_COL + k) * 3; dst[o] = 0; dst[o + 1] = 0; dst[o + 2] = 0; }
+    if (k < nc) plane(dst, dstOff + (P_COL + k) * stride, D[a + V_COL + k], D[b + V_COL + k], D[c + V_COL + k]);
+    else { const o = dstOff + (P_COL + k) * stride; dst[o] = 0; dst[o + 1] = 0; dst[o + 2] = 0; }
   }
   const ng = sc.numGens;
   for (let n = 0; n < ng; n++) {
     for (let k = 0; k < 3; k++) {
       const o = V_T + n * 3 + k;
-      plane(dst, dstOff + (P_TEX + n * 3 + k) * 3, f(D[a + o] * IW[0]), f(D[b + o] * IW[1]), f(D[c + o] * IW[2]));
+      plane(dst, dstOff + (P_TEX + n * 3 + k) * stride, f(D[a + o] * IW[0]), f(D[b + o] * IW[1]), f(D[c + o] * IW[2]));
     }
   }
   TS.X0 = X[0]; TS.Y0 = Y[0]; TS.DX12 = DX12; TS.DY12 = DY12; TS.DX23 = DX23; TS.DY23 = DY23; TS.DX31 = DX31; TS.DY31 = DY31;

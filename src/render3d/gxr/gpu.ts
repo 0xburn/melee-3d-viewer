@@ -5,7 +5,7 @@
  * A run of draw commands with no register command between them is one GL draw (the registers are what they were for
  * each of them); a register command ends the run.
  */
-import { Dff, GxFrame, Memory } from "./dff";
+import { GxFrame, GxInitial, Memory } from "./dff";
 import { bits, GxRegs } from "./state";
 import { VertexData, VertexLayout, vertexLayout } from "./vertex";
 
@@ -27,7 +27,7 @@ export interface GxBackend {
 const EMPTY: number[] = [];
 
 export class GxGpu {
-  readonly regs: GxRegs;
+  regs: GxRegs;
   readonly mem = new Memory();
   readonly events: GpuEvent[] = [];
   /** called when the game copies the EFB to the screen */
@@ -35,15 +35,35 @@ export class GxGpu {
   drawCount = 0;
   /** ms spent decoding vertices and applying memory writes (a cost breakdown for tests) */
   timers = { vertex: 0, memory: 0 };
+  /** whether `timers` are kept (reading the clock per run costs about 1% of a frame) */
+  measure = false;
   private cpVersion = 0;
   private layouts = new Map<number, { v: number; l: VertexLayout }>();
   private vd = new VertexData(null as never);
   private run: { vd: VertexData; tris: number[]; lines: number[]; points: number[]; prims: { type: number; base: number; count: number }[] } | null = null;
 
-  constructor(readonly renderer: GxBackend, dff: Dff, mem1?: Uint8Array | null) {
-    this.regs = new GxRegs(dff.bp, dff.cp, dff.xfMem, dff.xfRegs);
-    if (dff.texMem.length) this.regs.tmem.set(dff.texMem.subarray(0, this.regs.tmem.length));
+  constructor(readonly renderer: GxBackend, init: GxInitial, mem1?: Uint8Array | null) {
+    this.regs = new GxRegs(init.bp, init.cp, init.xfMem, init.xfRegs);
+    this.load(init, mem1);
+  }
+
+  private load(init: GxInitial, mem1?: Uint8Array | null): void {
+    if (init.texMem.length) this.regs.tmem.set(init.texMem.subarray(0, this.regs.tmem.length));
     if (mem1) { this.mem.data.set(mem1.subarray(0, this.mem.data.length)); this.mem.touch(0, this.mem.data.length); }
+  }
+
+  /** the state of the constructor again on the same backend (a restart, a seek backward): memory zero or `mem1`, registers from `init`,
+   *  the backend's frame buffer and caches dropped (when it has a `reset`) */
+  reset(init: GxInitial, mem1?: Uint8Array | null): void {
+    this.run = null;
+    this.events.length = 0;
+    this.drawCount = 0;
+    this.cpVersion++;
+    (this.renderer as { reset?: () => void }).reset?.();
+    this.mem.data.fill(0);
+    this.mem.touch(0, this.mem.data.length);
+    this.regs = new GxRegs(init.bp, init.cp, init.xfMem, init.xfRegs);
+    this.load(init, mem1);
   }
 
   private layout(vat: number): VertexLayout {
@@ -67,7 +87,7 @@ export class GxGpu {
     const data = frame.fifo, ups = frame.updates;
     let ui = 0;
     const apply = (pos: number) => {
-      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = performance.now(); this.mem.write(ups[ui].addr, ups[ui].data); this.timers.memory += performance.now() - t0; ui++; }
+      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = this.measure ? performance.now() : 0; this.mem.write(ups[ui].addr, ups[ui].data); if (this.measure) this.timers.memory += performance.now() - t0; ui++; }
     };
     this.execute(data, apply);
     apply(Number.MAX_SAFE_INTEGER);
@@ -92,7 +112,8 @@ export class GxGpu {
         const end = pos + 3 + L.size * count;
         if (end > n) break;
         // a renderer that is not drawing (the frames a seek plays through) needs only the command stepped over: no vertex decoding
-        if ((this.renderer as { drawing?: boolean }).drawing === false) { pos = end; continue; }
+        const rr = this.renderer as { drawing?: boolean; fastForward?: boolean };
+        if (rr.drawing === false || rr.fastForward === true) { pos = end; continue; }
         let run = this.run;
         if (run && run.vd.layout !== L) { this.flush(); run = null; }
         if (!run) {
@@ -103,9 +124,9 @@ export class GxGpu {
           run = this.run = { vd: this.vd, tris: EMPTY, lines: EMPTY, points: EMPTY, prims: [] };
         }
         const base = run.vd.n;
-        const tv = performance.now();
+        const tv = this.measure ? performance.now() : 0;
         run.vd.add(data, pos + 3, count, regs.cp, this.mem.data, this.mem.view);
-        this.timers.vertex += performance.now() - tv;
+        if (this.measure) this.timers.vertex += performance.now() - tv;
         run.prims.push({ type: prim, base, count });
         pos = end;
         continue;
@@ -120,8 +141,8 @@ export class GxGpu {
           } else if (ev.kind === "preload") {
             regs.tmem.set(this.mem.read(ev.src, ev.bytes).subarray(0, Math.max(0, regs.tmem.length - ev.tmem)), ev.tmem);
             regs.tmemVersion++;
-          } else if (ev.kind === "copy" && (this.renderer as { drawing?: boolean }).drawing === false) {
-            // (not drawing: the frame's copies are the next frame's own to make)
+          } else if (ev.kind === "copy" && (this.renderer as { fastForward?: boolean }).fastForward === true) {
+            // (fast-forwarding: the frame's copies are the next frame's own to make)
           } else if (ev.kind === "copy") {
             const c = this.renderer.copy(regs, this.mem, ev.value);
             if (c.toXfb) { this.events.push({ kind: "xfb", rect: c.rect }); this.onXfb?.(c.rect); }
