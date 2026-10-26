@@ -8,7 +8,7 @@ The folder holds, per game, the simulator's viewer track made with MSL_VIEWER_TR
 "ws" lines: patch 0010 of docs/cloud-patches/round3) and the viewer's pose log of the same game (?poselog, or
 __viewer3d.poseLog({ start: true }) then { take: true }: src/render3d/poselog.ts), named
 
-    <game>.track.vtb    the compact form (VTB1, gzipped), or
+    <game>.track.vtb    the compact form (VTB1 or VTB2, gzipped), or
     <game>.track.json   the track as JSON ({"events": [...]}), or
     <game>.track.jsonl  the simulator's own lines, one JSON array a line
     <game>.poselog.jsonl
@@ -102,12 +102,146 @@ def _column(r: _Reader, n: int) -> list:
     return [table[r.varint()] for _ in range(n)]
 
 
-def read_vtb1(b: bytes) -> list:
-    """the events of a track's compact form (trackcodec.ts readTrack), in the track's order"""
+# The pose types of VTB2 (src/render3d/trackcodec.ts): head numbers, ids before a group's mask, which head number
+# tells the character or the stage part (-1 none); and "fp"'s values, which are its "fj" line's of the same frame.
+_POSE = {"fj": (3, 1, 2), "fp": (3, 1, 2), "wf": (3, 1, 2), "jp": (1, 1, -1), "wi": (1, 1, -1), "sp": (1, 1, 0),
+         "ws": (1, 1, 0), "lm": (2, 2, -1)}
+_DERIVE = {"fp": "fj"}
+_ID = 4096
+_RANKS = 1024
+
+
+def _bits(mask: int) -> list:
+    return [b for b in range(16) if mask >> b & 1]
+
+
+class _Model:
+    """what a pose type's values are predicted from (trackcodec.ts Model)"""
+
+    def __init__(self, spec):
+        self.spec, self.ctx, self.last, self.owner, self.ch = spec, {}, {}, {}, 0
+
+    def start(self, head):
+        self.owner = self.last.setdefault(head, {})
+        c = self.spec[2]
+        self.ch = head[c] + 1 if c >= 0 else 0
+
+    def slot(self, idkey, b):
+        lk = idkey * 16 + b
+        ck = (self.ch * _ID ** self.spec[1] + idkey) * 16 + b
+        c = self.ctx.get(ck)
+        if c is None:
+            c = self.ctx[ck] = ({}, [])
+        return lk, c, self.owner.get(lk, -1)
+
+    def put(self, lk, c, prev, x):
+        c[0][prev] = x
+        recent = c[1]
+        if x in recent:
+            recent.remove(x)
+        recent.insert(0, x)
+        del recent[_RANKS:]
+        self.owner[lk] = x
+
+
+def _read_pose(r: _Reader, name: str, frames: list, pending: list) -> list:
+    """a pose type's events, floats as "0x" words; those whose values another type holds are None, in `pending`"""
+    spec = _POSE[name]
+    h, g, _ = spec
+    n = len(frames)
+    heads = [_column(r, n) for _ in range(h)]
+    derived = [0] * n
+    if name in _DERIVE:
+        derived = list(r.b[r.o:r.o + n])
+        r.o += n
+    counts = _column(r, n)
+    ids = []
+    for _ in range(g):
+        col = []
+        for c in counts:
+            before = 0
+            for _ in range(c):
+                before += r.zigzag()
+                col.append(before)
+        ids.append(col)
+    masks = [r.varint() for _ in range(sum(counts))]
+    plan, gi, wanted = [], 0, 0
+    for k in range(n):
+        gs = []
+        for _ in range(counts[k]):
+            key = 0
+            for col in ids:
+                key = key * _ID + col[gi]
+            gs.append((key, masks[gi], [col[gi] for col in ids]))
+            if not derived[k]:
+                wanted += len(_bits(masks[gi]))
+            gi += 1
+        plan.append((tuple(col[k] for col in heads), gs))
+    tags = [r.varint() for _ in range(wanted)]
+    nlit = r.varint()
+    planes = [r.b[r.o + q * nlit:r.o + (q + 1) * nlit] for q in range(4)]
+    r.o += 4 * nlit
+    model, lit, t, events = _Model(spec), 0, 0, []
+    for k in range(n):
+        head, gs = plan[k]
+        if derived[k]:
+            events.append(None)
+            pending.append((k, frames[k], head, gs))
+            continue
+        e = [frames[k], name, *head]
+        model.start(head)
+        for key, mask, idv in gs:
+            e += idv + [mask]
+            for b in _bits(mask):
+                lk, c, prev = model.slot(key, b)
+                tag = tags[t]
+                t += 1
+                if tag == 0:
+                    x = c[0][prev]
+                elif tag == 1:
+                    x = planes[0][lit] | planes[1][lit] << 8 | planes[2][lit] << 16 | planes[3][lit] << 24
+                    lit += 1
+                else:
+                    x = c[1][tag - 2]
+                model.put(lk, c, prev, x)
+                e.append("0x%08x" % x)
+        events.append(e)
+    return events
+
+
+def _fill(rows: dict, pending: dict) -> None:
+    """the events _read_pose left out, made with the values of the type that holds them"""
+    for name, todo in pending.items():
+        if not todo:
+            continue
+        h, g, _ = _POSE[name]
+        index = {}
+        for s in rows[_DERIVE[name]]:
+            have, i = {}, 2 + h
+            while i < len(s):
+                key = 0
+                for v in s[i:i + g]:
+                    key = key * _ID + v
+                bits = _bits(s[i + g])
+                for b, v in zip(bits, s[i + g + 1:i + g + 1 + len(bits)]):
+                    have[(key, b)] = v
+                i += g + 1 + len(bits)
+            index[(s[0], tuple(s[2:2 + h]))] = have
+        for k, frame, head, gs in todo:
+            have = index[(frame, head)]
+            e = [frame, name, *head]
+            for key, mask, idv in gs:
+                e += idv + [mask] + [have[(key, b)] for b in _bits(mask)]
+            rows[name][k] = e
+
+
+def read_vtb(b: bytes) -> list:
+    """the events of a track's compact form (trackcodec.ts readTrack), VTB1 or VTB2, in the track's order"""
     if b[:2] == b"\x1f\x8b":
         b = gzip.decompress(b)
-    if b[:4] != b"VTB1":
-        raise ValueError("not a VTB1 track")
+    if b[:4] not in (b"VTB1", b"VTB2"):
+        raise ValueError("not a VTB2 track")
+    two = b[:4] == b"VTB2"
     r = _Reader(b)
     r.o = 4
     r.text()  # (the track's own fields)
@@ -117,9 +251,17 @@ def read_vtb1(b: bytes) -> list:
     counts = [0] * len(names)
     for t in order:
         counts[t] += 1
-    rows = []
+    rows, pending = {}, {}
     for t, name in enumerate(names):
         n = counts[t]
+        if two and r.byte() == 1:
+            frames, last = [], 0
+            for _ in range(n):
+                last += r.zigzag()
+                frames.append(last)
+            pending[name] = []
+            rows[name] = _read_pose(r, name, frames, pending[name])
+            continue
         same = r.byte() == 0
         lengths = [r.varint()] * n if same else [r.varint() for _ in range(n)]
         events, last = [], 0
@@ -130,20 +272,24 @@ def read_vtb1(b: bytes) -> list:
             have = [events[i] for i in range(n) if lengths[i] > j]
             for e, v in zip(have, _column(r, len(have))):
                 e.append(v)
-        rows.append(events)
-    at = [0] * len(names)
+        rows[name] = events
+    _fill(rows, pending)
+    at = dict.fromkeys(names, 0)
     out = []
     for t in order:
-        out.append(rows[t][at[t]])
-        at[t] += 1
+        out.append(rows[names[t]][at[names[t]]])
+        at[names[t]] += 1
     return out
+
+
+read_vtb1 = read_vtb
 
 
 def read_events(path: str) -> list:
     with open(path, "rb") as f:
         b = f.read()
-    if path.endswith(".vtb") or b[:2] == b"\x1f\x8b" or b[:4] == b"VTB1":
-        return read_vtb1(b)
+    if path.endswith(".vtb") or b[:2] == b"\x1f\x8b" or b[:4] in (b"VTB1", b"VTB2"):
+        return read_vtb(b)
     text = b.decode("utf-8")
     if path.endswith(".json"):
         doc = json.loads(text)
