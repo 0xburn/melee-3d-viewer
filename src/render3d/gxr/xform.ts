@@ -179,6 +179,8 @@ export function transformVertices(x: XfDraw, regs: GxRegs, vd: VertexData, pool:
   const [p0, p1, p2, p3, p4, p5] = x.proj;
   const colOut = [0, 0, 0, 0];
   const E = [0, 0, 0], N = [0, 0, 1];
+  /** the generated coordinates before the size scale (what emboss reads) */
+  const pre = new Array(24).fill(0);
   const bp = regs.bp;
   for (let i = 0; i < vd.n; i++) {
     const o = pool.alloc();
@@ -294,12 +296,12 @@ export function transformVertices(x: XfDraw, regs: GxRegs, vd: VertexData, pool:
         normalize3(ld);
         const d1 = dot3(ld[0], ld[1], ld[2], tn1x, tn1y, tn1z);
         const d2 = dot3(ld[0], ld[1], ld[2], tn2x, tn2y, tn2z);
-        const so = o + V_T + esrc * 3;
-        u = f(D[so] + d1); v = f(D[so + 1] + d2); w = D[so + 2];
+        u = f(pre[esrc * 3] + d1); v = f(pre[esrc * 3 + 1] + d2); w = pre[esrc * 3 + 2];
       } else {
         const c = type === 2 ? 0 : 1;
         u = f(D[o + V_COL + c * 4] / 255); v = f(D[o + V_COL + c * 4 + 1] / 255); w = 1;
       }
+      pre[n * 3] = u; pre[n * 3 + 1] = v; pre[n * 3 + 2] = w;
       // scale by the texture size
       u = f(u * (bits(bp[0x30 + 2 * n], 0, 16) + 1));
       v = f(v * (bits(bp[0x31 + 2 * n], 0, 16) + 1));
