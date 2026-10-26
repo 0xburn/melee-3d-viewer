@@ -1,10 +1,33 @@
 /* GX renderer: small WebGL 2 helpers (programs, integer textures, a full-screen pass). */
 
-export function compile(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram {
+/** a program being compiled: with KHR_parallel_shader_compile the browser compiles on another thread and `ready()` says when it is done */
+export interface Compiling { program: WebGLProgram; vs: WebGLShader; fs: WebGLShader; fsSource: string }
+
+/** start compiling and linking; nothing here waits for the compiler (reading a compile or link status would) */
+export function startCompile(gl: WebGL2RenderingContext, vs: string, fs: string): Compiling {
   const mk = (type: number, src: string): WebGLShader => {
     const s = gl.createShader(type)!;
     gl.shaderSource(s, src);
     gl.compileShader(s);
+    return s;
+  };
+  const v = mk(gl.VERTEX_SHADER, vs), f = mk(gl.FRAGMENT_SHADER, fs);
+  const p = gl.createProgram()!;
+  gl.attachShader(p, v);
+  gl.attachShader(p, f);
+  gl.linkProgram(p);
+  return { program: p, vs: v, fs: f, fsSource: fs };
+}
+
+/** whether the browser has finished compiling (always true without the extension: reading the status then waits) */
+export function compileDone(gl: WebGL2RenderingContext, c: Compiling): boolean {
+  const ext = gl.getExtension("KHR_parallel_shader_compile");
+  return ext ? gl.getProgramParameter(c.program, ext.COMPLETION_STATUS_KHR) === true : true;
+}
+
+/** the program, after checking the compile and link status (this waits for the compiler if it is still running) */
+export function finishCompile(gl: WebGL2RenderingContext, c: Compiling): WebGLProgram {
+  for (const [s, src] of [[c.vs, ""], [c.fs, c.fsSource]] as [WebGLShader, string][]) {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
       const log = gl.getShaderInfoLog(s) ?? "";
       const lines = src.split("\n");
@@ -12,14 +35,14 @@ export function compile(gl: WebGL2RenderingContext, vs: string, fs: string): Web
       const at = m ? Number(m[1]) : 0;
       throw new Error(`shader compile failed: ${log}\n${lines.slice(Math.max(0, at - 4), at + 3).join("\n")}`);
     }
-    return s;
-  };
-  const p = gl.createProgram()!;
-  gl.attachShader(p, mk(gl.VERTEX_SHADER, vs));
-  gl.attachShader(p, mk(gl.FRAGMENT_SHADER, fs));
-  gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("program link failed: " + gl.getProgramInfoLog(p));
-  return p;
+  }
+  if (!gl.getProgramParameter(c.program, gl.LINK_STATUS)) throw new Error("program link failed: " + gl.getProgramInfoLog(c.program));
+  return c.program;
+}
+
+/** compile and link, waiting for the result */
+export function compile(gl: WebGL2RenderingContext, vs: string, fs: string): WebGLProgram {
+  return finishCompile(gl, startCompile(gl, vs, fs));
 }
 
 /** a triangle that covers the viewport */

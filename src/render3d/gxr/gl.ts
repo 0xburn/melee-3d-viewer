@@ -10,7 +10,7 @@ import { Memory } from "./dff";
 import { copyFormat, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS } from "./glsl-copy";
 import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
-import { compile, FULLSCREEN_VS, intTexture, IntTex, uploadRows } from "./glutil";
+import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
 import { bitsOf } from "./f32";
 import type { GxBackend } from "./gpu";
 import { planeCount, setupCtx, setupTriInto, TS } from "./setup";
@@ -56,14 +56,15 @@ export class GxGl implements GxBackend {
   stats = { cpuMs: 0, flushMs: 0 };
 
   private gl: WebGL2RenderingContext;
-  private progPixel: WebGLProgram;
-  private progPixels = new Map<string, WebGLProgram>();
+  private pending: Map<string, Compiling>;
+  private progs = new Map<string, WebGLProgram>();
+  private get progPixel(): WebGLProgram { return this.program("pixel"); }
+  private get progCopy(): WebGLProgram { return this.program("copy"); }
+  private get progClear(): WebGLProgram { return this.program("clear"); }
+  private get progPicture(): WebGLProgram { return this.program("picture"); }
   /** what the queued draws need beyond the base shader: 1 the indirect unit, 2 the exponential fog and range adjustment */
   private needFeatures = 0;
   private stateFeatures: number[] = [];
-  private progCopy: WebGLProgram;
-  private progClear: WebGLProgram;
-  private progPicture: WebGLProgram;
   private mem!: IntTex;
   private memFbo!: WebGLFramebuffer;
   private efb: Fbo[] = [];
@@ -99,11 +100,11 @@ export class GxGl implements GxBackend {
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
-    if (!gl.getExtension("EXT_color_buffer_float")) throw new Error("EXT_color_buffer_float is needed");
-    this.progPixel = compile(gl, FULLSCREEN_VS, pixelShader());
-    this.progCopy = compile(gl, FULLSCREEN_VS, COPY_FS);
-    this.progClear = compile(gl, FULLSCREEN_VS, CLEAR_FS);
-    this.progPicture = compile(gl, FULLSCREEN_VS, PICTURE_FS);
+    // the programs compile in the background (when the browser can); `prepare()` waits for them, and the first draw would
+    this.pending = new Map([
+      ["pixel", startCompile(gl, FULLSCREEN_VS, pixelShader())], ["copy", startCompile(gl, FULLSCREEN_VS, COPY_FS)],
+      ["clear", startCompile(gl, FULLSCREEN_VS, CLEAR_FS)], ["picture", startCompile(gl, FULLSCREEN_VS, PICTURE_FS)],
+    ]);
     this.mem = intTexture(gl, "R8UI", MEM_ROW, MEM_ROWS);
     this.memFbo = this.fboOf(this.mem);
     for (let i = 0; i < 2; i++) { const t = intTexture(gl, "RG32UI", EFB_W, EFB_H); this.efb.push({ fbo: this.fboOf(t), tex: t }); }
@@ -156,12 +157,30 @@ export class GxGl implements GxBackend {
     this.cur = 0; this.pictures = 0; this.tris = 0; this.passes = 0;
   }
 
+  private program(name: string): WebGLProgram {
+    let p = this.progs.get(name);
+    if (!p) { p = finishCompile(this.gl, this.pending.get(name)!); this.progs.set(name, p); this.pending.delete(name); }
+    return p;
+  }
+
+  /** wait (without blocking the page) until the shaders are compiled; `features` also starts the optional pixel shader variants
+   *  (1: the indirect texture unit, 2: the exponential fog and range adjustment) so that no draw has to wait for them later */
+  async prepare(features = 0): Promise<void> {
+    for (const f of [1, 2, 3]) if ((features & f) === f && !this.pending.has("pixel" + f) && !this.progs.has("pixel" + f)) {
+      this.pending.set("pixel" + f, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (f & 1) !== 0, fogExtra: (f & 2) !== 0 })));
+    }
+    for (const [name, c] of [...this.pending]) {
+      while (!compileDone(this.gl, c)) await new Promise((r) => setTimeout(r, 10));
+      this.program(name);
+    }
+  }
+
   /** the pixel program for a set of features (compiled when first needed) */
   private pixelProgram(features: number): WebGLProgram {
     if (features === 0) return this.progPixel;
-    let p = this.progPixels.get(String(features));
-    if (!p) { p = compile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })); this.progPixels.set(String(features), p); }
-    return p;
+    const key = "pixel" + features;
+    if (!this.progs.has(key) && !this.pending.has(key)) this.pending.set(key, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })));
+    return this.program(key);
   }
 
   private fboOf(t: IntTex): WebGLFramebuffer {
