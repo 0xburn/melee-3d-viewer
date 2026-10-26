@@ -66,7 +66,7 @@ async function loadReplay(url: string, frame: number) {
   info("reading the replay...");
   const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
   const parsed = decode(bytes, { useTypedArrays: true }) as { raw: Uint8Array; metadata?: { playedOn?: string } };
-  const tape = readTape(parsed.raw, parsed.metadata, { cstickSnap: true });
+  const tape = readTape(parsed.raw, parsed.metadata, { cstickSnap: true, stadiumTransformations: true });
   if (!filesFrom) throw new Error("no game files: give ?files=<folder url> or hand over the folder's files");
   if (!gameFiles) {
     info("reading the game files...");

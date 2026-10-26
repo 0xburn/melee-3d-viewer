@@ -59,7 +59,7 @@ export interface Tape {
   gameFrame(i: number): number;
   /** what the graphics build of the simulator reads beyond the wire config (render3d/gxpath/tapebridge.ts): the patch bits its
    *  admission derives from the code list (MSL_PATCH_*), and each slot's level byte (a human's, 1..9, for Nana's AI) */
-  gx: { patches: number; levels: number[] };
+  gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2 };
 }
 
 /** a replay the simulator does not play, and why (the tape is not made) */
@@ -134,6 +134,16 @@ export function simPatches(codes: Map<number, Uint8Array>): number {
   return patches;
 }
 
+/** MslCoreMatchConfig.stadium_transformations (wire.h MSL_STADIUM_*): 0 frozen, 1 the preloading patch set, 2 Slippi Online 3.18's file load,
+ *  or null for an unfrozen Stadium no deterministic patch set owns (admission.py stadium_transformations) */
+export function stadiumKind(isFrozenPs: boolean, codes: Map<number, Uint8Array>): 0 | 1 | 2 | null {
+  if (stadiumFrozen(isFrozenPs, codes)) return 0;
+  const toggle = codes.get(0xc21d457c);
+  if (toggle && toggle.length > 16 && toggle[16] !== 0) return 0;
+  const preloaded = codes.has(0xc21d45ec), online = codes.has(0xc20165ac);
+  return preloaded !== online ? (preloaded ? 1 : 2) : null;
+}
+
 /** whether a Stadium game ran frozen (admission.py stadium_is_frozen) */
 function stadiumFrozen(isFrozenPs: boolean, codes: Map<number, Uint8Array>): boolean {
   if (isFrozenPs) return true;
@@ -159,6 +169,9 @@ export interface TapeOptions {
    *  rebuilds (replay_drive.py reconstructed_cstick, GATE_SNAP): the processed axis times 80, truncated and clamped, and a
    *  stick held at 0.9875 on one axis with the other at 0 is a raw 80 (UCF 1.0's cardinal snap reads it) */
   cstickSnap?: boolean;
+  /** Pokemon Stadium with its transformations on is played (the graphics build of the simulator has them: MSL_STADIUM_*); without this
+   *  such a replay is refused, as the track simulator cannot play it */
+  stadiumTransformations?: boolean;
 }
 
 /**
@@ -258,7 +271,13 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
   const gecko = new Uint8Array(geckoParts.reduce((n, p) => n + p.length, 0));
   { let at = 0; for (const p of geckoParts) { gecko.set(p, at); at += p.length; } }
   const codes = geckoCodes(gecko);
-  if (stage === 3 && !stadiumFrozen(frozenPs, codes)) throw new Unsupported("Pokemon Stadium with its transformations on");
+  let stadium: 0 | 1 | 2 = 0;
+  if (stage === 3) {
+    const kind = stadiumKind(frozenPs, codes);
+    if (kind === null) throw new Unsupported("Pokemon Stadium with its transformations on, in a version whose file loading is not deterministic");
+    if (kind !== 0 && !options.stadiumTransformations) throw new Unsupported("Pokemon Stadium with its transformations on");
+    stadium = kind;
+  }
 
   // the rows that can be played: contiguous frames with every active player's
   // pre and post rows (an eliminated doubles player's last row is carried)
@@ -330,6 +349,7 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
     gameFrame: (i) => minFrame + i,
     gx: {
       patches: simPatches(codes),
+      stadium,
       // (a human with a level byte of 1..9 is MSL_CORE_HUMAN_LEVEL | level)
       levels: slots.map((s) => {
         if (s.cpu) return s.cpu;

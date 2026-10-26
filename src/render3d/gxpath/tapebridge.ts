@@ -16,7 +16,7 @@ const TAPE_MAGIC = 0x314c534d;
 const TAPE_INPUT_SIZE = 25;
 
 /** the driver's TapeConfig for a wire config (CONFIG.size bytes), the replay's frame count and what the tape adds (Tape.gx) */
-export function tapeConfigOf(config: Uint8Array, frameCount: number, gx: { patches: number; levels: number[] }): Uint8Array {
+export function tapeConfigOf(config: Uint8Array, frameCount: number, gx: { patches: number; levels: number[]; stadium: number }): Uint8Array {
   const out = new Uint8Array(TAPE_CONFIG_SIZE);
   const o = new DataView(out.buffer), c = new DataView(config.buffer, config.byteOffset, config.byteLength);
   const f = (name: string) => readField(c, CONFIG, name);
@@ -34,7 +34,7 @@ export function tapeConfigOf(config: Uint8Array, frameCount: number, gx: { patch
     f("ucf_cardinals_1_0_enabled"), f("ucf_shield_sdi_enabled"), f("ucf_sdi_enabled"),
     f("ucf_shield_drop_extended_enabled"), f("ucf_shield_drop_084_enabled"),
     f("stage_event_streams"),
-    0, // stadium_transformations: frozen (the viewer's tape reader refuses a Stadium game with them on)
+    gx.stadium, // stadium_transformations (MSL_STADIUM_*)
     gx.patches,
     arithmetic & ARITHMETIC_SPLIT_FMA ? 1 : 0, // jit_arithmetic: MSL_JIT_NO_HOST_FMA
   ];
