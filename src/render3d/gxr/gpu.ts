@@ -5,7 +5,7 @@
  * A run of draw commands with no register command between them is one GL draw (the registers are what they were for
  * each of them); a register command ends the run.
  */
-import { Dff, GxFrame, Memory } from "./dff";
+import { GxFrame, GxInitial, Memory } from "./dff";
 import { bits, GxRegs } from "./state";
 import { VertexData, VertexLayout, vertexLayout } from "./vertex";
 
@@ -27,7 +27,7 @@ export interface GxBackend {
 const EMPTY: number[] = [];
 
 export class GxGpu {
-  readonly regs: GxRegs;
+  regs: GxRegs;
   readonly mem = new Memory();
   readonly events: GpuEvent[] = [];
   /** called when the game copies the EFB to the screen */
@@ -42,10 +42,28 @@ export class GxGpu {
   private vd = new VertexData(null as never);
   private run: { vd: VertexData; tris: number[]; lines: number[]; points: number[]; prims: { type: number; base: number; count: number }[] } | null = null;
 
-  constructor(readonly renderer: GxBackend, dff: Dff, mem1?: Uint8Array | null) {
-    this.regs = new GxRegs(dff.bp, dff.cp, dff.xfMem, dff.xfRegs);
-    if (dff.texMem.length) this.regs.tmem.set(dff.texMem.subarray(0, this.regs.tmem.length));
+  constructor(readonly renderer: GxBackend, init: GxInitial, mem1?: Uint8Array | null) {
+    this.regs = new GxRegs(init.bp, init.cp, init.xfMem, init.xfRegs);
+    this.load(init, mem1);
+  }
+
+  private load(init: GxInitial, mem1?: Uint8Array | null): void {
+    if (init.texMem.length) this.regs.tmem.set(init.texMem.subarray(0, this.regs.tmem.length));
     if (mem1) { this.mem.data.set(mem1.subarray(0, this.mem.data.length)); this.mem.touch(0, this.mem.data.length); }
+  }
+
+  /** the state of the constructor again on the same backend (a restart, a seek backward): memory zero or `mem1`, registers from `init`,
+   *  the backend's frame buffer and caches dropped (when it has a `reset`) */
+  reset(init: GxInitial, mem1?: Uint8Array | null): void {
+    this.run = null;
+    this.events.length = 0;
+    this.drawCount = 0;
+    this.cpVersion++;
+    (this.renderer as { reset?: () => void }).reset?.();
+    this.mem.data.fill(0);
+    this.mem.touch(0, this.mem.data.length);
+    this.regs = new GxRegs(init.bp, init.cp, init.xfMem, init.xfRegs);
+    this.load(init, mem1);
   }
 
   private layout(vat: number): VertexLayout {
@@ -93,6 +111,9 @@ export class GxGpu {
         const L = this.layout(vat);
         const end = pos + 3 + L.size * count;
         if (end > n) break;
+        // a renderer that is not drawing (the frames a seek plays through) needs only the command stepped over: no vertex decoding
+        const rr = this.renderer as { drawing?: boolean; fastForward?: boolean };
+        if (rr.drawing === false || rr.fastForward === true) { pos = end; continue; }
         let run = this.run;
         if (run && run.vd.layout !== L) { this.flush(); run = null; }
         if (!run) {
@@ -120,6 +141,8 @@ export class GxGpu {
           } else if (ev.kind === "preload") {
             regs.tmem.set(this.mem.read(ev.src, ev.bytes).subarray(0, Math.max(0, regs.tmem.length - ev.tmem)), ev.tmem);
             regs.tmemVersion++;
+          } else if (ev.kind === "copy" && (this.renderer as { fastForward?: boolean }).fastForward === true) {
+            // (fast-forwarding: the frame's copies are the next frame's own to make)
           } else if (ev.kind === "copy") {
             const c = this.renderer.copy(regs, this.mem, ev.value);
             if (c.toXfb) { this.events.push({ kind: "xfb", rect: c.rect }); this.onXfb?.(c.rect); }

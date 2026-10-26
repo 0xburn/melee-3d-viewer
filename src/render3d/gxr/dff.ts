@@ -21,13 +21,17 @@ export interface GxFrame {
 
 export interface GxUpdate { pos: number; addr: number; data: Uint8Array; type: number }
 
-export interface Dff {
-  version: number;
+/** the register state a processor starts from (the fields of a Dff that GxGpu's constructor reads) */
+export interface GxInitial {
   bp: Uint32Array;
   cp: Uint32Array;
   xfMem: Uint32Array;
   xfRegs: Uint32Array;
   texMem: Uint8Array;
+}
+
+export interface Dff extends GxInitial {
+  version: number;
   frames: GxFrame[];
 }
 

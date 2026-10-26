@@ -45,6 +45,8 @@ class Growable {
 export class GxGl implements GxBackend {
   /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording; a viewer leaves it on) */
   drawing = true;
+  /** playing through frames to reach a later one: draws are skipped (as with `drawing` false) and so are the frames' copies and clears */
+  fastForward = false;
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;
@@ -386,7 +388,7 @@ export class GxGl implements GxBackend {
   // draws
 
   draw(regs: GxRegs, mem: Memory, vd: VertexData, tris: number[], lines: number[], points: number[], prims: { type: number; base: number; count: number }[]): void {
-    if (!this.drawing) return;
+    if (!this.drawing || this.fastForward) return;
     const t0 = this.measure ? performance.now() : 0;
     this.attach(mem, regs);
     if (regs.tmemVersion !== this.tmemVersion) { this.flush(); this.uploadTmem(regs); }
@@ -679,9 +681,18 @@ export class GxGl implements GxBackend {
     return { color, depth };
   }
 
-  /** draw the frame buffer (its top 640 x 480) into the canvas's own framebuffer, `width` x `height` pixels, nearest filtering. Queued
-   *  triangles are drawn first. */
-  present(width: number, height: number, pixFmt = 0): void {
+  /** Show the frame buffer's top 640 x 480 (queued triangles are drawn first). With no target, or the context's own canvas, it is drawn
+   *  into the canvas's framebuffer without a read-back (nearest filtering, the canvas size, or `width` x `height`); a 2D context
+   *  or another canvas gets the picture through a read-back and putImageData. */
+  present(target?: HTMLCanvasElement | { putImageData(d: ImageData, x: number, y: number): void } | number, height?: number, pixFmt = 0): void {
+    if (target !== undefined && typeof target !== "number" && target !== (this.gl.canvas as unknown)) {
+      const ctx = "putImageData" in target ? target : (target as HTMLCanvasElement).getContext("2d");
+      const rgba = this.readPicture(pixFmt);
+      ctx?.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length) as unknown as ImageDataArray, 640, 480), 0, 0);
+      return;
+    }
+    const width = typeof target === "number" ? target : this.gl.drawingBufferWidth;
+    height = typeof target === "number" ? height! : this.gl.drawingBufferHeight;
     this.flush();
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
