@@ -3956,7 +3956,7 @@ export function Viewer3D(props: { onFail: (reason: string) => void; onStall?: (r
     drawLog: (cmd: Parameters<typeof drawLogCommand>[1]) => drawLogCommand(renderer, cmd),
     /** the pose log (poselog.ts): debug only, made by { start: true } (or ?poselog) and never otherwise; { take:
      *  true } hands over its lines since the last take (string[], JSON text lines: <game>.poselog.jsonl for
-     *  tools/pose_check.py), { stop: true } drops it */
+     *  the pose-check tool), { stop: true } drops it */
     poseLog: (cmd: Parameters<typeof poseLogCommand>[2]) => poseLogCommand(() => poseLog, (l) => { poseLog = l; }, cmd),
     /** a pixel comparison: leave these groups out of the draws from now on (null:
      *  draw everything again), and draw now */

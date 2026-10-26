@@ -1,7 +1,7 @@
 /* The 3D replay viewer: a log of every joint's world matrix as the viewer
  * drew it, frame by frame, to set beside the simulator's (its viewer track's
  * "wf", "wi" and "ws", written when its debug flag is on) joint for joint and
- * bit for bit (tools/pose_check.py compares the two).
+ * bit for bit (the pose-check tool compares the two).
  *
  * Debug only, and off unless asked for: until the viewer's debug handle
  * starts it (or the page's address has ?poselog), the viewer holds no log and
