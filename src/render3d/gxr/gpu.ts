@@ -91,6 +91,8 @@ export class GxGpu {
         const L = this.layout(vat);
         const end = pos + 3 + L.size * count;
         if (end > n) break;
+        // a renderer that is not drawing (the frames a seek plays through) needs only the command stepped over: no vertex decoding
+        if ((this.renderer as { drawing?: boolean }).drawing === false) { pos = end; continue; }
         let run = this.run;
         if (run && run.vd.layout !== L) { this.flush(); run = null; }
         if (!run) {
@@ -118,6 +120,8 @@ export class GxGpu {
           } else if (ev.kind === "preload") {
             regs.tmem.set(this.mem.read(ev.src, ev.bytes).subarray(0, Math.max(0, regs.tmem.length - ev.tmem)), ev.tmem);
             regs.tmemVersion++;
+          } else if (ev.kind === "copy" && (this.renderer as { drawing?: boolean }).drawing === false) {
+            // (not drawing: the frame's copies are the next frame's own to make)
           } else if (ev.kind === "copy") {
             const c = this.renderer.copy(regs, this.mem, ev.value);
             if (c.toXfb) { this.events.push({ kind: "xfb", rect: c.rect }); this.onXfb?.(c.rect); }
