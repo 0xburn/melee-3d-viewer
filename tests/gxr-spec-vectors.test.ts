@@ -1,5 +1,5 @@
 // The raster spec's test vectors (spec/vectors/*.json) against the CPU reference.
-import test from "node:test";
+import nodeTest from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { basicScene, colorVertices, FifoWriter } from "../src/render3d/gxr/encode.ts";
@@ -10,7 +10,11 @@ import { blend, tevRegular } from "../src/render3d/gxr/tev.ts";
 import { bitsOf, f, trunc32 } from "../src/render3d/gxr/f32.ts";
 import { hex, runStream, toHex } from "./gxr/scene.ts";
 
-const V = (n: string) => JSON.parse(readFileSync(`D:/work/gxpath/spec/vectors/${n}.json`, "utf8"));
+// the spec's vector files: the folder is named by GX_SPEC_VECTORS (the tests skip without it)
+const DIR = Deno.env.get("GX_SPEC_VECTORS");
+const have = !!DIR;
+const V = (n: string) => JSON.parse(readFileSync(`${DIR}/${n}.json`, "utf8"));
+const test = have ? nodeTest : (name: string, ...rest: unknown[]) => nodeTest(name, { skip: "GX_SPEC_VECTORS is not set" }, ...(rest.slice(-1) as [() => void]));
 
 function texData(img: Uint8Array, pal?: Uint8Array): TexData {
   return { byte: (i) => img[i] ?? 0, pal: (i) => (pal ? (pal[i * 2] << 8) | pal[i * 2 + 1] : 0) };
