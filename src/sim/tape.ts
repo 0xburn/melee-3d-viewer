@@ -57,6 +57,9 @@ export interface Tape {
   expected(i: number): (Expected | null)[];
   /** the game frame of row i */
   gameFrame(i: number): number;
+  /** what the graphics build of the simulator reads beyond the wire config (render3d/gxpath/tapebridge.ts): the patch bits its
+   *  admission derives from the code list (MSL_PATCH_*), and each slot's level byte (a human's, 1..9, for Nana's AI) */
+  gx: { patches: number; levels: number[] };
 }
 
 /** a replay the simulator does not play, and why (the tape is not made) */
@@ -117,6 +120,20 @@ function patchesOf(codes: Map<number, Uint8Array>): number {
   return c && c.length >= 8 && c[4] === 0x60 && c[5] === 0 && c[6] === 0 && c[7] === 0 ? PATCH_FD_BACKGROUND_FROZEN : 0;
 }
 
+/** the patch bits melee-sim-light's admission derives from the code list (admission.py slippi_patches) */
+export function simPatches(codes: Map<number, Uint8Array>): number {
+  let patches = patchesOf(codes);
+  if ([0xc208f090, 0xc20db880, 0xc20dbbd4].every((a) => codes.has(a))) patches |= 1 << 1;
+  if (codes.size) {
+    if (!codes.has(0xc216e510)) patches |= 1 << 2;
+    if (codes.has(0xc206c5d8)) patches |= 1 << 3;
+    if (!codes.has(0xc20908f4)) patches |= 1 << 4;
+    if (!codes.has(0xc20c9a44)) patches |= 1 << 5;
+    if (!codes.has(0xc20998a4)) patches |= 1 << 6;
+  }
+  return patches;
+}
+
 /** whether a Stadium game ran frozen (admission.py stadium_is_frozen) */
 function stadiumFrozen(isFrozenPs: boolean, codes: Map<number, Uint8Array>): boolean {
   if (isFrozenPs) return true;
@@ -136,11 +153,19 @@ interface FrameRow {
   whispy: number;  // offset of the last 0x40 event, -1 none
 }
 
+/** how a tape is read beyond the validator's way */
+export interface TapeOptions {
+  /** a replay that records only the processed C-stick (before Slippi 3.17) gets the raw bytes melee-sim-light's replay driver
+   *  rebuilds (replay_drive.py reconstructed_cstick, GATE_SNAP): the processed axis times 80, truncated and clamped, and a
+   *  stick held at 0.9875 on one axis with the other at 0 is a raw 80 (UCF 1.0's cardinal snap reads it) */
+  cstickSnap?: boolean;
+}
+
 /**
  * Read a replay (the UBJSON's `raw` bytes and `metadata`) into a tape.
  * Throws Unsupported with the reason when the simulator does not play it.
  */
-export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | undefined): Tape {
+export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | undefined, options: TapeOptions = {}): Tape {
   const v = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   if (v.getUint8(0) !== 0x35) throw new Unsupported("not a replay's event stream");
   const sizes = new Map<number, number>();
@@ -272,6 +297,11 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
   const streams = atLeast(3, 18, 0) ? 3 : 0;
   const hasRawY = has(0x37, 0x40), hasRawC = has(0x37, 0x42);
 
+  // (reconstructed_cstick: float64 arithmetic on the float32 axes)
+  const rebuilt = (axis: number, other: number) => {
+    const raw = Math.max(-80, Math.min(80, Math.trunc(axis * 80)));
+    return Math.abs(Math.abs(axis) - 0.9875) < 1e-6 && other === 0 ? Math.sign(axis) * 80 : raw;
+  };
   const writeInput = (out: RowWriter, base: number, i: number) => {
     for (let s = 0; s < slots.length; s++) {
       const p = preOf[i][s], b = base + INPUT_PLAYER.size * s;
@@ -279,8 +309,9 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
       out.set(INPUT_PLAYER, "buttons", v.getUint16(p + 0x31), 0, b);
       out.set(INPUT_PLAYER, "main_x", v.getInt8(p + 0x3b), 0, b);
       out.set(INPUT_PLAYER, "main_y", hasRawY ? v.getInt8(p + 0x40) : processedStick(at(0x1d)), 0, b);
-      out.set(INPUT_PLAYER, "c_x", hasRawC ? v.getInt8(p + 0x41) : processedStick(at(0x21)), 0, b);
-      out.set(INPUT_PLAYER, "c_y", hasRawC ? v.getInt8(p + 0x42) : processedStick(at(0x25)), 0, b);
+      const snap = options.cstickSnap && !hasRawC;
+      out.set(INPUT_PLAYER, "c_x", hasRawC ? v.getInt8(p + 0x41) : snap ? rebuilt(at(0x21), at(0x25)) : processedStick(at(0x21)), 0, b);
+      out.set(INPUT_PLAYER, "c_y", hasRawC ? v.getInt8(p + 0x42) : snap ? rebuilt(at(0x25), at(0x21)) : processedStick(at(0x25)), 0, b);
       out.set(INPUT_PLAYER, "nml_main_x", processedStick(at(0x19)), 0, b);
       out.set(INPUT_PLAYER, "nml_main_y", processedStick(at(0x1d)), 0, b);
       out.set(INPUT_PLAYER, "nml_c_x", processedStick(at(0x21)), 0, b);
@@ -297,6 +328,15 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
     numPlayers: slots.length,
     recordedUcf: recorded,
     gameFrame: (i) => minFrame + i,
+    gx: {
+      patches: simPatches(codes),
+      // (a human with a level byte of 1..9 is MSL_CORE_HUMAN_LEVEL | level)
+      levels: slots.map((s) => {
+        if (s.cpu) return s.cpu;
+        const level = startSize > 0x74 + 0x24 * (s.port - 1) ? v.getUint8(g(0x74 + 0x24 * (s.port - 1))) : 0;
+        return level >= 1 && level <= 9 ? 0x80 | level : 0;
+      }),
+    },
     config({ ucf, splitFma }) {
       const bytes = new Uint8Array(CONFIG.size), w = new RowWriter(bytes);
       w.set(CONFIG, "stage_id", stage);
