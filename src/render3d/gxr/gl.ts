@@ -13,11 +13,11 @@ import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, PIXE
 import { compile, FULLSCREEN_VS, intTexture, IntTex, uploadRows } from "./glutil";
 import { bitsOf } from "./f32";
 import type { GxBackend } from "./gpu";
-import { setupCtx, setupTri, Tri } from "./setup";
+import { planeCount, setupCtx, setupTriInto, TS } from "./setup";
 import { bits, GxRegs } from "./state";
 import { formatInfo, levelOffset } from "./texunit";
 import { VertexData } from "./vertex";
-import { assemble, cullClip, Pool, transformVertices, V_STRIDE, xfDraw } from "./xform";
+import { assemble, cullClipInto, Pool, poly, polyState, transformVertices, V_STRIDE, xfDraw } from "./xform";
 
 const EFB_W = 640, EFB_H = 528;
 const TILES_X = EFB_W / TILE, TILES_Y = EFB_H / TILE;
@@ -84,6 +84,8 @@ export class GxGl implements GxBackend {
   private used: number[] = [];
   private tmemVersion = -1;
   private pool = new Pool();
+  private trip: number[] = [];
+  private need = new Uint8Array(4096);
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
   /** GPU time of the passes (ms), when the browser has timer queries and `timing` is on */
   timing = false;
@@ -330,42 +332,43 @@ export class GxGl implements GxBackend {
     const pool = this.pool;
     pool.clear();
     const x = xfDraw(regs, vd);
-    const base = transformVertices(x, regs, vd, pool);
+    const trip = this.trip;
+    trip.length = 0;
+    for (let i = 0; i < prims.length; i++) assemble(prims[i].type, prims[i].count, prims[i].base, trip);
+    // only the vertices a triangle uses are transformed (a run also holds points and lines, which draw nothing)
+    if (this.need.length < vd.n) this.need = new Uint8Array(Math.max(vd.n, this.need.length * 2));
+    const need = this.need;
+    need.fill(0, 0, vd.n);
+    for (let i = 0; i < trip.length; i++) need[trip[i]] = 1;
+    const base = transformVertices(x, regs, vd, pool, need);
     const sc = setupCtx(regs.bp);
     const cull = bits(regs.bp[0], 14, 2);
-    const trip: number[] = [];
-    for (const p of prims) assemble(p.type, p.count, p.base, trip);
     const mark = pool.n;
+    const q = this.q;
+    const nPlanes = planeCount(sc);
+    const words = HEADER_WORDS + nPlanes * 3;
     for (let i = 0; i + 2 < trip.length; i += 3) {
       pool.n = mark;
-      const poly = cullClip(pool, cull, base + trip[i] * V_STRIDE, base + trip[i + 1] * V_STRIDE, base + trip[i + 2] * V_STRIDE);
-      if (!poly) continue;
-      for (let k = 1; k + 1 < poly.length; k++) {
-        const t = setupTri(pool, x, sc, st, poly[0], poly[k], poly[k + 1]);
-        if (t) this.push(t);
+      if (!cullClipInto(pool, cull, base + trip[i] * V_STRIDE, base + trip[i + 1] * V_STRIDE, base + trip[i + 2] * V_STRIDE)) continue;
+      const n = polyState.n;
+      for (let k = 1; k + 1 < n; k++) {
+        q.ensure(words);
+        const o = q.n;
+        if (!setupTriInto(pool, x, sc, poly[0], poly[k], poly[k + 1], q.floats, o + HEADER_WORDS)) continue;
+        const I = q.ints, U = q.words;
+        I[o] = TS.DX12; I[o + 1] = TS.DY12; I[o + 2] = TS.DX23; I[o + 3] = TS.DY23; I[o + 4] = TS.DX31; I[o + 5] = TS.DY31;
+        I[o + 6] = TS.C1; I[o + 7] = TS.C2; I[o + 8] = TS.C3;
+        I[o + 9] = TS.minx; I[o + 10] = TS.maxx; I[o + 11] = TS.miny; I[o + 12] = TS.maxy;
+        I[o + 13] = TS.xi; I[o + 14] = TS.yi;
+        U[o + 15] = bitsOf(TS.ox); U[o + 16] = bitsOf(TS.oy);
+        U[o + 17] = st; U[o + 18] = TS.np;
+        this.triOffsets.push(o);
+        q.n += words;
+        this.bb.push(Math.max(0, TS.minx), Math.max(0, TS.miny), Math.min(EFB_W - 1, TS.maxx), Math.min(EFB_H - 1, TS.maxy));
+        this.tris++;
       }
     }
     this.stats.cpuMs += performance.now() - t0;
-  }
-
-  private push(t: Tri): void {
-    const q = this.q;
-    const need = HEADER_WORDS + t.np * 3;
-    q.ensure(need);
-    const o = q.n;
-    this.triOffsets.push(o);
-    const I = q.ints, U = q.words;
-    I[o] = t.DX12; I[o + 1] = t.DY12; I[o + 2] = t.DX23; I[o + 3] = t.DY23; I[o + 4] = t.DX31; I[o + 5] = t.DY31;
-    I[o + 6] = t.C1; I[o + 7] = t.C2; I[o + 8] = t.C3;
-    I[o + 9] = t.minx; I[o + 10] = t.maxx; I[o + 11] = t.miny; I[o + 12] = t.maxy;
-    I[o + 13] = t.xi; I[o + 14] = t.yi;
-    U[o + 15] = bitsOf(t.ox); U[o + 16] = bitsOf(t.oy);
-    U[o + 17] = t.state; U[o + 18] = t.np;
-    const pw = new Uint32Array(t.planes.buffer, t.planes.byteOffset, t.np * 3);
-    U.set(pw, o + HEADER_WORDS);
-    q.n += need;
-    this.bb.push(Math.max(0, t.minx), Math.max(0, t.miny), Math.min(EFB_W - 1, t.maxx), Math.min(EFB_H - 1, t.maxy));
-    this.tris++;
   }
 
   // -------------------------------------------------------------------------------------------------------------------
