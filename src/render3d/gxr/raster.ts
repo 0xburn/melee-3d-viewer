@@ -369,7 +369,7 @@ function fogFloat(w: number): number {
   return fromBits(((sign << 31) | (exp << 23) | (man << 12)) >>> 0);
 }
 
-function fogPixel(bp: Uint32Array, fsel: number, z: number, c: number[], x: number, wd: number): void {
+export function fogPixel(bp: Uint32Array, fsel: number, z: number, c: number[], x: number, wd: number): void {
   const A = fogFloat(bp[0xee]), C = fogFloat(bp[0xf1] & 0xfffff);
   const Bm = bp[0xef], Bs = bp[0xf0] & 31;
   const ortho = (bp[0xf1] >> 20) & 1;
