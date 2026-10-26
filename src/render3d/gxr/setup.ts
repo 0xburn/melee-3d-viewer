@@ -24,6 +24,8 @@ export interface Tri {
 export interface SetupCtx {
   numGens: number;
   numCols: number;
+  /** BP 0x00 bit 19: the depth plane is not recomputed (7.4) */
+  zFreeze: boolean;
   L: number; T: number; R: number; B: number;
 }
 
@@ -32,7 +34,7 @@ export function setupCtx(bp: Uint32Array): SetupCtx {
   const tl = bp[0x20], br = bp[0x21], off = bp[0x59];
   const ox = 2 * bits(off, 0, 10), oy = 2 * bits(off, 10, 10);
   return {
-    numGens: bits(gm, 0, 4), numCols: bits(gm, 4, 3),
+    numGens: bits(gm, 0, 4), numCols: bits(gm, 4, 3), zFreeze: bits(gm, 19, 1) === 1,
     L: Math.max(0, bits(tl, 12, 12) - ox), T: Math.max(0, bits(tl, 0, 12) - oy),
     R: Math.min(640, bits(br, 12, 12) - ox + 1), B: Math.min(528, bits(br, 0, 12) - oy + 1),
   };
@@ -53,6 +55,8 @@ const sp = new Float64Array(3);
 const SX = new Float64Array(3), SY = new Float64Array(3), SZ = new Float64Array(3);
 const X = new Int32Array(3), Y = new Int32Array(3);
 const IW = new Float64Array(3);
+/** the depth plane of the last triangle (z freeze reuses it) */
+const lastZ = new Float32Array(3);
 // the plane solver's shared terms (7.4)
 let g_fdx31 = 0, g_fdx12 = 0, g_nfdy12 = 0, g_fdy31 = 0, g_cden = 0;
 
@@ -94,7 +98,8 @@ export function setupTriInto(pool: Pool, x: XfDraw, sc: SetupCtx, a: number, b: 
   g_cden = f(f(-g_fdx12 * g_fdy31) - f(g_fdx31 * g_nfdy12));
   IW[0] = f(1 / D[a + V_C + 3]); IW[1] = f(1 / D[b + V_C + 3]); IW[2] = f(1 / D[c + V_C + 3]);
   plane(dst, dstOff + P_INVW * 3, IW[0], IW[1], IW[2]);
-  plane(dst, dstOff + P_Z * 3, SZ[0], SZ[1], SZ[2]);
+  if (sc.zFreeze) { const o = dstOff + P_Z * 3; dst[o] = lastZ[0]; dst[o + 1] = lastZ[1]; dst[o + 2] = lastZ[2]; }
+  else { plane(dst, dstOff + P_Z * 3, SZ[0], SZ[1], SZ[2]); const o = dstOff + P_Z * 3; lastZ[0] = dst[o]; lastZ[1] = dst[o + 1]; lastZ[2] = dst[o + 2]; }
   const nc = sc.numCols * 4;
   for (let k = 0; k < 8; k++) {
     if (k < nc) plane(dst, dstOff + (P_COL + k) * 3, D[a + V_COL + k], D[b + V_COL + k], D[c + V_COL + k]);

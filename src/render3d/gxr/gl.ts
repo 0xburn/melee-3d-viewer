@@ -9,7 +9,7 @@
 import { Memory } from "./dff";
 import { copyFormat, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS } from "./glsl-copy";
-import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, PIXEL_FS, STATE_WORDS, TILE } from "./glsl-pixel";
+import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
 import { compile, FULLSCREEN_VS, intTexture, IntTex, uploadRows } from "./glutil";
 import { bitsOf } from "./f32";
 import type { GxBackend } from "./gpu";
@@ -55,6 +55,10 @@ export class GxGl implements GxBackend {
 
   private gl: WebGL2RenderingContext;
   private progPixel: WebGLProgram;
+  private progPixelIndirect: WebGLProgram | null = null;
+  /** some queued draw uses the indirect texture unit */
+  private needIndirect = false;
+  private stateIndirect: boolean[] = [];
   private progCopy: WebGLProgram;
   private progClear: WebGLProgram;
   private progPicture: WebGLProgram;
@@ -94,7 +98,7 @@ export class GxGl implements GxBackend {
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
     if (!gl.getExtension("EXT_color_buffer_float")) throw new Error("EXT_color_buffer_float is needed");
-    this.progPixel = compile(gl, FULLSCREEN_VS, PIXEL_FS);
+    this.progPixel = compile(gl, FULLSCREEN_VS, pixelShader());
     this.progCopy = compile(gl, FULLSCREEN_VS, COPY_FS);
     this.progClear = compile(gl, FULLSCREEN_VS, CLEAR_FS);
     this.progPicture = compile(gl, FULLSCREEN_VS, PICTURE_FS);
@@ -248,7 +252,7 @@ export class GxGl implements GxBackend {
 
   private resetStates(): void {
     this.stateCount = 0; this.stateUploaded = 0; this.states.n = 0;
-    this.stateIndex.clear(); this.stateRanges = [];
+    this.stateIndex.clear(); this.stateRanges = []; this.stateIndirect = [];
     this.lastStateVersion = [-1, -1, -1];
   }
 
@@ -310,6 +314,9 @@ export class GxGl implements GxBackend {
       this.states.n = this.stateCount * STATE_WORDS;
       if (cands) cands.push(found); else this.stateIndex.set(h, [found]);
       this.stateRanges[found] = ranges;
+      let ind = false;
+      if (bits(regs.bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (regs.bp[0x10 + si] !== 0) ind = true;
+      this.stateIndirect[found] = ind;
     }
     this.lastStateVersion = [regs.bpVersion, regs.xfVersion, tv];
     this.lastState = found;
@@ -326,6 +333,7 @@ export class GxGl implements GxBackend {
     if (regs.tmemVersion !== this.tmemVersion) { this.flush(); this.uploadTmem(regs); }
     const st = this.stateFor(regs);
     const ranges = this.stateRanges[st];
+    if (this.stateIndirect[st]) this.needIndirect = true;
     for (let i = 0; i < ranges.length; i += 2) this.used.push(ranges[i], ranges[i + 1]);
     const pool = this.pool;
     pool.clear();
@@ -428,7 +436,8 @@ export class GxGl implements GxBackend {
     gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
     gl.viewport(0, 0, EFB_W, EFB_H);
     gl.disable(gl.SCISSOR_TEST);
-    const p = this.progPixel;
+    if (this.needIndirect && !this.progPixelIndirect) this.progPixelIndirect = compile(gl, FULLSCREEN_VS, pixelShader({ indirect: true }));
+    const p = this.needIndirect ? this.progPixelIndirect! : this.progPixel;
     gl.useProgram(p);
     this.bindTex(p, 0, "uMem", this.mem);
     this.bindTex(p, 1, "uData", set.data);
@@ -443,7 +452,7 @@ export class GxGl implements GxBackend {
     this.timeEnd(tq, "pixel");
     this.cur = 1 - this.cur;
     this.passes++;
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = [];
+    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = []; this.needIndirect = false;
     this.stats.flushMs += performance.now() - t0;
     this.onFlush?.();
   }

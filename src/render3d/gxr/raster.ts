@@ -182,6 +182,51 @@ export class DrawPixels {
     return [lod, linear];
   }
 
+  /** the indirect unit for one TEV stage (spec 10.5): returns the stage's modified coordinates and its alpha bump */
+  private indirect(tri: Tri, x: number, y: number, ind: number, S: number, T: number, prevS: number, prevT: number): [number, number, number] {
+    const bp = this.bp;
+    const bt = bits(ind, 0, 2), fmt = bits(ind, 2, 2), biasBits = bits(ind, 4, 3), bs = bits(ind, 7, 2), mid = bits(ind, 9, 4);
+    const sw = bits(ind, 13, 3), tw = bits(ind, 16, 3), addprev = bits(ind, 20, 1);
+    // the indirect stage: its texture map and coordinate generator, the scale exponents
+    const iref = bp[0x27];
+    const imap = bits(iref, 6 * bt, 3), icoord = bits(iref, 6 * bt + 3, 3);
+    const ssw = bp[0x25 + (bt >> 1)];
+    const ss = bits(ssw, (bt & 1) * 8, 4), ts = bits(ssw, (bt & 1) * 8 + 4, 4);
+    const c = [0, 0];
+    this.st2(tri, icoord, x, y, c);
+    const IS = (trunc32(f(c[0] * 128)) << 8) >> 8, IT = (trunc32(f(c[1] * 128)) << 8) >> 8;
+    // the level of detail uses the low two bits of the map and coordinate numbers (a quirk of the reference)
+    const [lod, linear] = this.lodOf(tri, imap & 3, icoord & 3, x, y);
+    const tx = [0, 0, 0, 0];
+    sample(this.map(imap), IS >> ss, IT >> ts, lod, linear, bits(this.mode0[imap], 5, 3), tx);
+    const i = [tx[3], tx[2], tx[1]];
+    const mask = fmt === 0 ? 0xf8 : fmt === 1 ? 0xe0 : fmt === 2 ? 0xf0 : 0xf8;
+    const bump = bs === 0 ? 0 : i[bs - 1] & mask;
+    const vmask = fmt === 0 ? 0xff : fmt === 1 ? 0x1f : fmt === 2 ? 0x0f : 0x07;
+    const v = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      v[k] = i[k] & vmask;
+      if ((biasBits >> k) & 1) v[k] += fmt === 0 ? -128 : 1;
+    }
+    let o0 = 0, o1 = 0;
+    const m = mid & 3;
+    if (m !== 0) {
+      const A = bp[0x06 + 3 * (m - 1)], B = bp[0x07 + 3 * (m - 1)], C = bp[0x08 + 3 * (m - 1)];
+      const ma = sext11(A & 0x7ff), mb = sext11((A >> 11) & 0x7ff), mc = sext11(B & 0x7ff), md = sext11((B >> 11) & 0x7ff), me = sext11(C & 0x7ff), mf = sext11((C >> 11) & 0x7ff);
+      const exp = bits(A, 22, 2) | (bits(B, 22, 2) << 2) | (bits(C, 22, 2) << 4);
+      const shift = 17 - exp;
+      const type = mid & 12;
+      if (type === 0) { o0 = (ma * v[0] + mc * v[1] + me * v[2]) >> 3; o1 = (mb * v[0] + md * v[1] + mf * v[2]) >> 3; }
+      else if (type === 4) { o0 = Math.trunc((S * v[0]) / 256); o1 = Math.trunc((T * v[0]) / 256); }
+      else if (type === 8) { o0 = Math.trunc((S * v[1]) / 256); o1 = Math.trunc((T * v[1]) / 256); }
+      if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
+    }
+    const wrapMask = (c: number, w: number): number => (w === 0 ? c : w === 6 || w === 7 ? 0 : c & (((256 >> (w - 1)) << 7) - 1));
+    let rs = wrapMask(S, sw) + o0, rt = wrapMask(T, tw) + o1;
+    if (addprev) { rs += prevS; rt += prevT; }
+    return [(rs << 8) >> 8, (rt << 8) >> 8, bump];
+  }
+
   /** draw a triangle into the EFB */
   draw(efb: Efb, tri: Tri): void {
     const bp = this.bp;
@@ -227,6 +272,7 @@ export class DrawPixels {
           // TEV
           for (let i = 0; i < 16; i++) regs[i] = this.reg0[i];
           let lastTexel = [0, 0, 0, 0];
+          let prevS = 0, prevT = 0;
           for (let si = 0; si < nStages; si++) {
             const ord = bp[0x28 + (si >> 1)] >> (si & 1 ? 12 : 0);
             const texmap = bits(ord, 0, 3), texcoord = bits(ord, 3, 3), texEn = bits(ord, 6, 1), rasSel = bits(ord, 7, 3);
@@ -238,20 +284,32 @@ export class DrawPixels {
               const w0 = bp[0xf6 + 2 * t], w1 = bp[0xf7 + 2 * t];
               o[0] = v[bits(w0, 0, 2)]; o[1] = v[bits(w0, 2, 2)]; o[2] = v[bits(w1, 0, 2)]; o[3] = v[bits(w1, 2, 2)];
             };
+            const indWord = bits(bp[0], 16, 3) > 0 ? bp[0x10 + si] : 0;
+            let bump = 0;
+            let S = 0, T = 0;
+            if (texEn) {
+              const c = [0, 0];
+              this.st2(tri, texcoord, x, y, c);
+              S = (trunc32(f(c[0] * 128)) << 8) >> 8; T = (trunc32(f(c[1] * 128)) << 8) >> 8;
+            }
+            if (indWord !== 0) {
+              const r = this.indirect(tri, x, y, indWord, S, T, prevS, prevT);
+              if (texEn) { S = r[0]; T = r[1]; }
+              bump = r[2];
+            }
             if (texEn) {
               const m = this.map(texmap);
               const [lod, linear] = this.lodOf(tri, texmap, texcoord, x, y);
-              const c = [0, 0];
-              this.st2(tri, texcoord, x, y, c);
-              const S = (trunc32(f(c[0] * 128)) << 8) >> 8, T = (trunc32(f(c[1] * 128)) << 8) >> 8;
+              prevS = S; prevT = T;
               sample(m, S, T, lod, linear, bits(this.mode0[texmap], 5, 3), texel);
-              if ((globalThis as any).DBG?.(x, y)) console.log(`stage ${si} map ${texmap} gen ${texcoord} s=${c[0]} t=${c[1]} S=${S} T=${T} lod=${lod} lin=${linear} texel=${texel}`);
               swz(tsw, texel, tex);
               lastTexel = tex.slice();
             }
             const rs = [0, 0, 0, 0];
             if (rasSel === 0) swz(rsw, ras[0], rs);
             else if (rasSel === 1) swz(rsw, ras[1], rs);
+            else if (rasSel === 5) rs[0] = rs[1] = rs[2] = rs[3] = bump;
+            else if (rasSel === 6) rs[0] = rs[1] = rs[2] = rs[3] = bump | (bump >> 5);
             // color combiner
             const csel = (k: number): number[] => {
               const r = regs;

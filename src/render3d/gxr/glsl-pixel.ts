@@ -25,7 +25,10 @@ export const HEADER_WORDS = 20;
 export const STATE_WORDS = 280;
 export const TILE = 16;
 
-export const PIXEL_FS = /* glsl */ `#version 300 es
+/** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5), compiled only for draws that use it */
+export function pixelShader(opts: { indirect?: boolean } = {}): string {
+  return /* glsl */ `#version 300 es
+${opts.indirect ? "#define INDIRECT 1" : ""}
 precision highp float;
 precision highp int;
 precision highp usampler2D;
@@ -273,8 +276,8 @@ uint f_max(uint a, uint b) { return f_lt(a, b) ? b : a; }
 
 int log2fix(uint d) { return int(((d & 0x7f800000u) >> 19) + ((d & 0x007fffffu) >> 19)) - 2032; }
 
-// the texture stage's fetch: coordinates of generator n for the pixel (x, y), level of detail of map mp
-ivec4 stageSample(MapI mp, uint n, int x, int y) {
+// the texture stage's coordinates: the pixel's s and t of generator n (7 fractional bits) and the level of detail map mp gives (8.3, 8.4)
+void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
   int bx = x & ~1, by = y & ~1;
   uint sv[4], tv[4];
   for (int j = 0; j < uK.x; j++) genST(n, bx + (j & 1), by + (j >> 1), sv[j], tv[j]);
@@ -287,16 +290,59 @@ ivec4 stageSample(MapI mp, uint n, int x, int y) {
   }
   uint d = f_max(ds, dt);
   int bias = int(bf(mp.mode0, 9, 8) << 24) >> 24;
-  int lod = log2fix(d) + (bias >> 1);
+  lod = log2fix(d) + (bias >> 1);
   uint mf = bf(mp.mode0, 5, 3);
-  bool linear = (lod > 0 && (mf & 4u) != 0u) || (lod <= 0 && bf(mp.mode0, 4, 1) == 1u);
+  linear = (lod > 0 && (mf & 4u) != 0u) || (lod <= 0 && bf(mp.mode0, 4, 1) == 1u);
   int maxl = bfi(mp.mode1, 8, 8), minl = bfi(mp.mode1, 0, 8);
   if (lod > maxl) lod = maxl; else if (lod < minl) lod = minl;
   int me = (x & 1) + ((y & 1) << 1);
-  int S24 = (f_trunc(f_mul(sv[me], 0x43000000u)) << 8) >> 8;
-  int T24 = (f_trunc(f_mul(tv[me], 0x43000000u)) << 8) >> 8;
-  return sampleMap(mp, S24, T24, lod, linear);
+  S24 = (f_trunc(f_mul(sv[me], 0x43000000u)) << 8) >> 8;
+  T24 = (f_trunc(f_mul(tv[me], 0x43000000u)) << 8) >> 8;
 }
+
+#ifdef INDIRECT
+// the indirect unit for one TEV stage (spec 10.5): the stage's coordinates (S, T) become (oS, oT); bump is its alpha bump
+void indirectStage(uint ind, int x, int y, int S, int T, int prevS, int prevT, out int oS, out int oT, out int bump) {
+  int bt = bfi(ind, 0, 2), fmt = bfi(ind, 2, 2), biasBits = bfi(ind, 4, 3), bs = bfi(ind, 7, 2), mid = bfi(ind, 9, 4);
+  int sw = bfi(ind, 13, 3), tw = bfi(ind, 16, 3);
+  uint iref = S(0x27u);
+  int imap = bfi(iref, 6 * bt, 3), icoord = bfi(iref, 6 * bt + 3, 3);
+  uint ssw = S(0x25u + uint(bt >> 1));
+  int ss = bfi(ssw, (bt & 1) * 8, 4), ts = bfi(ssw, (bt & 1) * 8 + 4, 4);
+  int dS, dT, lod, IS, IT, dl;
+  bool linear, dlin;
+  // the level of detail uses the low two bits of the map and coordinate numbers (a quirk of the reference)
+  stageCoords(loadMap(uint(imap & 3)), uint(icoord & 3), x, y, dS, dT, lod, linear);
+  MapI im = loadMap(uint(imap));
+  stageCoords(im, uint(icoord), x, y, IS, IT, dl, dlin);
+  ivec4 tx = sampleMap(im, IS >> ss, IT >> ts, lod, linear);
+  ivec3 i = ivec3(tx.a, tx.b, tx.g);
+  int mask = fmt == 1 ? 0xe0 : (fmt == 2 ? 0xf0 : 0xf8);
+  bump = bs == 0 ? 0 : (i[bs - 1] & mask);
+  int vmask = fmt == 0 ? 0xff : (fmt == 1 ? 0x1f : (fmt == 2 ? 0x0f : 0x07));
+  ivec3 v = i & vmask;
+  for (int k = 0; k < 3; k++) if (((biasBits >> k) & 1) == 1) v[k] += fmt == 0 ? -128 : 1;
+  int o0 = 0, o1 = 0;
+  int m = mid & 3;
+  if (m != 0) {
+    uint A = S(0x06u + 3u * uint(m - 1)), B = S(0x07u + 3u * uint(m - 1)), C = S(0x08u + 3u * uint(m - 1));
+    int ma = sx11(A & 0x7ffu), mb = sx11((A >> 11) & 0x7ffu), mc = sx11(B & 0x7ffu), md = sx11((B >> 11) & 0x7ffu), me = sx11(C & 0x7ffu), mf = sx11((C >> 11) & 0x7ffu);
+    int ex = bfi(A, 22, 2) | (bfi(B, 22, 2) << 2) | (bfi(C, 22, 2) << 4);
+    int shift = 17 - ex;
+    int type = mid & 12;
+    if (type == 0) { o0 = (ma * v.x + mc * v.y + me * v.z) >> 3; o1 = (mb * v.x + md * v.y + mf * v.z) >> 3; }
+    else if (type == 4) { o0 = idiv(S * v.x, 256); o1 = idiv(T * v.x, 256); }
+    else if (type == 8) { o0 = idiv(S * v.y, 256); o1 = idiv(T * v.y, 256); }
+    if (shift >= 0) { o0 >>= shift; o1 >>= shift; } else { o0 <<= -shift; o1 <<= -shift; }
+  }
+  int ws = sw == 0 ? S : (sw >= 6 ? 0 : (S & (((256 >> (sw - 1)) << 7) - 1)));
+  int wt = tw == 0 ? T : (tw >= 6 ? 0 : (T & (((256 >> (tw - 1)) << 7) - 1)));
+  int rs = ws + o0, rt = wt + o1;
+  if (bf(ind, 20, 1) == 1u) { rs += prevS; rt += prevT; }
+  oS = (rs << 8) >> 8;
+  oT = (rt << 8) >> 8;
+}
+#endif
 
 // ---------------------------------------------------------------------------------------------------------------------
 // TEV (spec 10)
@@ -554,6 +600,7 @@ void shade(int x, int y, inout uint col, inout uint dep) {
   }
   loadColorRegs();
   for (int i = 0; i < 4; i++) gLastTex[i] = 0;
+  int prevS = 0, prevT = 0;
   for (int si = 0; si < nStages; si++) {
     uint ord = S(0x28u + uint(si >> 1)) >> ((si & 1) == 1 ? 12u : 0u);
     uint texmap = bf(ord, 0, 3), texcoord = bf(ord, 3, 3), rasSel = bf(ord, 7, 3);
@@ -563,17 +610,34 @@ void shade(int x, int y, inout uint col, inout uint dep) {
     int kcs = ((si & 1) == 1) ? bfi(kw, 14, 5) : bfi(kw, 4, 5);
     int kas = ((si & 1) == 1) ? bfi(kw, 19, 5) : bfi(kw, 9, 5);
     uint rsw = bf(ac, 0, 2), tsw = bf(ac, 2, 2);
+    int bump = 0;
+#ifdef INDIRECT
+    uint indWord = bfi(b0, 16, 3) > 0 ? S(0x10u + uint(si)) : 0u;
+#endif
     if (texEn) {
       MapI mp = loadMap(texmap);
-      ivec4 tx = stageSample(mp, texcoord, x, y);
+      int cS, cT, lod;
+      bool lin;
+      stageCoords(mp, texcoord, x, y, cS, cT, lod, lin);
+#ifdef INDIRECT
+      if (indWord != 0u) { int oS, oT; indirectStage(indWord, x, y, cS, cT, prevS, prevT, oS, oT, bump); cS = oS; cT = oT; }
+#endif
+      prevS = cS; prevT = cT;
+      ivec4 tx = sampleMap(mp, cS, cT, lod, lin);
       int tv[4] = int[4](tx.r, tx.g, tx.b, tx.a);
       swz(tsw, tv, gTex);
       for (int i = 0; i < 4; i++) gLastTex[i] = gTex[i];
     }
+#ifdef INDIRECT
+    else if (indWord != 0u) { int oS, oT; indirectStage(indWord, x, y, 0, 0, prevS, prevT, oS, oT, bump); }
+#endif
     for (int i = 0; i < 4; i++) gRas[i] = 0;
     if (rasSel == 0u || rasSel == 1u) {
       int rv[4] = int[4](gRasCh[int(rasSel) * 4], gRasCh[int(rasSel) * 4 + 1], gRasCh[int(rasSel) * 4 + 2], gRasCh[int(rasSel) * 4 + 3]);
       swz(rsw, rv, gRas);
+    } else if (rasSel == 5u || rasSel == 6u) {
+      int bv = rasSel == 5u ? bump : (bump | (bump >> 5));
+      gRas[0] = bv; gRas[1] = bv; gRas[2] = bv; gRas[3] = bv;
     }
     ivec3 ca = csel(bfi(cc, 12, 4)), cb = csel(bfi(cc, 8, 4)), ccc = csel(bfi(cc, 4, 4)), cd = csel(bfi(cc, 0, 4));
     if (bfi(cc, 12, 4) == 14) ca = konstColor(kcs);
@@ -657,3 +721,6 @@ void main() {
   o = uvec4(col, dep, 0u, 0u);
 }
 `;
+}
+
+export const PIXEL_FS = pixelShader();
