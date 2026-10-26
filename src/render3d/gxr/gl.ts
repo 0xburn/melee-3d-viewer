@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 /* GX renderer: the WebGL 2 backend. The front half of the pipeline (vertex transform, clipping, triangle setup: xform.ts and setup.ts)
  * runs on the CPU in 32-bit float; the triangles of a run go to the GPU as words, and one fragment-shader pass per run (glsl-pixel.ts)
  * does the pixel stage. EFB copies into texture memory and the clear after a copy are passes too (glsl-copy.ts).
