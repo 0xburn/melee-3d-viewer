@@ -309,21 +309,11 @@ void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out in
 }
 
 #ifdef INDIRECT
-// the indirect unit for one TEV stage (spec 10.5): the stage's coordinates (S, T) become (oS, oT); bump is its alpha bump
-void indirectStage(uint ind, int x, int y, int cs, int ct, int prevS, int prevT, out int oS, out int oT, out int bump) {
-  int bt = bfi(ind, 0, 2), fmt = bfi(ind, 2, 2), biasBits = bfi(ind, 4, 3), bs = bfi(ind, 7, 2), mid = bfi(ind, 9, 4);
+// the offsets and the alpha bump an indirect sample gives a TEV stage (spec 10.5): (cs, ct) are the stage's own coordinates, tx the
+// indirect texture's sample; the stage's coordinates become (oS, oT)
+void indirectOffsets(uint ind, ivec4 tx, int cs, int ct, int prevS, int prevT, out int oS, out int oT, out int bump) {
+  int fmt = bfi(ind, 2, 2), biasBits = bfi(ind, 4, 3), bs = bfi(ind, 7, 2), mid = bfi(ind, 9, 4);
   int sw = bfi(ind, 13, 3), tw = bfi(ind, 16, 3);
-  uint iref = S(0x27u);
-  int imap = bfi(iref, 6 * bt, 3), icoord = bfi(iref, 6 * bt + 3, 3);
-  uint ssw = S(0x25u + uint(bt >> 1));
-  int ss = bfi(ssw, (bt & 1) * 8, 4), ts = bfi(ssw, (bt & 1) * 8 + 4, 4);
-  int dS, dT, lod, IS, IT, dl;
-  bool linear, dlin;
-  // the level of detail uses the low two bits of the map and coordinate numbers (a quirk of the reference)
-  stageCoords(loadMap(uint(imap & 3)), uint(icoord & 3), x, y, dS, dT, lod, linear);
-  MapI im = loadMap(uint(imap));
-  stageCoords(im, uint(icoord), x, y, IS, IT, dl, dlin);
-  ivec4 tx = sampleMap(im, IS >> ss, IT >> ts, lod, linear);
   ivec3 i = ivec3(tx.a, tx.b, tx.g);
   int mask = fmt == 1 ? 0xe0 : (fmt == 2 ? 0xf0 : 0xf8);
   bump = bs == 0 ? 0 : (i[bs - 1] & mask);
@@ -720,24 +710,55 @@ void shade(int x, int y, inout uint col, inout uint dep) {
     uint rsw = bf(ac, 0, 2), tsw = bf(ac, 2, 2);
     int bump = 0;
 #ifdef INDIRECT
+    // with the indirect unit three coordinate computations and two samples go through one copy of each, by loops with run-time bounds:
+    // coordinates job 0 the level of detail of the indirect stage (the low two bits of its map and coordinate numbers, a quirk of the
+    // reference), job 1 its coordinates, job 2 the stage's own; sample job 0 the indirect sample, job 1 the stage's
     uint indWord = bfi(b0, 16, 3) > 0 ? S(0x10u + uint(si)) : 0u;
-#endif
+    bool hasInd = indWord != 0u;
+    int ibt = bfi(indWord, 0, 2);
+    uint iref = S(0x27u);
+    int imap = bfi(iref, 6 * ibt, 3), icoord = bfi(iref, 6 * ibt + 3, 3);
+    uint ssw = S(0x25u + uint(ibt >> 1));
+    int iss = bfi(ssw, (ibt & 1) * 8, 4), its = bfi(ssw, (ibt & 1) * 8 + 4, 4);
+    int jS[3], jT[3], jL[3];
+    bool jLin[3];
+    for (int j = 0; j < uK.z; j++) {
+      jS[j] = 0; jT[j] = 0; jL[j] = 0; jLin[j] = false;
+      if (j == 2 ? texEn : hasInd) {
+        uint mapj = j == 0 ? uint(imap & 3) : (j == 1 ? uint(imap) : texmap);
+        uint genj = j == 0 ? uint(icoord & 3) : (j == 1 ? uint(icoord) : texcoord);
+        stageCoords(loadMap(mapj), genj, x, y, jS[j], jT[j], jL[j], jLin[j]);
+      }
+    }
+    int mS = jS[2], mT = jT[2];
+    for (int k = 0; k < uK.w; k++) {
+      if (k == 0 ? hasInd : texEn) {
+        MapI mps = loadMap(k == 0 ? uint(imap) : texmap);
+        ivec4 r = sampleMap(mps, k == 0 ? jS[1] >> iss : mS, k == 0 ? jT[1] >> its : mT, k == 0 ? jL[0] : jL[2], k == 0 ? jLin[0] : jLin[2]);
+        if (k == 0) {
+          int oS, oT;
+          indirectOffsets(indWord, r, jS[2], jT[2], prevS, prevT, oS, oT, bump);
+          mS = oS; mT = oT;
+        } else {
+          prevS = mS; prevT = mT;
+          int tv[4] = int[4](r.r, r.g, r.b, r.a);
+          swz(tsw, tv, gTex);
+          for (int i = 0; i < 4; i++) gLastTex[i] = gTex[i];
+        }
+      }
+    }
+#else
     if (texEn) {
       MapI mp = loadMap(texmap);
       int cS, cT, lod;
       bool lin;
       stageCoords(mp, texcoord, x, y, cS, cT, lod, lin);
-#ifdef INDIRECT
-      if (indWord != 0u) { int oS, oT; indirectStage(indWord, x, y, cS, cT, prevS, prevT, oS, oT, bump); cS = oS; cT = oT; }
-#endif
       prevS = cS; prevT = cT;
       ivec4 tx = sampleMap(mp, cS, cT, lod, lin);
       int tv[4] = int[4](tx.r, tx.g, tx.b, tx.a);
       swz(tsw, tv, gTex);
       for (int i = 0; i < 4; i++) gLastTex[i] = gTex[i];
     }
-#ifdef INDIRECT
-    else if (indWord != 0u) { int oS, oT; indirectStage(indWord, x, y, 0, 0, prevS, prevT, oS, oT, bump); }
 #endif
     for (int i = 0; i < 4; i++) gRas[i] = 0;
     if (rasSel == 0u || rasSel == 1u) {
