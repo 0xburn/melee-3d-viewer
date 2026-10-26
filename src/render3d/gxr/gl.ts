@@ -63,9 +63,9 @@ export class GxGl implements GxBackend {
   private efb: Fbo[] = [];
   private cur = 0;
   private pictureFbo!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
-  private dataTex: IntTex;
-  private listTex: IntTex;
-  private tilesTex: IntTex;
+  /** the pass inputs, in a ring: a pass still running on the GPU keeps reading its own set while the next is written */
+  private sets: { data: IntTex; list: IntTex; tiles: IntTex }[] = [];
+  private setNo = 0;
   private statesTex: IntTex;
   private q = new Growable();
   private bb: number[] = [];
@@ -108,9 +108,7 @@ export class GxGl implements GxBackend {
     gl.bindFramebuffer(gl.FRAMEBUFFER, pf);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pt, 0);
     this.pictureFbo = { fbo: pf, tex: pt };
-    this.dataTex = intTexture(gl, "R32UI", 4096, 64);
-    this.listTex = intTexture(gl, "R32UI", 4096, 64);
-    this.tilesTex = intTexture(gl, "RG32UI", 1024, 2);
+    for (let i = 0; i < 4; i++) this.sets.push({ data: intTexture(gl, "R32UI", 4096, 64), list: intTexture(gl, "R32UI", 4096, 64), tiles: intTexture(gl, "RG32UI", 1024, 2) });
     this.statesTex = intTexture(gl, "R32UI", 4096, 64);
     this.timer = { ext: null, pending: [], ms: {} };
   }
@@ -410,12 +408,13 @@ export class GxGl implements GxBackend {
     const tiles = new Uint32Array(1024 * 2 * 2);
     for (let t = 0; t < TILES_X * TILES_Y; t++) { tiles[t * 2] = start[t]; tiles[t * 2 + 1] = counts[t]; }
     // uploads
-    this.dataTex = this.grow(this.dataTex, this.q.n, 4096);
+    const set = this.sets[this.setNo++ % this.sets.length];
+    set.data = this.grow(set.data, this.q.n, 4096);
     const dataRows = Math.ceil(this.q.n / 4096);
-    uploadRows(gl, this.dataTex, 0, 0, 4096, dataRows, this.q.words.subarray(0, dataRows * 4096));
-    this.listTex = this.grow(this.listTex, list.length, 4096);
-    uploadRows(gl, this.listTex, 0, 0, 4096, list.length / 4096, list);
-    uploadRows(gl, this.tilesTex, 0, 0, 1024, 2, tiles);
+    uploadRows(gl, set.data, 0, 0, 4096, dataRows, this.q.words.subarray(0, dataRows * 4096));
+    set.list = this.grow(set.list, list.length, 4096);
+    uploadRows(gl, set.list, 0, 0, 4096, list.length / 4096, list);
+    uploadRows(gl, set.tiles, 0, 0, 1024, 2, tiles);
     const st0 = this.statesTex;
     this.statesTex = this.grow(this.statesTex, this.states.n, 4096);
     if (this.statesTex !== st0) this.stateUploaded = 0;
@@ -432,9 +431,9 @@ export class GxGl implements GxBackend {
     const p = this.progPixel;
     gl.useProgram(p);
     this.bindTex(p, 0, "uMem", this.mem);
-    this.bindTex(p, 1, "uData", this.dataTex);
-    this.bindTex(p, 2, "uTiles", this.tilesTex);
-    this.bindTex(p, 3, "uList", this.listTex);
+    this.bindTex(p, 1, "uData", set.data);
+    this.bindTex(p, 2, "uTiles", set.tiles);
+    this.bindTex(p, 3, "uList", set.list);
     this.bindTex(p, 4, "uStates", this.statesTex);
     this.bindTex(p, 5, "uEfb", src.tex);
     gl.uniform1i(this.u(p, "uTilesX"), TILES_X);
