@@ -11,7 +11,7 @@
  *
  * URL parameters: replayUrl, name, frame (game frame, -123 = first),
  * trackUrl (the replay's viewer track), files, renderer, zoom, look=480,
- * crt=<off|trinitron|pvm>, controllers=<both|left|right|you|opponent|off>,
+ * crt=<off|trinitron|pvm>, renderer=gx (the game's own draw path: gx.html), controllers=<both|left|right|you|opponent|off>,
  * you=<port 1-4>, hudslots=<outer|game>, mini=1, sim=1 (the simulator makes
  * the viewer track in the browser when none is given: src/sim/feed.ts).
  *
@@ -115,6 +115,8 @@ import "~/state/fileStore";
 import "~/state/replayStore";
 import "~/state/selectionStore";
 
+// ?renderer=gx: the replay drawn by the game's own draw path (gx.html, src/gxpage.ts), an option next to the default player
+if (new URLSearchParams(location.search).get("renderer") === "gx") location.replace("gx.html" + location.search + location.hash);
 // (the 3D player's programs compile while the replay is fetched and read)
 const LINE_ART = new URLSearchParams(location.search).get("renderer") === "svg";
 if (!LINE_ART) precompilePrograms();
