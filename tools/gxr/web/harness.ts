@@ -36,11 +36,12 @@ for (const w of manifest.windows) {
       const n = Number(q.get("loops"));
       for (let i = 0; i < dff.frames.length; i++) { be.drawing = i > 0; gpu.runFrame(dff.frames[i]); }
       be.finish();
-      be.stats.cpuMs = 0; be.stats.flushMs = 0; be.stats.uploadMs = 0; be.stats.memBytes = 0;
+      be.stats.cpuMs = 0; be.stats.flushMs = 0; be.stats.uploadMs = 0; be.stats.memBytes = 0; be.stats.listEntries = 0;
       const l0 = performance.now();
       for (let r = 0; r < n; r++) for (let i = 1; i < dff.frames.length; i++) { be.drawing = true; gpu.runFrame(dff.frames[i]); }
       be.finish();
       const per = (performance.now() - l0) / (n * (dff.frames.length - 1));
+      await log(`   list entries per frame ${(be.stats.listEntries / (n * 4 + 4)).toFixed(0)} (per pixel ${(be.stats.listEntries / (n * 4 + 4) * 256 / (640 * 528)).toFixed(1)})`);
       await log(`   uploads: ${(be.stats.uploadMs / (n * 4 + 4)).toFixed(2)} ms and ${(be.stats.memBytes / (n * 4 + 4) / 1024).toFixed(0)} KiB per frame, bin+upload ${(be.stats.flushMs / (n * 4 + 4)).toFixed(2)} ms, front half ${(be.stats.cpuMs / (n * 4 + 4)).toFixed(2)} ms`);
       await log(`${w.name}: ${per.toFixed(1)} ms per frame over ${n * (dff.frames.length - 1)} frames (${(1000 / per).toFixed(0)} fps), tris/frame ${(be.tris / (n + 1) / 4) | 0}`);
       continue;

@@ -39,10 +39,10 @@ void main() {
   const sb = new Uint32Array(4096 * 64);
   if (states) sb.set(states);
   uploadRows(gl, sTex, 0, 0, 4096, 64, sb);
-  const dTex = intTexture(gl, "R32UI", 4096, 64);
+  const dTex = intTexture(gl, "RGBA32UI", 1024, 64);
   const db = new Uint32Array(4096 * 64);
   if (extraData) db.set(extraData);
-  uploadRows(gl, dTex, 0, 0, 4096, 64, db);
+  uploadRows(gl, dTex, 0, 0, 1024, 64, db);
   const out = intTexture(gl, "RGBA32UI", W, H);
   const fbo = gl.createFramebuffer()!;
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);

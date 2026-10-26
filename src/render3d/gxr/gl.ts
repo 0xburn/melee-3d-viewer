@@ -9,7 +9,7 @@
 import { Memory } from "./dff";
 import { copyFormat, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS, PRESENT_FS } from "./glsl-copy";
-import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
+import { HEADER_TEXELS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
 import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
 import { bitsOf } from "./f32";
 import type { GxBackend } from "./gpu";
@@ -53,7 +53,7 @@ export class GxGl implements GxBackend {
   /** the features of the last pass's program (tests) */
   lastFeatures = 0;
   /** timing of the last frame's work, ms (CPU front half, GPU submit) */
-  stats = { cpuMs: 0, flushMs: 0, uploadMs: 0, memBytes: 0 };
+  stats = { cpuMs: 0, flushMs: 0, uploadMs: 0, memBytes: 0, listEntries: 0, tilesTouched: 0 };
 
   private gl: WebGL2RenderingContext;
   private pending: Map<string, Compiling>;
@@ -93,6 +93,8 @@ export class GxGl implements GxBackend {
   private tmemVersion = -1;
   private pool = new Pool();
   private trip: number[] = [];
+  private entTile = new Int32Array(1 << 16);
+  private entTri = new Int32Array(1 << 16);
   private lineIdx: number[] = [];
   private need = new Uint8Array(4096);
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
@@ -120,7 +122,7 @@ export class GxGl implements GxBackend {
     gl.bindFramebuffer(gl.FRAMEBUFFER, pf);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pt, 0);
     this.pictureFbo = { fbo: pf, tex: pt };
-    for (let i = 0; i < 4; i++) this.sets.push({ data: intTexture(gl, "R32UI", 4096, 64), list: intTexture(gl, "R32UI", 4096, 64), tiles: intTexture(gl, "RG32UI", 1024, 2) });
+    for (let i = 0; i < 4; i++) this.sets.push({ data: intTexture(gl, "RGBA32UI", 1024, 64), list: intTexture(gl, "R32UI", 4096, 64), tiles: intTexture(gl, "RG32UI", 1024, 2) });
     this.statesTex = intTexture(gl, "R32UI", 4096, 64);
     this.timer = { ext: null, pending: [], ms: {} };
   }
@@ -397,7 +399,7 @@ export class GxGl implements GxBackend {
     const mark = pool.n;
     const q = this.q;
     const nPlanes = planeCount(sc);
-    const words = HEADER_WORDS + nPlanes * 3;
+    const words = (HEADER_TEXELS + nPlanes) * 4;
     for (let i = 0; i + 2 < trip.length; i += 3) {
       pool.n = mark;
       if (!cullClipInto(pool, cull, base + trip[i] * V_STRIDE, base + trip[i + 1] * V_STRIDE, base + trip[i + 2] * V_STRIDE)) continue;
@@ -405,7 +407,7 @@ export class GxGl implements GxBackend {
       for (let k = 1; k + 1 < n; k++) {
         q.ensure(words);
         const o = q.n;
-        if (!setupTriInto(pool, x, sc, poly[0], poly[k], poly[k + 1], q.floats, o + HEADER_WORDS)) continue;
+        if (!setupTriInto(pool, x, sc, poly[0], poly[k], poly[k + 1], q.floats, o + HEADER_TEXELS * 4, null, 4)) continue;
         this.pushHeader(o, st);
         q.n += words;
       }
@@ -422,7 +424,7 @@ export class GxGl implements GxBackend {
         for (const pc of pieces) {
           q.ensure(words);
           const o = q.n;
-          if (!setupTriInto(pool, x, sc, pc.v[0], pc.v[1], pc.v[2], q.floats, o + HEADER_WORDS, pc.scr)) continue;
+          if (!setupTriInto(pool, x, sc, pc.v[0], pc.v[1], pc.v[2], q.floats, o + HEADER_TEXELS * 4, pc.scr, 4)) continue;
           this.pushHeader(o, st);
           q.n += words;
         }
@@ -435,12 +437,11 @@ export class GxGl implements GxBackend {
   private pushHeader(o: number, st: number): void {
     const q = this.q;
     const I = q.ints, U = q.words;
-    I[o] = TS.DX12; I[o + 1] = TS.DY12; I[o + 2] = TS.DX23; I[o + 3] = TS.DY23; I[o + 4] = TS.DX31; I[o + 5] = TS.DY31;
-    I[o + 6] = TS.C1; I[o + 7] = TS.C2; I[o + 8] = TS.C3;
-    I[o + 9] = TS.minx; I[o + 10] = TS.maxx; I[o + 11] = TS.miny; I[o + 12] = TS.maxy;
-    I[o + 13] = TS.xi; I[o + 14] = TS.yi;
-    U[o + 15] = bitsOf(TS.ox); U[o + 16] = bitsOf(TS.oy);
-    U[o + 17] = st; U[o + 18] = TS.np;
+    I[o] = TS.minx; I[o + 1] = TS.maxx; I[o + 2] = TS.miny; I[o + 3] = TS.maxy;
+    I[o + 4] = TS.DX12; I[o + 5] = TS.DY12; I[o + 6] = TS.DX23; I[o + 7] = TS.DY23;
+    I[o + 8] = TS.DX31; I[o + 9] = TS.DY31; I[o + 10] = TS.C1; I[o + 11] = TS.C2;
+    I[o + 12] = TS.C3; I[o + 13] = TS.xi; I[o + 14] = TS.yi; U[o + 15] = bitsOf(TS.ox);
+    U[o + 16] = bitsOf(TS.oy); U[o + 17] = st; U[o + 18] = TS.np; U[o + 19] = 0;
     this.triOffsets.push(o);
     this.bb.push(Math.max(0, TS.minx), Math.max(0, TS.miny), Math.min(EFB_W - 1, TS.maxx), Math.min(EFB_H - 1, TS.maxy));
     this.tris++;
@@ -467,30 +468,58 @@ export class GxGl implements GxBackend {
     if (nt === 0) { this.used.clear(); return; }
     const t0 = performance.now();
     const gl = this.gl;
-    // bins
-    const counts = new Uint32Array(TILES_X * TILES_Y + 1);
+    // bins: every triangle goes into the tiles its blocks can reach and where its three edge tests can pass for some pixel. The edge test
+    // of a pixel is C + DX * 16y - DY * 16x > 0 (32-bit); its largest value over a tile is at one corner, so a tile where that corner
+    // fails an edge holds no covered pixel. Triangles with edge numbers too big for plain arithmetic to match the wrapping 32-bit
+    // arithmetic of the shader are binned by their bounds only.
+    const nTiles = TILES_X * TILES_Y;
+    const counts = new Uint32Array(nTiles + 1);
     const bb = this.bb;
+    const I = this.q.ints;
+    let ent = this.entTile;
+    let entTri = this.entTri;
+    let ne = 0;
     for (let i = 0; i < nt; i++) {
+      const o = this.triOffsets[i];
       const tx0 = bb[i * 4] >> 4, ty0 = bb[i * 4 + 1] >> 4, tx1 = bb[i * 4 + 2] >> 4, ty1 = bb[i * 4 + 3] >> 4;
-      for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) counts[ty * TILES_X + tx]++;
+      const dx12 = I[o + 4], dy12 = I[o + 5], dx23 = I[o + 6], dy23 = I[o + 7], dx31 = I[o + 8], dy31 = I[o + 9], c1 = I[o + 10], c2 = I[o + 11], c3 = I[o + 12];
+      const safe = Math.abs(dx12) < 16384 && Math.abs(dy12) < 16384 && Math.abs(dx23) < 16384 && Math.abs(dy23) < 16384 && Math.abs(dx31) < 16384 &&
+        Math.abs(dy31) < 16384 && Math.abs(c1) < 1073741824 && Math.abs(c2) < 1073741824 && Math.abs(c3) < 1073741824;
+      if (ne + (tx1 - tx0 + 1) * (ty1 - ty0 + 1) > ent.length) {
+        const n2 = Math.max(ent.length * 2, ne + (tx1 - tx0 + 1) * (ty1 - ty0 + 1));
+        const e2 = new Int32Array(n2), t2 = new Int32Array(n2);
+        e2.set(ent.subarray(0, ne)); t2.set(entTri.subarray(0, ne));
+        ent = this.entTile = e2; entTri = this.entTri = t2;
+      }
+      for (let ty = ty0; ty <= ty1; ty++) {
+        const y0 = ty << 4, y1 = y0 + 15;
+        for (let tx = tx0; tx <= tx1; tx++) {
+          if (safe) {
+            const x0 = tx << 4, x1 = x0 + 15;
+            if (c1 + 16 * (dx12 > 0 ? dx12 * y1 : dx12 * y0) - 16 * (dy12 > 0 ? dy12 * x0 : dy12 * x1) <= 0) continue;
+            if (c2 + 16 * (dx23 > 0 ? dx23 * y1 : dx23 * y0) - 16 * (dy23 > 0 ? dy23 * x0 : dy23 * x1) <= 0) continue;
+            if (c3 + 16 * (dx31 > 0 ? dx31 * y1 : dx31 * y0) - 16 * (dy31 > 0 ? dy31 * x0 : dy31 * x1) <= 0) continue;
+          }
+          const t = ty * TILES_X + tx;
+          counts[t]++;
+          ent[ne] = t; entTri[ne] = o >> 2; ne++;
+        }
+      }
     }
-    const start = new Uint32Array(TILES_X * TILES_Y + 1);
+    const start = new Uint32Array(nTiles + 1);
     let total = 0;
-    for (let t = 0; t < TILES_X * TILES_Y; t++) { start[t] = total; total += counts[t]; }
+    for (let t = 0; t < nTiles; t++) { start[t] = total; total += counts[t]; }
+    this.stats.listEntries += total;
     const list = new Uint32Array(Math.max(1, Math.ceil(total / 4096)) * 4096);
-    const fill = new Uint32Array(TILES_X * TILES_Y);
-    for (let i = 0; i < nt; i++) {
-      const off = this.triOffsets[i];
-      const tx0 = bb[i * 4] >> 4, ty0 = bb[i * 4 + 1] >> 4, tx1 = bb[i * 4 + 2] >> 4, ty1 = bb[i * 4 + 3] >> 4;
-      for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) { const t = ty * TILES_X + tx; list[start[t] + fill[t]++] = off; }
-    }
+    const fill = new Uint32Array(nTiles);
+    for (let e = 0; e < ne; e++) { const t = ent[e]; list[start[t] + fill[t]++] = entTri[e]; }
     const tiles = new Uint32Array(1024 * 2 * 2);
     for (let t = 0; t < TILES_X * TILES_Y; t++) { tiles[t * 2] = start[t]; tiles[t * 2 + 1] = counts[t]; }
     // uploads
     const set = this.sets[this.setNo++ % this.sets.length];
     set.data = this.grow(set.data, this.q.n, 4096);
     const dataRows = Math.ceil(this.q.n / 4096);
-    uploadRows(gl, set.data, 0, 0, 4096, dataRows, this.q.words.subarray(0, dataRows * 4096));
+    uploadRows(gl, set.data, 0, 0, 1024, dataRows, this.q.words.subarray(0, dataRows * 4096));
     set.list = this.grow(set.list, list.length, 4096);
     uploadRows(gl, set.list, 0, 0, 4096, list.length / 4096, list);
     uploadRows(gl, set.tiles, 0, 0, 1024, 2, tiles);

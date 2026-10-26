@@ -8,7 +8,8 @@
  *
  * Data (all unsigned integer textures read with texelFetch):
  *  - uMem: bytes of main memory (4096 per row), then TMEM and the palettes (see MEM_*);
- *  - uData: words; a triangle is HEADER_WORDS words then its planes (3 words each: f0, dfdx, dfdy);
+ *  - uData: texels of 4 words; a triangle is HEADER_TEXELS texels, then one texel per plane (f0, dfdx, dfdy, unused). The header texels hold
+ *    (minx, maxx, miny, maxy), (DX12, DY12, DX23, DY23), (DX31, DY31, C1, C2), (C3, xi, yi, ox), (oy, state, plane count, unused);
  *  - uTiles: (first, count) into uList for every tile; uList: word offsets of triangles in uData;
  *  - uStates: STATE_WORDS words per state: BP registers 0..255, the constant colors K0..K3 (words 256..263), the palette address of
  *    each of the 8 texture maps (264..271), the texgen projection flags (272), the viewport half width as float bits (273), the byte length of each map's palette (274..281);
@@ -21,7 +22,7 @@ export const MEM_PAL = 0x1900000;
 export const MEM_PAL_SIZE = 0x40000;
 export const MEM_BYTES = MEM_PAL + MEM_PAL_SIZE;
 export const MEM_ROW = 4096;
-export const HEADER_WORDS = 20;
+export const HEADER_TEXELS = 5;
 export const STATE_WORDS = 288;
 export const TILE = 16;
 
@@ -38,7 +39,7 @@ precision highp int;
 precision highp usampler2D;
 
 uniform usampler2D uMem;
-uniform usampler2D uData;
+uniform usampler2D uData;   // RGBA32UI, 1024 texels wide
 uniform usampler2D uTiles;
 uniform usampler2D uList;
 uniform usampler2D uStates;
@@ -47,13 +48,15 @@ uniform int uTilesX;
 out uvec4 o;
 
 #define TMEM_BASE ${MEM_TMEM}u
-#define HEADER_WORDS ${HEADER_WORDS}u
+#define HEADER_TEXELS ${HEADER_TEXELS}u
 #define STATE_WORDS ${STATE_WORDS}u
 #define NO_PAL 0xffffffffu
 
 ${SOFT_FLOAT_GLSL}
 
 uint wd(usampler2D t, uint i) { return texelFetch(t, ivec2(int(i & 4095u), int(i >> 12)), 0).r; }
+// texel t of the triangle data (4 words)
+uvec4 td(uint t) { return texelFetch(uData, ivec2(int(t & 1023u), int(t >> 10)), 0); }
 uint mbyte(uint a) { return texelFetch(uMem, ivec2(int(a & 4095u), int(a >> 12)), 0).r; }
 uint bf(uint v, int s, int n) { return (v >> uint(s)) & ((1u << uint(n)) - 1u); }
 int bfi(uint v, int s, int n) { return int(bf(v, s, n)); }
@@ -257,14 +260,15 @@ ivec4 sampleMap(MapI mp, int s, int t, int lod, bool linear) {
 
 uint gTri;      // word offset of the current triangle in uData
 uint gNp;       // number of planes of the current triangle
+uint gState;    // its draw state
 uint gOx, gOy;  // float bits
 int gXi, gYi;
 
 uint planeAt(uint k, uint dx, uint dy) {
-  uint b = gTri + HEADER_WORDS + k * 3u;
   // a plane the triangle does not carry (a generator past BP's count) reads zero
   if (k >= gNp) return 0u;
-  return f_add(f_add(wd(uData, b), f_mul(wd(uData, b + 1u), dx)), f_mul(wd(uData, b + 2u), dy));
+  uvec4 p = td(gTri + HEADER_TEXELS + k);
+  return f_add(f_add(p.x, f_mul(p.y, dx)), f_mul(p.z, dy));
 }
 
 // s and t of generator n at pixel (px, py)
@@ -675,7 +679,7 @@ uint writeColor(uint old, uint fmt, uint mode, ivec4 r) {
 // one pixel of one triangle (spec 8 to 11)
 
 void shade(int x, int y, inout uint col, inout uint dep) {
-  uint stIdx = wd(uData, gTri + 17u);
+  uint stIdx = gState;
   sbase = stIdx * STATE_WORDS;
   uint b0 = S(0x00u);
   int nStages = bfi(b0, 10, 4) + 1;
@@ -838,19 +842,21 @@ void main() {
   uvec2 ti = texelFetch(uTiles, ivec2(tile & 1023, tile >> 10), 0).rg;
   for (uint i = 0u; i < ti.y; i++) {
     uint tri = wd(uList, ti.x + i);
-    int minx = int(wd(uData, tri + 9u)), maxx = int(wd(uData, tri + 10u)), miny = int(wd(uData, tri + 11u)), maxy = int(wd(uData, tri + 12u));
+    uvec4 h0 = td(tri);
     int bx = p.x & ~1, by = p.y & ~1;
-    if (bx < minx || bx >= maxx || by < miny || by >= maxy) continue;
-    int DX12 = int(wd(uData, tri)), DY12 = int(wd(uData, tri + 1u)), DX23 = int(wd(uData, tri + 2u)), DY23 = int(wd(uData, tri + 3u));
-    int DX31 = int(wd(uData, tri + 4u)), DY31 = int(wd(uData, tri + 5u));
-    int C1 = int(wd(uData, tri + 6u)), C2 = int(wd(uData, tri + 7u)), C3 = int(wd(uData, tri + 8u));
+    if (bx < int(h0.x) || bx >= int(h0.y) || by < int(h0.z) || by >= int(h0.w)) continue;
+    uvec4 h1 = td(tri + 1u), h2 = td(tri + 2u), h3 = td(tri + 3u);
+    int DX12 = int(h1.x), DY12 = int(h1.y), DX23 = int(h1.z), DY23 = int(h1.w), DX31 = int(h2.x), DY31 = int(h2.y);
+    int C1 = int(h2.z), C2 = int(h2.w), C3 = int(h3.x);
     if (C1 + DX12 * (16 * p.y) - DY12 * (16 * p.x) <= 0) continue;
     if (C2 + DX23 * (16 * p.y) - DY23 * (16 * p.x) <= 0) continue;
     if (C3 + DX31 * (16 * p.y) - DY31 * (16 * p.x) <= 0) continue;
+    uvec4 h4 = td(tri + 4u);
     gTri = tri;
-    gXi = int(wd(uData, tri + 13u)); gYi = int(wd(uData, tri + 14u));
-    gOx = wd(uData, tri + 15u); gOy = wd(uData, tri + 16u);
-    gNp = wd(uData, tri + 18u);
+    gXi = int(h3.y); gYi = int(h3.z);
+    gOx = h3.w; gOy = h4.x;
+    gState = h4.y;
+    gNp = h4.z;
     shade(p.x, p.y, col, dep);
   }
   o = uvec4(col, dep, 0u, 0u);

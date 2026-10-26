@@ -1,5 +1,5 @@
 // Random triangles and pixels: the planes, perspective division and level of detail of the CPU reference against the shader's stageCoords().
-import { HEADER_WORDS, STATE_WORDS } from "../../../src/render3d/gxr/glsl-pixel.ts";
+import { HEADER_TEXELS, STATE_WORDS } from "../../../src/render3d/gxr/glsl-pixel.ts";
 import { DrawPixels } from "../../../src/render3d/gxr/raster.ts";
 import { setupCtx, setupTri, setupTriInto, TS } from "../../../src/render3d/gxr/setup.ts";
 import { Pool, V_COL, V_C, V_T, xfDraw } from "../../../src/render3d/gxr/xform.ts";
@@ -56,9 +56,9 @@ for (let b0 = 0; b0 < N; b0 += BATCH) {
     const tri = setupTri(pool, x, sc, 0, verts[0], verts[1], verts[2]);
     if (!tri) { want.push([0, 0, 0, 0]); inputs.set([0, 0, 0, 0], i * 16); continue; }
     // GPU copy of the triangle
-    const words = HEADER_WORDS + tri.np * 3;
+    const words = (HEADER_TEXELS + tri.np) * 4;
     const pw = new Uint32Array(tri.planes.buffer, tri.planes.byteOffset, tri.np * 3);
-    data.set(pw, off + HEADER_WORDS);
+    for (let k = 0; k < tri.np; k++) for (let c = 0; c < 3; c++) data[off + HEADER_TEXELS * 4 + k * 4 + c] = pw[k * 3 + c];
     data[off + 18] = tri.np; data[off + 13] = tri.xi >>> 0; data[off + 14] = tri.yi >>> 0; data[off + 15] = bitsOf(tri.ox); data[off + 16] = bitsOf(tri.oy);
     // state: map modes
     const mode0 = ri(2) | (ri(2) << 2) | (ri(2) << 4) | ([0, 1, 2, 4, 5, 6][ri(6)] << 5) | (ri(2) << 8) | ((rnd() < 0.7 ? 0 : (ri(40) - 20) & 255) << 9);
@@ -70,7 +70,7 @@ for (let b0 = 0; b0 < N; b0 += BATCH) {
     st[272] = proj;
     const px = tri.xi + ri(40) - 20, py = tri.yi + ri(40) - 20;
     const gen = ri(gens);
-    inputs.set([i, off, px, py], i * 16);
+    inputs.set([i, off / 4, px, py], i * 16);
     inputs.set([gen, 0, 0, 0], i * 16 + 4);
     // CPU
     const ps = { bp: new Uint32Array(256), kc: new Uint32Array(8), texProj: [0, 1, 2, 3, 4, 5, 6, 7].map((g) => ((proj >> g) & 1) === 1), wd: 320 };
@@ -85,7 +85,7 @@ for (let b0 = 0; b0 < N; b0 += BATCH) {
     void TS; void setupTriInto;
   }
   const out = runFn("fuzzcoord", `
-    sbase = in0.x * STATE_WORDS; gTri = in0.y; gXi = int(wd(uData, gTri + 13u)); gYi = int(wd(uData, gTri + 14u)); gOx = wd(uData, gTri + 15u); gOy = wd(uData, gTri + 16u); gNp = wd(uData, gTri + 18u);
+    sbase = in0.x * STATE_WORDS; gTri = in0.y; uvec4 h3 = td(gTri + 3u), h4 = td(gTri + 4u); gXi = int(h3.y); gYi = int(h3.z); gOx = h3.w; gOy = h4.x; gNp = h4.z;
     MapI mp = loadMap(0u);
     int S, T, lod; bool lin;
     stageCoords(mp, in1.x, int(in0.z), int(in0.w), S, T, lod, lin);
