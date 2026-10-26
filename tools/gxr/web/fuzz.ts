@@ -10,7 +10,7 @@ import { basicScene, FifoWriter } from "../../../src/render3d/gxr/encode.ts";
 const q = new URLSearchParams(location.search);
 const log = (s: string) => fetch("/log", { method: "POST", body: s });
 const gl = document.createElement("canvas").getContext("webgl2", { antialias: false, alpha: false })!;
-const be = new GxGl(gl, { debugRegs: q.get("dbgregs") ? (q.get("dbgregs")!.split(",").map(Number) as [number, number]) : undefined });
+const be = new GxGl(gl, { debugRegs: q.get("dbgregs") ? (q.get("dbgregs")!.split(",").map(Number) as [number, number]) : undefined }, { workers: Number(q.get("workers") ?? 0), factory: () => new Worker("/frontworker.js", { type: "module" }) });
 
 class Rng {
   s: number;

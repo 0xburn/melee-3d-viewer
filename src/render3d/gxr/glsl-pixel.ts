@@ -22,7 +22,8 @@ export const MEM_PAL = 0x1900000;
 export const MEM_PAL_SIZE = 0x40000;
 export const MEM_BYTES = MEM_PAL + MEM_PAL_SIZE;
 export const MEM_ROW = 4096;
-export const HEADER_TEXELS = 5;
+import { HEADER_TEXELS } from "./front";
+export { HEADER_TEXELS };
 export const STATE_WORDS = 288;
 export const TILE = 16;
 

@@ -10,15 +10,15 @@
 import { Memory } from "./dff";
 import { copyFormat, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS, PRESENT_FS } from "./glsl-copy";
-import { HEADER_TEXELS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
+import { MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
 import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
-import { bitsOf } from "./f32";
+import { FrontCtx, Growable, HEADER_TEXELS, needsMainThread } from "./front";
+import { FrontPool } from "./frontpool";
+import { setLastZ } from "./setup";
 import type { GxBackend } from "./gpu";
-import { planeCount, setupCtx, setupTriInto, TS } from "./setup";
 import { bits, GxRegs } from "./state";
 import { formatInfo, levelOffset } from "./texunit";
 import { VertexData } from "./vertex";
-import { assemble, clipLine, cullClipInto, lineTriangles, Pool, poly, polyState, transformVertices, V_STRIDE, xfDraw } from "./xform";
 
 const EFB_W = 640, EFB_H = 528;
 const TILES_X = EFB_W / TILE, TILES_Y = EFB_H / TILE;
@@ -26,21 +26,6 @@ const NO_PAL = 0xffffffff;
 const MEM_ROWS = MEM_BYTES / MEM_ROW;
 
 interface Fbo { fbo: WebGLFramebuffer; tex: IntTex }
-
-class Growable {
-  words = new Uint32Array(4096 * 16);
-  ints = new Int32Array(this.words.buffer);
-  floats = new Float32Array(this.words.buffer);
-  n = 0;
-  ensure(extra: number): void {
-    if (this.n + extra <= this.words.length) return;
-    let cap = this.words.length;
-    while (cap < this.n + extra) cap *= 2;
-    const w = new Uint32Array(cap);
-    w.set(this.words.subarray(0, this.n));
-    this.words = w; this.ints = new Int32Array(w.buffer); this.floats = new Float32Array(w.buffer);
-  }
-}
 
 export class GxGl implements GxBackend {
   /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording; a viewer leaves it on) */
@@ -94,12 +79,10 @@ export class GxGl implements GxBackend {
   /** the texture ranges the queued triangles read: start -> length */
   private used = new Map<number, number>();
   private tmemVersion = -1;
-  private pool = new Pool();
-  private trip: number[] = [];
+  private ctx = new FrontCtx();
+  private fp: FrontPool | null = null;
   private entTile = new Int32Array(1 << 16);
   private entTri = new Int32Array(1 << 16);
-  private lineIdx: number[] = [];
-  private need = new Uint8Array(4096);
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
   /** whether `stats` are kept (reading the clock per draw costs about 1% of a frame) */
   measure = false;
@@ -108,8 +91,12 @@ export class GxGl implements GxBackend {
   private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
 
   /** options of the pixel shader (test aids) */
-  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number] } = {}) {
+  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number] } = {}, front: { workers?: number; factory?: () => Worker } = {}) {
     this.gl = gl;
+    // the front half on worker threads (a page that is cross-origin isolated); otherwise it runs on this thread, with the same result
+    if ((front.workers ?? 0) > 0 && FrontPool.available()) {
+      this.fp = new FrontPool(front.workers!, front.factory ?? (() => new Worker(new URL("./frontworker.ts", import.meta.url), { type: "module" })));
+    }
     if (gl.getParameter(gl.MAX_TEXTURE_SIZE) < MEM_ROWS) throw new Error(`the GX renderer needs textures of ${MEM_ROWS} texels (this GPU's limit is ${gl.getParameter(gl.MAX_TEXTURE_SIZE)})`);
     // the programs compile in the background (when the browser can); `prepare()` waits for them, and the first draw would
     this.pending = new Map([
@@ -158,6 +145,7 @@ export class GxGl implements GxBackend {
     const gl = this.gl;
     if (this.attached) { this.attached.onTouch = null; this.attached.beforeWrite = null; }
     this.attached = null;
+    this.drainFront();
     this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.dirty = [];
     this.palMap.clear(); this.palNext = 0;
     this.resetStates();
@@ -396,78 +384,47 @@ export class GxGl implements GxBackend {
     const ranges = this.stateRanges[st];
     this.needFeatures |= this.stateFeatures[st];
     for (let i = 0; i < ranges.length; i += 2) if ((this.used.get(ranges[i]) ?? 0) < ranges[i + 1]) this.used.set(ranges[i], ranges[i + 1]);
-    const pool = this.pool;
-    pool.clear();
-    const x = xfDraw(regs, vd);
-    const trip = this.trip;
-    trip.length = 0;
-    for (let i = 0; i < prims.length; i++) assemble(prims[i].type, prims[i].count, prims[i].base, trip);
-    // only the vertices a triangle uses are transformed (a run also holds points, which draw nothing)
-    if (this.need.length < vd.n) this.need = new Uint8Array(Math.max(vd.n, this.need.length * 2));
-    const need = this.need;
-    need.fill(0, 0, vd.n);
-    for (let i = 0; i < trip.length; i++) need[trip[i]] = 1;
-    const lineIdx = this.lineIdx;
-    lineIdx.length = 0;
-    for (let i = 0; i < prims.length; i++) {
-      const p = prims[i];
-      if (p.type === 5) for (let k = 0; k + 1 < p.count; k += 2) lineIdx.push(p.base + k, p.base + k + 1);
-      else if (p.type === 6) for (let k = 0; k + 1 < p.count; k++) lineIdx.push(p.base + k, p.base + k + 1);
-    }
-    for (let i = 0; i < lineIdx.length; i++) need[lineIdx[i]] = 1;
-    const base = transformVertices(x, regs, vd, pool, need);
-    const sc = setupCtx(regs.bp);
-    const cull = bits(regs.bp[0], 14, 2);
-    const mark = pool.n;
-    const q = this.q;
-    const nPlanes = planeCount(sc);
-    const words = (HEADER_TEXELS + nPlanes) * 4;
-    for (let i = 0; i + 2 < trip.length; i += 3) {
-      pool.n = mark;
-      if (!cullClipInto(pool, cull, base + trip[i] * V_STRIDE, base + trip[i + 1] * V_STRIDE, base + trip[i + 2] * V_STRIDE)) continue;
-      const n = polyState.n;
-      for (let k = 1; k + 1 < n; k++) {
-        q.ensure(words);
-        const o = q.n;
-        if (!setupTriInto(pool, x, sc, poly[0], poly[k], poly[k + 1], q.floats, o + HEADER_TEXELS * 4, null, 4)) continue;
-        this.pushHeader(o, st);
-        q.n += words;
-      }
-    }
-    // lines (unverified by the recorded windows): clipped, then two triangles of the line width each
-    if (lineIdx.length) {
-      const size = bits(regs.bp[0x22], 0, 8);
-      for (let i = 0; i + 1 < lineIdx.length; i += 2) {
-        pool.n = mark;
-        const cl = clipLine(pool, base + lineIdx[i] * V_STRIDE, base + lineIdx[i + 1] * V_STRIDE);
-        if (!cl) continue;
-        const pieces: { scr: Float64Array; v: [number, number, number] }[] = [];
-        lineTriangles(pool, x, cl[0], cl[1], size, pieces);
-        for (const pc of pieces) {
-          q.ensure(words);
-          const o = q.n;
-          if (!setupTriInto(pool, x, sc, pc.v[0], pc.v[1], pc.v[2], q.floats, o + HEADER_TEXELS * 4, pc.scr, 4)) continue;
-          this.pushHeader(o, st);
-          q.n += words;
-        }
-      }
+    if (this.fp && !needsMainThread(regs.bp, prims)) this.fp.submit(regs, vd, prims, st, () => this.drainFront());
+    else {
+      // on this thread: after the jobs of the earlier draws, so the queue keeps the draw order
+      this.drainFront();
+      const q = this.q, o0 = q.n;
+      this.ctx.run(regs, vd, prims, st, q);
+      this.registerTris(o0, q.n);
     }
     if (this.measure) this.stats.cpuMs += performance.now() - t0;
   }
 
-  /** the header words of the triangle set up last (TS), at word o of the queue, and its place in the bins */
-  private pushHeader(o: number, st: number): void {
-    const q = this.q;
-    const I = q.ints, U = q.words;
-    I[o] = TS.minx; I[o + 1] = TS.maxx; I[o + 2] = TS.miny; I[o + 3] = TS.maxy;
-    I[o + 4] = TS.DX12; I[o + 5] = TS.DY12; I[o + 6] = TS.DX23; I[o + 7] = TS.DY23;
-    I[o + 8] = TS.DX31; I[o + 9] = TS.DY31; I[o + 10] = TS.C1; I[o + 11] = TS.C2;
-    I[o + 12] = TS.C3; I[o + 13] = TS.xi; I[o + 14] = TS.yi; U[o + 15] = bitsOf(TS.ox);
-    U[o + 16] = bitsOf(TS.oy); U[o + 17] = st; U[o + 18] = TS.np; U[o + 19] = 0;
-    this.triOffsets.push(o);
-    this.bb.push(Math.max(0, TS.minx), Math.max(0, TS.miny), Math.min(EFB_W - 1, TS.maxx), Math.min(EFB_H - 1, TS.maxy));
-    this.tris++;
+  /** the triangles the queue holds from word o0 to o1: their places in the bins */
+  private registerTris(o0: number, o1: number): void {
+    const I = this.q.ints, U = this.q.words;
+    for (let o = o0; o < o1; o += (HEADER_TEXELS + U[o + 18]) * 4) {
+      this.triOffsets.push(o);
+      this.bb.push(Math.max(0, I[o]), Math.max(0, I[o + 2]), Math.min(EFB_W - 1, I[o + 1]), Math.min(EFB_H - 1, I[o + 3]));
+      this.tris++;
+    }
   }
+
+  /** the draws on the worker threads, taken into the queue in draw order */
+  private drainFront(): void {
+    const fp = this.fp;
+    if (!fp || !fp.busy) return;
+    const q = this.q;
+    fp.drain((words) => {
+      q.ensure(words.length);
+      const o0 = q.n;
+      q.words.set(words, o0);
+      q.n += words.length;
+      this.registerTris(o0, q.n);
+    });
+    if (fp.zFresh) { fp.zFresh = false; setLastZ(fp.zPlane!); }
+  }
+
+  /** the worker pool's counters (null without one) */
+  get poolStats(): { mainJobs: number; jobs: number; waitMs: number; mergeMs: number } | null { return this.fp ? this.fp.stats : null; }
+
+  /** stop the worker threads (the backend draws on this thread from then on) */
+  dispose(): void { this.drainFront(); this.fp?.dispose(); this.fp = null; }
 
   // -------------------------------------------------------------------------------------------------------------------
   // passes
@@ -482,6 +439,7 @@ export class GxGl implements GxBackend {
   }
 
   flush(): void {
+    this.drainFront();
     const nt = this.triOffsets.length;
     // memory writes that have landed go to the GPU now, before anything that writes memory there (a copy) or reads it
     const tu = this.measure ? performance.now() : 0;

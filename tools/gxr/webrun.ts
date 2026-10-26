@@ -18,6 +18,12 @@ const bundle = `${ROOT}/web/${entry.replace(/[^\w]+/g, "_")}.js`;
 Deno.mkdirSync(`${ROOT}/web`, { recursive: true });
 const b = await new Deno.Command("deno", { args: ["bundle", "--sloppy-imports", "--no-lock", "-o", bundle, entry], stdout: "piped", stderr: "piped" }).output();
 if (!b.success) { console.error(new TextDecoder().decode(b.stderr)); Deno.exit(2); }
+// the front-half worker thread of the GPU backend (pages pass "/frontworker.js" to `new Worker`)
+const workerBundle = `${ROOT}/web/frontworker.js`;
+const wb = await new Deno.Command("deno", { args: ["bundle", "--sloppy-imports", "--no-lock", "-o", workerBundle, "src/render3d/gxr/frontworker.ts"], stdout: "piped", stderr: "piped" }).output();
+if (!wb.success) { console.error(new TextDecoder().decode(wb.stderr)); Deno.exit(2); }
+// shared buffers need a cross-origin isolated page
+const ISO = { "cross-origin-opener-policy": "same-origin", "cross-origin-embedder-policy": "require-corp", "cross-origin-resource-policy": "same-origin" };
 
 const html = `<!doctype html><meta charset="utf-8"><title>run</title><body><script>
 const post = (u, b) => fetch(u, { method: "POST", body: b });
@@ -33,9 +39,10 @@ const done = new Promise<string>((r) => (finish = r));
 const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async (req) => {
   const u = new URL(req.url);
   if (req.method === "GET") {
-    if (u.pathname === "/") return new Response(html, { headers: { "content-type": "text/html" } });
+    if (u.pathname === "/") return new Response(html, { headers: { "content-type": "text/html", ...ISO } });
+    if (u.pathname === "/frontworker.js") return new Response(Deno.readFileSync(workerBundle), { headers: { "content-type": "text/javascript", "cache-control": "no-store", ...ISO } });
     if (u.pathname === "/go") { await goPromise; return new Response("go"); }
-    if (u.pathname === "/bundle.js") return new Response(Deno.readFileSync(bundle), { headers: { "content-type": "text/javascript", "cache-control": "no-store" } });
+    if (u.pathname === "/bundle.js") return new Response(Deno.readFileSync(bundle), { headers: { "content-type": "text/javascript", "cache-control": "no-store", ...ISO } });
     if (u.pathname.startsWith("/spec/")) {
       try { return new Response(Deno.readFileSync(SPEC + "/" + decodeURIComponent(u.pathname.slice(6))), { headers: { "content-type": "application/octet-stream" } }); } catch { return new Response("no", { status: 404 }); }
     }
