@@ -126,3 +126,24 @@ void main() {
   o = vec4(c) / 255.0;
 }
 `;
+
+/** the EFB's top 640 x 480 drawn into a viewport of any size (nearest texel), the first row at the top */
+export const PRESENT_FS = /* glsl */ `#version 300 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+uniform usampler2D uEfb;
+uniform int uPixFmt;
+uniform vec2 uSize;      // the viewport's width and height in pixels
+out vec4 o;
+int w6(int v) { return (v << 2) | (v >> 4); }
+void main() {
+  ivec2 p = ivec2(floor(vec2(gl_FragCoord.x, uSize.y - gl_FragCoord.y) * vec2(640.0, 480.0) / uSize));
+  p = clamp(p, ivec2(0), ivec2(639, 479));
+  uint w = texelFetch(uEfb, p, 0).r;
+  ivec3 c;
+  if (uPixFmt == 1) c = ivec3(w6(int((w >> 18) & 63u)), w6(int((w >> 12) & 63u)), w6(int((w >> 6) & 63u)));
+  else c = ivec3(int((w >> 16) & 255u), int((w >> 8) & 255u), int(w & 255u));
+  o = vec4(vec3(c) / 255.0, 1.0);
+}
+`;

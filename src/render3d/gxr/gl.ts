@@ -8,7 +8,7 @@
  */
 import { Memory } from "./dff";
 import { copyFormat, copyParams } from "./copy";
-import { COPY_FS, CLEAR_FS, PICTURE_FS } from "./glsl-copy";
+import { COPY_FS, CLEAR_FS, PICTURE_FS, PRESENT_FS } from "./glsl-copy";
 import { HEADER_WORDS, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
 import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
 import { bitsOf } from "./f32";
@@ -105,6 +105,7 @@ export class GxGl implements GxBackend {
     this.pending = new Map([
       ["pixel", startCompile(gl, FULLSCREEN_VS, pixelShader())], ["copy", startCompile(gl, FULLSCREEN_VS, COPY_FS)],
       ["clear", startCompile(gl, FULLSCREEN_VS, CLEAR_FS)], ["picture", startCompile(gl, FULLSCREEN_VS, PICTURE_FS)],
+      ["present", startCompile(gl, FULLSCREEN_VS, PRESENT_FS)],
     ]);
     this.mem = intTexture(gl, "R8UI", MEM_ROW, MEM_ROWS);
     this.memFbo = this.fboOf(this.mem);
@@ -620,6 +621,22 @@ export class GxGl implements GxBackend {
     const color = new Uint32Array(EFB_W * EFB_H), depth = new Uint32Array(EFB_W * EFB_H);
     for (let i = 0; i < color.length; i++) { color[i] = raw[i * 4]; depth[i] = raw[i * 4 + 1]; }
     return { color, depth };
+  }
+
+  /** draw the frame buffer (its top 640 x 480) into the canvas's own framebuffer, `width` x `height` pixels, nearest filtering. Queued
+   *  triangles are drawn first. */
+  present(width: number, height: number, pixFmt = 0): void {
+    this.flush();
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, width, height);
+    gl.disable(gl.SCISSOR_TEST);
+    const pr = this.program("present");
+    gl.useProgram(pr);
+    this.bindTex(pr, 0, "uEfb", this.efb[this.cur].tex);
+    gl.uniform1i(this.u(pr, "uPixFmt"), pixFmt);
+    gl.uniform2f(this.u(pr, "uSize"), width, height);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   /** the top 640 x 480 of the EFB as RGBA bytes (R, G, B, A) */
