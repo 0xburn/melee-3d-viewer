@@ -102,6 +102,6 @@ export default defineConfig({
   worker: { format: "es" },
   build: {
     target: "esnext",
-    rollupOptions: { input: { embed: "embed.html", dev: "dev.html" } },
+    rollupOptions: { input: { embed: "embed.html", dev: "dev.html", gx: "gx.html" } },
   },
 });

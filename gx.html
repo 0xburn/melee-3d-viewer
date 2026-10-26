@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Replay player, the game's draw path</title>
+    <style>
+      :root { color-scheme: light dark; --bg: #fff; --fg: #111; --line: #ccc; --btn: #eee; --on: #cde; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --line: #444; --btn: #222; --on: #345; } }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+      #app { display: flex; flex-direction: column; height: 100%; padding: 8px 16px; box-sizing: border-box; gap: 8px; }
+      #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
+      canvas { aspect-ratio: 73 / 60; max-width: 100%; max-height: 100%; background: #000; }
+      #bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      button { font: inherit; color: inherit; background: var(--btn); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+      button[aria-pressed="true"] { background: var(--on); }
+      #seek { flex: 1; min-width: 160px; height: 14px; background: var(--btn); border: 1px solid var(--line); border-radius: 4px; position: relative; cursor: pointer; }
+      #seekfill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--on); }
+      #info { font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; opacity: .85; }
+    </style>
+  </head>
+  <body>
+    <!-- The replay drawn by the game's own draw path: the simulator's graphics build plays the match and runs the game's display pass,
+         and the GX renderer draws the commands it sends. Same parameters as embed.html where they apply (replayUrl, name, frame,
+         files, paused), plus core (the module's URL), backend (gl or cpu) and speed. Messages: load, seek (game frame), play,
+         pause, toggle, gameFiles, speed. Nothing leaves the browser. -->
+    <div id="app">
+      <div id="stage"><canvas id="screen" width="640" height="480"></canvas></div>
+      <div id="bar">
+        <button id="play">Play</button>
+        <button id="back" title="One frame back (starts the match again)">&#9664;|</button>
+        <button id="fwd" title="One frame forward">|&#9654;</button>
+        <span id="speeds"></span>
+        <div id="seek"><div id="seekfill"></div></div>
+        <span id="where"></span>
+      </div>
+      <div id="info"></div>
+    </div>
+    <script type="module" src="/src/gxpage.ts"></script>
+  </body>
+</html>
