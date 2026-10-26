@@ -97,7 +97,11 @@ export default defineConfig({
   resolve: { conditions: ["browser"] },
   // relative, so a build works from any folder
   base: "./",
-  server: { host: "127.0.0.1", port: 5173 },
+  // The GX renderer (src/render3d/gxr) runs its front half on worker threads sharing memory when the page is cross-origin isolated; the page and
+  // the worker script must be sent with these two headers (without them it runs on the main thread, slower). A server that hosts gx.html
+  // sends the same.
+  server: { host: "127.0.0.1", port: 5173, headers: { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" } },
+  preview: { headers: { "Cross-Origin-Opener-Policy": "same-origin", "Cross-Origin-Embedder-Policy": "require-corp" } },
   // (the simulator's worker imports the simulator's module: src/sim/sim.worker.ts)
   worker: { format: "es" },
   build: {

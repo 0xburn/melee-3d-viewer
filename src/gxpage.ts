@@ -41,6 +41,8 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
       if (gl) {
         const b = new GxGl(gl);
         await b.prepare();
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        console.log("gx: GL renderer " + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "unknown"));
         post({ type: "renderer", renderer: "gx-gl", reason: null });
         return b as unknown as SessionBackend;
       }
