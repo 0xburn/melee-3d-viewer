@@ -79,10 +79,13 @@ export class Memory {
   private counter = 0;
   /** called with (address, length) after every change, for a host that mirrors memory (the GPU's copy) */
   onTouch: ((addr: number, n: number) => void) | null = null;
+  /** called with (address, length) just before a write lands (a host that has work queued on the old bytes finishes it) */
+  beforeWrite: ((addr: number, n: number) => void) | null = null;
 
   write(addr: number, bytes: Uint8Array): void {
     const a = addr & 0x01ffffff;
     if (a + bytes.length > MEM_SIZE) return;
+    this.beforeWrite?.(a, bytes.length);
     this.data.set(bytes, a);
     this.touch(a, bytes.length);
   }
