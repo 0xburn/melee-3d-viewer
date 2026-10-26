@@ -75,6 +75,8 @@ export function parseDff(data: Uint8Array): Dff {
 /** main memory: 24 MiB, versioned by 1 KiB blocks so a texture cache can tell when its source changed */
 export class Memory {
   readonly data = new Uint8Array(MEM_SIZE);
+  /** a view of `data` for reading numbers */
+  readonly view = new DataView(this.data.buffer);
   readonly gen = new Uint32Array(MEM_SIZE >> BLOCK_SHIFT);
   private counter = 0;
   /** called with (address, length) after every change, for a host that mirrors memory (the GPU's copy) */

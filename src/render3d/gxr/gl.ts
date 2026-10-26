@@ -85,6 +85,9 @@ export class GxGl implements GxBackend {
   private tmemVersion = -1;
   private pool = new Pool();
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  /** GPU time of the passes (ms), when the browser has timer queries and `timing` is on */
+  timing = false;
+  private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
 
   constructor(gl: WebGL2RenderingContext) {
     this.gl = gl;
@@ -107,6 +110,28 @@ export class GxGl implements GxBackend {
     this.listTex = intTexture(gl, "R32UI", 4096, 64);
     this.tilesTex = intTexture(gl, "RG32UI", 1024, 2);
     this.statesTex = intTexture(gl, "R32UI", 4096, 64);
+    this.timer = { ext: null, pending: [], ms: {} };
+  }
+
+  private syncPixel = new Uint32Array(4);
+  private sync(): void {
+    // reading a pixel back waits for everything before it (gl.finish() may return at once)
+    const gl = this.gl;
+    gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, this.syncPixel);
+  }
+  private timeBegin(): number { if (!this.timing) return 0; this.sync(); return performance.now(); }
+  private timeEnd(t0: number, what: string): void {
+    if (!this.timing || !this.timer) return;
+    this.sync();
+    this.timer.ms[what] = (this.timer.ms[what] ?? 0) + performance.now() - t0;
+  }
+  /** wall-clock ms of the passes by kind since the last call (only with `timing`: every pass waits for the GPU) */
+  collectTimes(): Record<string, number> {
+    const t = this.timer;
+    if (!t) return {};
+    const out = t.ms;
+    t.ms = {};
+    return out;
   }
 
   /** back to a fresh processor: an empty frame buffer, no memory attached */
@@ -411,7 +436,9 @@ export class GxGl implements GxBackend {
     this.bindTex(p, 5, "uEfb", src.tex);
     gl.uniform1i(this.u(p, "uTilesX"), TILES_X);
     gl.uniform4i(this.u(p, "uK"), 4, 25, 3, 2);
+    const tq = this.timeBegin();
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    this.timeEnd(tq, "pixel");
     this.cur = 1 - this.cur;
     this.passes++;
     this.q.n = 0; this.bb = []; this.triOffsets = []; this.used = [];
@@ -455,7 +482,9 @@ export class GxGl implements GxBackend {
         const set = (n: string, v: number) => gl.uniform1i(this.u(pr, n), v);
         set("uDest", dest); set("uStride", p.stride); set("uFmt", ID[fmt]); set("uBlocksX", bx); set("uBlocksY", by); set("uKw", kw); set("uKh", kh);
         set("uBytes", bytes); set("uHalf", sh); set("uX0", p.x0); set("uY0", p.y0); set("uPixFmt", p.pixFmt);
+        const tq = this.timeBegin();
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        this.timeEnd(tq, "copy");
         gl.disable(gl.SCISSOR_TEST);
       }
     }
@@ -487,6 +516,13 @@ export class GxGl implements GxBackend {
     gl.uniform1i(this.u(pr, "uPixFmt"), p.pixFmt);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.cur = 1 - this.cur;
+  }
+
+  /** set the frame buffer (tests) */
+  writeEfb(color: Uint32Array, depth: Uint32Array): void {
+    const raw = new Uint32Array(EFB_W * EFB_H * 2);
+    for (let i = 0; i < color.length; i++) { raw[i * 2] = color[i]; raw[i * 2 + 1] = depth[i]; }
+    uploadRows(this.gl, this.efb[this.cur].tex, 0, 0, EFB_W, EFB_H, raw);
   }
 
   /** bytes [a, a + n) of the GPU's copy of memory (slow: tests) */

@@ -22,6 +22,8 @@ export interface Attr {
   /** components (position 2 or 3, normal 3 or 9, texcoord 1 or 2) */
   n: number;
   frac: number;
+  /** 2^-frac: what an integer component is multiplied with */
+  scale: number;
   /** bytes it takes in the command stream */
   size: number;
   /** bytes one element takes in its array */
@@ -43,12 +45,12 @@ export interface VertexLayout {
   key: string;
 }
 
-const none = (): Attr => ({ kind: 0, fmt: 0, n: 0, frac: 0, size: 0, elem: 0 });
+const none = (): Attr => ({ kind: 0, fmt: 0, n: 0, frac: 0, scale: 1, size: 0, elem: 0 });
 
 function attr(kind: number, fmt: number, n: number, frac: number): Attr {
   if (kind === 0) return none();
   const elem = COMP_SIZE[Math.min(fmt, 4)] * n;
-  return { kind, fmt, n, frac, size: kind === 1 ? elem : kind === 2 ? 1 : 2, elem };
+  return { kind, fmt, n, frac, scale: 1 / (1 << frac), size: kind === 1 ? elem : kind === 2 ? 1 : 2, elem };
 }
 
 /** the layout of vertices sent with vertex attribute table entry `vat` */
@@ -80,7 +82,7 @@ export function vertexLayout(cp: Uint32Array, vat: number): VertexLayout {
   for (const [kshift, fshift] of [[13, 14], [15, 18]]) {
     const ck = bits(lo, kshift, 2);
     const cf = bits(a, fshift, 3);
-    const at: Attr = ck ? { kind: ck, fmt: cf, n: 4, frac: 0, size: ck === 1 ? COLOR_SIZE[Math.min(cf, 5)] : ck === 2 ? 1 : 2, elem: COLOR_SIZE[Math.min(cf, 5)] } : none();
+    const at: Attr = ck ? { kind: ck, fmt: cf, n: 4, frac: 0, scale: 1, size: ck === 1 ? COLOR_SIZE[Math.min(cf, 5)] : ck === 2 ? 1 : 2, elem: COLOR_SIZE[Math.min(cf, 5)] } : none();
     col.push(at);
     size += at.size;
   }
@@ -115,7 +117,7 @@ export class VertexData {
   tex: Float32Array[] = [];
   tmtx: Float32Array[] = [];
 
-  constructor(public layout: VertexLayout, private defaultPmtx: number, private defaultTmtx: number[]) {
+  constructor(public layout: VertexLayout, private defaultPmtx = 0, private defaultTmtx: number[] = []) {
     this.grow(1024);
   }
 
@@ -125,83 +127,92 @@ export class VertexData {
       t.set(old);
       return t;
     };
+    // every array is kept whatever the layout: one VertexData serves all runs
     this.pos = g(this.pos, 3, Float32Array);
     this.pmtx = g(this.pmtx, 1, Float32Array);
-    if (this.layout.nrm.kind) this.nrm = g(this.nrm, 3, Float32Array);
-    if (this.layout.nrm.kind && this.layout.nbt) { this.nrm1 = g(this.nrm1, 3, Float32Array); this.nrm2 = g(this.nrm2, 3, Float32Array); }
-    for (let i = 0; i < 2; i++) if (this.layout.col[i].kind) this.col[i] = g(this.col[i], 4, Uint8Array);
+    this.nrm = g(this.nrm, 3, Float32Array);
+    this.nrm1 = g(this.nrm1, 3, Float32Array);
+    this.nrm2 = g(this.nrm2, 3, Float32Array);
+    for (let i = 0; i < 2; i++) this.col[i] = g(this.col[i], 4, Uint8Array);
     for (let t = 0; t < 8; t++) {
-      if (this.layout.tex[t].kind) this.tex[t] = g(this.tex[t] ?? new Float32Array(0), 2, Float32Array);
-      if (this.layout.texMtx[t]) this.tmtx[t] = g(this.tmtx[t] ?? new Float32Array(0), 1, Float32Array);
+      this.tex[t] = g(this.tex[t] ?? new Float32Array(0), 2, Float32Array);
+      this.tmtx[t] = g(this.tmtx[t] ?? new Float32Array(0), 1, Float32Array);
     }
     this.cap = cap;
+  }
+
+  /** start over for a run of vertices of layout `layout` (the buffers are kept) */
+  setup(layout: VertexLayout, defaultPmtx: number, defaultTmtx: number[]): void {
+    this.layout = layout;
+    this.n = 0;
+    this.defaultPmtx = defaultPmtx;
+    this.defaultTmtx = defaultTmtx;
   }
 
   /** room for at least n vertices */
   ensure(n: number): void { if (n > this.cap) this.grow(n); }
 
-  /** decode `count` vertices from `data` at `at`; array reads go through `read(addr, n)` */
-  add(data: Uint8Array, at: number, count: number, cp: Uint32Array, read: (addr: number, n: number) => Uint8Array): void {
+  /** decode `count` vertices from `data` at `at`; indexed attributes read main memory `mem` (24 MiB, `mdv` a view of it) */
+  add(data: Uint8Array, at: number, count: number, cp: Uint32Array, mem: Uint8Array, mdv: DataView): void {
     const L = this.layout;
     if (this.n + count > this.cap) this.grow(Math.max(this.cap * 2, this.n + count));
-    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    if (this.dvData !== data.buffer) { this.dvData = data.buffer; this.dv = new DataView(data.buffer); }
+    const dv = this.dv!;
+    const dvBase = data.byteOffset;
+    const memSize = mem.length;
+    const pos = L.pos, nrm = L.nrm;
     for (let v = 0; v < count; v++) {
       const i = this.n++;
-      let off = at + v * L.size;
-      if (L.posMtx) this.pmtx[i] = data[off++] & 0x3f; else this.pmtx[i] = this.defaultPmtx;
-      for (let t = 0; t < 8; t++) if (L.texMtx[t]) this.tmtx[t][i] = data[off++] & 0x3f;
-      // a component list from the stream or from an array
-      const fetch = (a: Attr, arr: number): [DataView, number] => {
-        if (a.kind === 1) return [dv, off];
-        const idx = a.kind === 2 ? data[off] : dv.getUint16(off);
-        const stride = cp[0xb0 + arr];
-        const base = cp[0xa0 + arr] & 0x03ffffff;
-        const bytes = read(base + idx * stride, a.elem);
-        const copy = new Uint8Array(a.elem);
-        copy.set(bytes);
-        return [new DataView(copy.buffer), 0];
-      };
-      const comp = (d: DataView, o: number, fmt: number, frac: number): number => {
-        switch (fmt) {
-          case 0: return d.getUint8(o) / (1 << frac);
-          case 1: return d.getInt8(o) / (1 << frac);
-          case 2: return d.getUint16(o) / (1 << frac);
-          case 3: return d.getInt16(o) / (1 << frac);
-          default: return d.getFloat32(o);
+      let off = dvBase + at + v * L.size;
+      if (L.posMtx) this.pmtx[i] = data[off - dvBase] & 0x3f; else this.pmtx[i] = this.defaultPmtx;
+      if (L.posMtx) off++;
+      for (let t = 0; t < 8; t++) if (L.texMtx[t]) { this.tmtx[t][i] = dv.getUint8(off) & 0x3f; off++; }
+      if (pos.kind) {
+        let d = dv, o = off;
+        if (pos.kind !== 1) {
+          const idx = pos.kind === 2 ? dv.getUint8(off) : dv.getUint16(off);
+          const a = ((cp[0xa0 + ARRAY_POS] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_POS]) & 0x01ffffff;
+          if (a + pos.elem <= memSize) { d = mdv; o = a; } else { d = this.zero(mem, a, pos.elem); o = 0; }
         }
-      };
-      if (L.pos.kind) {
-        const [d, o] = fetch(L.pos, ARRAY_POS);
-        const cs = COMP_SIZE[Math.min(L.pos.fmt, 4)];
-        this.pos[i * 3] = comp(d, o, L.pos.fmt, L.pos.frac);
-        this.pos[i * 3 + 1] = comp(d, o + cs, L.pos.fmt, L.pos.frac);
-        this.pos[i * 3 + 2] = L.pos.n === 3 ? comp(d, o + 2 * cs, L.pos.fmt, L.pos.frac) : 0;
-        off += L.pos.size;
+        const cs = COMP_SIZE[pos.fmt < 4 ? pos.fmt : 4], sc = pos.scale;
+        this.pos[i * 3] = rd(d, o, pos.fmt, sc);
+        this.pos[i * 3 + 1] = rd(d, o + cs, pos.fmt, sc);
+        this.pos[i * 3 + 2] = pos.n === 3 ? rd(d, o + 2 * cs, pos.fmt, sc) : 0;
+        off += pos.size;
       }
-      if (L.nrm.kind) {
-        const cs = COMP_SIZE[Math.min(L.nrm.fmt, 4)];
-        const outs = [this.nrm, this.nrm1, this.nrm2];
-        if (L.nbt && L.nrmIndex3 && L.nrm.kind !== 1) {
+      if (nrm.kind) {
+        const cs = COMP_SIZE[nrm.fmt < 4 ? nrm.fmt : 4], sc = nrm.scale;
+        if (L.nbt && L.nrmIndex3 && nrm.kind !== 1) {
           // three indices, one for each of the normal, the tangent and the binormal, each into the normal array
-          const isz = L.nrm.kind === 2 ? 1 : 2;
           for (let q = 0; q < 3; q++) {
-            const idx = isz === 1 ? data[off + q] : dv.getUint16(off + 2 * q);
-            const bytes = read((cp[0xa0 + ARRAY_NRM] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_NRM], 3 * cs);
-            const copy = new Uint8Array(3 * cs);
-            copy.set(bytes);
-            const d = new DataView(copy.buffer);
-            for (let k = 0; k < 3; k++) outs[q][i * 3 + k] = comp(d, k * cs, L.nrm.fmt, L.nrm.frac);
+            const idx = nrm.kind === 2 ? dv.getUint8(off + q) : dv.getUint16(off + 2 * q);
+            const a = ((cp[0xa0 + ARRAY_NRM] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_NRM]) & 0x01ffffff;
+            let d = mdv, o = a;
+            if (a + 3 * cs > memSize) { d = this.zero(mem, a, 3 * cs); o = 0; }
+            const out = q === 0 ? this.nrm : q === 1 ? this.nrm1 : this.nrm2;
+            for (let k = 0; k < 3; k++) out[i * 3 + k] = rd(d, o + k * cs, nrm.fmt, sc);
           }
         } else {
-          const [d, o] = fetch(L.nrm, ARRAY_NRM);
-          for (let q = 0; q < (L.nbt ? 3 : 1); q++) for (let k = 0; k < 3; k++) outs[q][i * 3 + k] = comp(d, o + (q * 3 + k) * cs, L.nrm.fmt, L.nrm.frac);
+          let d = dv, o = off;
+          if (nrm.kind !== 1) {
+            const idx = nrm.kind === 2 ? dv.getUint8(off) : dv.getUint16(off);
+            const a = ((cp[0xa0 + ARRAY_NRM] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_NRM]) & 0x01ffffff;
+            if (a + nrm.elem <= memSize) { d = mdv; o = a; } else { d = this.zero(mem, a, nrm.elem); o = 0; }
+          }
+          for (let k = 0; k < 3; k++) this.nrm[i * 3 + k] = rd(d, o + k * cs, nrm.fmt, sc);
+          if (L.nbt) for (let k = 0; k < 3; k++) { this.nrm1[i * 3 + k] = rd(d, o + (3 + k) * cs, nrm.fmt, sc); this.nrm2[i * 3 + k] = rd(d, o + (6 + k) * cs, nrm.fmt, sc); }
         }
-        off += L.nrm.size;
+        off += nrm.size;
       }
       for (let c = 0; c < 2; c++) {
         const a = L.col[c];
         if (!a.kind) continue;
-        const [d, o] = fetch(a, ARRAY_COL0 + c);
+        let d = dv, o = off;
+        if (a.kind !== 1) {
+          const idx = a.kind === 2 ? dv.getUint8(off) : dv.getUint16(off);
+          const ad = ((cp[0xa0 + ARRAY_COL0 + c] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_COL0 + c]) & 0x01ffffff;
+          if (ad + a.elem <= memSize) { d = mdv; o = ad; } else { d = this.zero(mem, ad, a.elem); o = 0; }
+        }
         const out = this.col[c], k = i * 4;
         switch (a.fmt) {
           case 0: { const v16 = d.getUint16(o); out[k] = (v16 >> 11 << 3) | (v16 >> 13); out[k + 1] = ((v16 >> 5) & 63) << 2 | ((v16 >> 9) & 3); out[k + 2] = (v16 & 31) << 3 | ((v16 >> 2) & 7); out[k + 3] = 255; break; }
@@ -209,8 +220,8 @@ export class VertexData {
           case 2: out[k] = d.getUint8(o); out[k + 1] = d.getUint8(o + 1); out[k + 2] = d.getUint8(o + 2); out[k + 3] = 255; break;
           case 3: { const v16 = d.getUint16(o); out[k] = ((v16 >> 12) & 15) * 17; out[k + 1] = ((v16 >> 8) & 15) * 17; out[k + 2] = ((v16 >> 4) & 15) * 17; out[k + 3] = (v16 & 15) * 17; break; }
           case 4: { const v24 = (d.getUint8(o) << 16) | (d.getUint8(o + 1) << 8) | d.getUint8(o + 2);
-            const e = (x: number) => (x << 2) | (x >> 4);
-            out[k] = e((v24 >> 18) & 63); out[k + 1] = e((v24 >> 12) & 63); out[k + 2] = e((v24 >> 6) & 63); out[k + 3] = e(v24 & 63); break; }
+            out[k] = ((v24 >> 18) & 63) << 2 | ((v24 >> 18) & 63) >> 4; out[k + 1] = ((v24 >> 12) & 63) << 2 | ((v24 >> 12) & 63) >> 4;
+            out[k + 2] = ((v24 >> 6) & 63) << 2 | ((v24 >> 6) & 63) >> 4; out[k + 3] = (v24 & 63) << 2 | (v24 & 63) >> 4; break; }
           default: out[k] = d.getUint8(o); out[k + 1] = d.getUint8(o + 1); out[k + 2] = d.getUint8(o + 2); out[k + 3] = d.getUint8(o + 3);
         }
         off += a.size;
@@ -218,13 +229,41 @@ export class VertexData {
       for (let t = 0; t < 8; t++) {
         const a = L.tex[t];
         if (!a.kind) continue;
-        const [d, o] = fetch(a, ARRAY_TEX0 + t);
-        const cs = COMP_SIZE[Math.min(a.fmt, 4)];
-        this.tex[t][i * 2] = comp(d, o, a.fmt, a.frac);
-        this.tex[t][i * 2 + 1] = a.n === 2 ? comp(d, o + cs, a.fmt, a.frac) : 0;
+        let d = dv, o = off;
+        if (a.kind !== 1) {
+          const idx = a.kind === 2 ? dv.getUint8(off) : dv.getUint16(off);
+          const ad = ((cp[0xa0 + ARRAY_TEX0 + t] & 0x03ffffff) + idx * cp[0xb0 + ARRAY_TEX0 + t]) & 0x01ffffff;
+          if (ad + a.elem <= memSize) { d = mdv; o = ad; } else { d = this.zero(mem, ad, a.elem); o = 0; }
+        }
+        const cs = COMP_SIZE[a.fmt < 4 ? a.fmt : 4];
+        const out = this.tex[t];
+        out[i * 2] = rd(d, o, a.fmt, a.scale);
+        out[i * 2 + 1] = a.n === 2 ? rd(d, o + cs, a.fmt, a.scale) : 0;
         off += a.size;
       }
     }
+  }
+
+  private dvData: ArrayBufferLike | null = null;
+  private dv: DataView | null = null;
+  private zbuf = new Uint8Array(64);
+  private zdv = new DataView(this.zbuf.buffer);
+  /** bytes of memory from a, zero past the end, in a small view (reads off the end of main memory) */
+  private zero(mem: Uint8Array, a: number, n: number): DataView {
+    this.zbuf.fill(0);
+    for (let k = 0; k < n && a + k < mem.length; k++) this.zbuf[k] = mem[a + k];
+    return this.zdv;
+  }
+}
+
+/** a component: u8, s8, u16, s16 scaled by 2^-frac (scale), or a float */
+function rd(d: DataView, o: number, fmt: number, scale: number): number {
+  switch (fmt) {
+    case 0: return d.getUint8(o) * scale;
+    case 1: return d.getInt8(o) * scale;
+    case 2: return d.getUint16(o) * scale;
+    case 3: return d.getInt16(o) * scale;
+    default: return d.getFloat32(o);
   }
 }
 

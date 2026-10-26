@@ -7,7 +7,7 @@
  */
 import { Dff, GxFrame, Memory } from "./dff";
 import { bits, GxRegs } from "./state";
-import { triangulate, VertexData, VertexLayout, vertexLayout } from "./vertex";
+import { VertexData, VertexLayout, vertexLayout } from "./vertex";
 
 export interface GpuEvent {
   /** "xfb" (the frame is done), "texture" (a copy into memory) */
@@ -24,6 +24,8 @@ export interface GxBackend {
   copyClear(regs: GxRegs): void;
 }
 
+const EMPTY: number[] = [];
+
 export class GxGpu {
   readonly regs: GxRegs;
   readonly mem = new Memory();
@@ -31,8 +33,11 @@ export class GxGpu {
   /** called when the game copies the EFB to the screen */
   onXfb: ((rect: number[]) => void) | null = null;
   drawCount = 0;
+  /** ms spent decoding vertices and applying memory writes (a cost breakdown for tests) */
+  timers = { vertex: 0, memory: 0 };
   private cpVersion = 0;
   private layouts = new Map<number, { v: number; l: VertexLayout }>();
+  private vd = new VertexData(null as never);
   private run: { vd: VertexData; tris: number[]; lines: number[]; points: number[]; prims: { type: number; base: number; count: number }[] } | null = null;
 
   constructor(readonly renderer: GxBackend, dff: Dff, mem1?: Uint8Array | null) {
@@ -62,7 +67,7 @@ export class GxGpu {
     const data = frame.fifo, ups = frame.updates;
     let ui = 0;
     const apply = (pos: number) => {
-      while (ui < ups.length && ups[ui].pos <= pos) { this.mem.write(ups[ui].addr, ups[ui].data); ui++; }
+      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = performance.now(); this.mem.write(ups[ui].addr, ups[ui].data); this.timers.memory += performance.now() - t0; ui++; }
     };
     this.execute(data, apply);
     apply(Number.MAX_SAFE_INTEGER);
@@ -92,15 +97,14 @@ export class GxGpu {
           const xf = regs.xf;
           const dflt = [bits(xf[0x1018], 6, 6), bits(xf[0x1018], 12, 6), bits(xf[0x1018], 18, 6), bits(xf[0x1018], 24, 6),
             bits(xf[0x1019], 0, 6), bits(xf[0x1019], 6, 6), bits(xf[0x1019], 12, 6), bits(xf[0x1019], 18, 6)];
-          run = this.run = { vd: new VertexData(L, bits(xf[0x1018], 0, 6), dflt), tris: [], lines: [], points: [], prims: [] };
+          this.vd.setup(L, bits(xf[0x1018], 0, 6), dflt);
+          run = this.run = { vd: this.vd, tris: EMPTY, lines: EMPTY, points: EMPTY, prims: [] };
         }
         const base = run.vd.n;
-        run.vd.add(data, pos + 3, count, regs.cp, (a, k) => this.mem.read(a, k));
+        const tv = performance.now();
+        run.vd.add(data, pos + 3, count, regs.cp, this.mem.data, this.mem.view);
+        this.timers.vertex += performance.now() - tv;
         run.prims.push({ type: prim, base, count });
-        if (prim <= 4) triangulate(prim, count, base, run.tris);
-        else if (prim === 5) for (let i = 0; i + 1 < count; i += 2) run.lines.push(base + i, base + i + 1);
-        else if (prim === 6) for (let i = 0; i + 1 < count; i++) run.lines.push(base + i, base + i + 1);
-        else for (let i = 0; i < count; i++) run.points.push(base + i);
         pos = end;
         continue;
       }
