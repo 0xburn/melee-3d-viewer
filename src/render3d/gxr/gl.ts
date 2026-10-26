@@ -8,7 +8,7 @@
  * a texture a queued triangle uses, a new TMEM. Everything else is queued across draws.
  */
 import { Memory } from "./dff";
-import { copyFormat, copyParams } from "./copy";
+import { copyFormatFor, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS, PRESENT_FS } from "./glsl-copy";
 import { MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
 import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
@@ -550,12 +550,12 @@ export class GxGl implements GxBackend {
       if (this.onPicture) this.onPicture(this.readPicture(p.pixFmt), this.pictures);
       this.pictures++;
     } else {
-      const fmt = copyFormat(p.tp, p.intensity);
-      const ID: Record<string, number> = { I4: 0, I8: 1, IA4: 2, IA8: 3, RGB565: 4, RGB5A3: 5, RGBA8: 6, R4: 7, RA4: 8, RA8: 9, A8: 10, R8: 11, G8: 12, B8: 13, RG8: 14, GB8: 15 };
+      const fmt = copyFormatFor(p);
+      const ID: Record<string, number> = { I4: 0, I8: 1, IA4: 2, IA8: 3, RGB565: 4, RGB5A3: 5, RGBA8: 6, R4: 7, Z16: 16, RA4: 8, RA8: 9, A8: 10, R8: 11, G8: 12, B8: 13, RG8: 14, GB8: 15 };
       if (fmt !== "none") {
         const BL: Record<string, [number, number, number]> = {
           I4: [3, 3, 32], I8: [3, 2, 32], IA4: [3, 2, 32], IA8: [2, 2, 32], RGB565: [2, 2, 32], RGB5A3: [2, 2, 32], RGBA8: [2, 2, 64],
-          R4: [3, 3, 32], RA4: [3, 2, 32], RA8: [2, 2, 32], A8: [3, 2, 32], R8: [3, 2, 32], G8: [3, 2, 32], B8: [3, 2, 32], RG8: [2, 2, 32], GB8: [2, 2, 32],
+          R4: [3, 3, 32], Z16: [2, 2, 32], RA4: [3, 2, 32], RA8: [2, 2, 32], A8: [3, 2, 32], R8: [3, 2, 32], G8: [3, 2, 32], B8: [3, 2, 32], RG8: [2, 2, 32], GB8: [2, 2, 32],
         };
         const [kw, kh, bytes] = BL[fmt];
         const sh = p.half ? 1 : 0;

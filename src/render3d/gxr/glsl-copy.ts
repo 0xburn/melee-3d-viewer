@@ -14,6 +14,10 @@ int w6(int v) { return (v << 2) | (v >> 4); }
 
 ivec4 pixel(int p) {
   if (p < 0 || p >= 640 * 528) return ivec4(0);
+  if (uPixFmt == 3) {
+    uint z = texelFetch(uEfb, ivec2(p % 640, p / 640), 0).g;
+    return ivec4(int((z >> 16) & 255u), int((z >> 8) & 255u), int(z & 255u), 255);
+  }
   uint w = texelFetch(uEfb, ivec2(p % 640, p / 640), 0).r;
   if (uPixFmt == 1) return ivec4(w6(int((w >> 18) & 63u)), w6(int((w >> 12) & 63u)), w6(int((w >> 6) & 63u)), w6(int(w & 63u)));
   return ivec4(int((w >> 16) & 255u), int((w >> 8) & 255u), int(w & 255u), 255);
@@ -45,6 +49,7 @@ int texByte(int fmt, ivec4 c, int part) {
   if (fmt == 12) return c.g;
   if (fmt == 13) return c.b;
   if (fmt == 14) return part == 0 ? c.g : c.r;
+  if (fmt == 16) return part == 0 ? c.r : c.g;
   return part == 0 ? c.b : c.g;
 }
 
