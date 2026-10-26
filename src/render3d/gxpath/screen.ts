@@ -25,7 +25,7 @@ export class GxScreen {
     this.tube.width = 1280;
     this.tube.height = 960;
     this.tube.style.display = "none";
-    for (const c of [this.flat, this.tube]) Object.assign(c.style, { aspectRatio: "73 / 60", maxWidth: "100%", maxHeight: "100%", background: "#000" });
+    for (const c of [this.flat, this.tube]) Object.assign(c.style, { background: "#000" });
     host.append(this.flat, this.tube);
     this.ctx = this.flat.getContext("2d")!;
   }
