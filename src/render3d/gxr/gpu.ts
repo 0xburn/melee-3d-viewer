@@ -35,6 +35,8 @@ export class GxGpu {
   drawCount = 0;
   /** ms spent decoding vertices and applying memory writes (a cost breakdown for tests) */
   timers = { vertex: 0, memory: 0 };
+  /** whether `timers` are kept (reading the clock per run costs about 1% of a frame) */
+  measure = false;
   private cpVersion = 0;
   private layouts = new Map<number, { v: number; l: VertexLayout }>();
   private vd = new VertexData(null as never);
@@ -67,7 +69,7 @@ export class GxGpu {
     const data = frame.fifo, ups = frame.updates;
     let ui = 0;
     const apply = (pos: number) => {
-      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = performance.now(); this.mem.write(ups[ui].addr, ups[ui].data); this.timers.memory += performance.now() - t0; ui++; }
+      while (ui < ups.length && ups[ui].pos <= pos) { const t0 = this.measure ? performance.now() : 0; this.mem.write(ups[ui].addr, ups[ui].data); if (this.measure) this.timers.memory += performance.now() - t0; ui++; }
     };
     this.execute(data, apply);
     apply(Number.MAX_SAFE_INTEGER);
@@ -101,9 +103,9 @@ export class GxGpu {
           run = this.run = { vd: this.vd, tris: EMPTY, lines: EMPTY, points: EMPTY, prims: [] };
         }
         const base = run.vd.n;
-        const tv = performance.now();
+        const tv = this.measure ? performance.now() : 0;
         run.vd.add(data, pos + 3, count, regs.cp, this.mem.data, this.mem.view);
-        this.timers.vertex += performance.now() - tv;
+        if (this.measure) this.timers.vertex += performance.now() - tv;
         run.prims.push({ type: prim, base, count });
         pos = end;
         continue;

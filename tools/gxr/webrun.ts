@@ -27,11 +27,14 @@ const _log = console.log, _err = console.error, _warn = console.warn;
 console.log = (...a) => { _log(...a); post("/log", a.join(" ")); }; console.error = (...a) => { _err(...a); post("/log", "console.error: " + a.join(" ")); }; console.warn = (...a) => { _warn(...a); post("/log", "console.warn: " + a.join(" ")); };
 </script><script type="module" src="/bundle.js"></script></body>`;
 let finish!: (m: string) => void;
+let go!: () => void;
+const goPromise = new Promise<void>((r) => (go = r));
 const done = new Promise<string>((r) => (finish = r));
 const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }, async (req) => {
   const u = new URL(req.url);
   if (req.method === "GET") {
     if (u.pathname === "/") return new Response(html, { headers: { "content-type": "text/html" } });
+    if (u.pathname === "/go") { await goPromise; return new Response("go"); }
     if (u.pathname === "/bundle.js") return new Response(Deno.readFileSync(bundle), { headers: { "content-type": "text/javascript", "cache-control": "no-store" } });
     if (u.pathname.startsWith("/spec/")) {
       try { return new Response(Deno.readFileSync(SPEC + "/" + decodeURIComponent(u.pathname.slice(6))), { headers: { "content-type": "application/octet-stream" } }); } catch { return new Response("no", { status: 404 }); }
@@ -53,14 +56,33 @@ const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }
 });
 const port = (server.addr as Deno.NetAddr).port;
 const chrome = new Deno.Command(CHROME, {
-  args: [...(kv.find((a) => a.startsWith("angle=")) ? ["--use-angle=" + kv.find((a) => a.startsWith("angle="))!.slice(6)] : []), "--headless=new", "--user-data-dir=" + ROOT + "/chrome-profile", "--disable-gpu-sandbox", "--no-first-run", "--disable-background-timer-throttling",
+  args: [...(kv.find((a) => a.startsWith("angle=")) ? ["--use-angle=" + kv.find((a) => a.startsWith("angle="))!.slice(6)] : []), "--headless=new", ...(kv.includes("profile=1") ? ["--remote-debugging-port=9333"] : []), "--enable-unsafe-swiftshader", "--user-data-dir=" + ROOT + "/chrome-profile", "--disable-gpu-sandbox", "--no-first-run", "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding", `http://127.0.0.1:${port}/?${kv.join("&")}`],
   stdout: "null", stderr: "null",
 }).spawn();
 if (PIDS) Deno.writeTextFileSync(PIDS, `pid ${chrome.pid} (chrome, ${entry})`+String.fromCharCode(10), { append: true });
+// profile=1: a CPU profile of the page through the DevTools protocol, saved to <out dir>/profile.cpuprofile
+let prof: { stop: () => Promise<void> } | null = null;
+if (!kv.includes("profile=1")) go();
+if (kv.includes("profile=1")) {
+  await new Promise((r) => setTimeout(r, 2500));
+  const tabs = await (await fetch("http://127.0.0.1:9333/json")).json();
+  const ws = new WebSocket(tabs.find((t: any) => t.type === "page").webSocketDebuggerUrl);
+  await new Promise((r) => (ws.onopen = r));
+  let id = 0;
+  const pending = new Map<number, (v: any) => void>();
+  ws.onmessage = (e) => { const m = JSON.parse(e.data); pending.get(m.id)?.(m.result); };
+  const send = (method: string, params: any = {}) => new Promise<any>((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+  await send("Profiler.enable");
+  await send("Profiler.setSamplingInterval", { interval: 200 });
+  await send("Profiler.start");
+  go();
+  prof = { stop: async () => { const r = await send("Profiler.stop"); Deno.writeTextFileSync(`${outDir}/profile.cpuprofile`, JSON.stringify(r.profile)); } };
+}
 const timer = setTimeout(() => finish("timeout"), timeoutMs);
 const msg = await done;
 clearTimeout(timer);
+if (prof) await prof.stop();
 try { await new Deno.Command("taskkill", { args: ["/T", "/F", "/PID", String(chrome.pid)], stdout: "null", stderr: "null" }).output(); } catch { /* gone */ }
 await server.shutdown();
 console.log("page says:", msg);

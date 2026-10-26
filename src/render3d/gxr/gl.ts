@@ -99,6 +99,8 @@ export class GxGl implements GxBackend {
   private lineIdx: number[] = [];
   private need = new Uint8Array(4096);
   private uniforms = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+  /** whether `stats` are kept (reading the clock per draw costs about 1% of a frame) */
+  measure = false;
   /** GPU time of the passes (ms), when the browser has timer queries and `timing` is on */
   timing = false;
   private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
@@ -295,22 +297,12 @@ export class GxGl implements GxBackend {
   }
 
   /** the state index for the registers now (queued draws share it until a register changes) */
-  private stateFor(regs: GxRegs): number {
-    if (this.stateCount > 20000) { this.flush(); this.palMap.clear(); this.palNext = 0; this.resetStates(); }
-    const tv = regs.tmemVersion;
-    if (this.lastStateVersion[0] === regs.bpVersion && this.lastStateVersion[1] === regs.xfVersion && this.lastStateVersion[2] === tv) return this.lastState;
-    const w = new Uint32Array(STATE_WORDS);
-    w.set(regs.bp);
-    for (let i = 0; i < 8; i++) w[0xe0 + i] = regs.tevBank[0][i];
-    for (let i = 0; i < 8; i++) w[256 + i] = regs.tevBank[1][i];
+  private wScratch = new Uint32Array(STATE_WORDS);
+
+  /** the memory ranges (start, length) of the textures the enabled stages read, for the hazard check */
+  private textureRanges(regs: GxRegs, nStages: number): number[] {
     const ranges: number[] = [];
-    let projMask = 0;
-    for (let n = 0; n < 8; n++) if (bits(regs.xf[0x1040 + n], 1, 1)) projMask |= 1 << n;
-    w[272] = projMask;
-    w[273] = bitsOf(new Float32Array(regs.xf.buffer, regs.xf.byteOffset, regs.xf.length)[0x101a]);
-    const nStages = bits(regs.bp[0], 10, 4) + 1;
     const seen = new Set<number>();
-    for (let m = 0; m < 8; m++) w[264 + m] = NO_PAL;
     for (let si = 0; si < nStages; si++) {
       const ord = regs.bp[0x28 + (si >> 1)] >>> (si & 1 ? 12 : 0);
       if (!bits(ord, 6, 1)) continue;
@@ -318,17 +310,44 @@ export class GxGl implements GxBackend {
       if (seen.has(m)) continue;
       seen.add(m);
       const hi = m >= 4, k = m & 3;
-      const img0 = regs.bp[(hi ? 0xa8 : 0x88) + k], img1 = regs.bp[(hi ? 0xac : 0x8c) + k], img3 = regs.bp[(hi ? 0xb4 : 0x94) + k], tl = regs.bp[(hi ? 0xb8 : 0x98) + k];
+      const img0 = regs.bp[(hi ? 0xa8 : 0x88) + k], img1 = regs.bp[(hi ? 0xac : 0x8c) + k], img3 = regs.bp[(hi ? 0xb4 : 0x94) + k];
       const fmt = bits(img0, 20, 4), W = bits(img0, 0, 10), H = bits(img0, 10, 10);
-      if (!bits(img1, 21, 1)) {
-        let levels = 1, mw = W + 1, mh = H + 1;
-        while (mw > 1 || mh > 1) { mw >>= 1; mh >>= 1; levels++; }
-        const fi = formatInfo(fmt);
-        const size = levelOffset(fmt, W, H, levels - 1) + Math.max(mw, fi.bw) * Math.max(mh, fi.bh) * fi.nibbles / 2 + 64;
-        ranges.push((img3 & 0xffffff) * 32, size);
-      }
+      if (bits(img1, 21, 1)) continue;
+      let levels = 1, mw = W + 1, mh = H + 1;
+      while (mw > 1 || mh > 1) { mw >>= 1; mh >>= 1; levels++; }
+      const fi = formatInfo(fmt);
+      const size = levelOffset(fmt, W, H, levels - 1) + Math.max(mw, fi.bw) * Math.max(mh, fi.bh) * fi.nibbles / 2 + 64;
+      ranges.push((img3 & 0xffffff) * 32, size);
+    }
+    return ranges;
+  }
+
+  private stateFor(regs: GxRegs): number {
+    if (this.stateCount > 20000) { this.flush(); this.palMap.clear(); this.palNext = 0; this.resetStates(); }
+    const tv = regs.tmemVersion;
+    if (this.lastStateVersion[0] === regs.bpVersion && this.lastStateVersion[1] === regs.xfVersion && this.lastStateVersion[2] === tv) return this.lastState;
+    const w = this.wScratch;
+    w.fill(0);
+    w.set(regs.bp);
+    for (let i = 0; i < 8; i++) w[0xe0 + i] = regs.tevBank[0][i];
+    for (let i = 0; i < 8; i++) w[256 + i] = regs.tevBank[1][i];
+    let projMask = 0;
+    for (let n = 0; n < 8; n++) if ((regs.xf[0x1040 + n] >> 1) & 1) projMask |= 1 << n;
+    w[272] = projMask;
+    w[273] = regs.xf[0x101a];
+    const nStages = bits(regs.bp[0], 10, 4) + 1;
+    let seen = 0;
+    for (let m = 0; m < 8; m++) w[264 + m] = NO_PAL;
+    for (let si = 0; si < nStages; si++) {
+      const ord = regs.bp[0x28 + (si >> 1)] >>> (si & 1 ? 12 : 0);
+      if (!((ord >> 6) & 1)) continue;
+      const m = ord & 7;
+      if ((seen >> m) & 1) continue;
+      seen |= 1 << m;
+      const hi = m >= 4, k = m & 3;
+      const fmt = (regs.bp[(hi ? 0xa8 : 0x88) + k] >> 20) & 15;
       if (fmt === 8 || fmt === 9 || fmt === 10) {
-        const pal = regs.tluts.get(bits(tl, 0, 10));
+        const pal = regs.tluts.get(regs.bp[(hi ? 0xb8 : 0x98) + k] & 0x3ff);
         if (pal) { w[264 + m] = this.paletteAddress(pal); w[274 + m] = pal.length; }
       }
     }
@@ -352,7 +371,7 @@ export class GxGl implements GxBackend {
       this.states.words.set(w, found * STATE_WORDS);
       this.states.n = this.stateCount * STATE_WORDS;
       if (cands) cands.push(found); else this.stateIndex.set(h, [found]);
-      this.stateRanges[found] = ranges;
+      this.stateRanges[found] = this.textureRanges(regs, nStages);
       let feat = 0;
       if (bits(regs.bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (regs.bp[0x10 + si] !== 0) feat |= 1;
       if (bits(regs.bp[0xf1], 21, 3) > 2 || (bits(regs.bp[0xf1], 21, 3) !== 0 && bits(regs.bp[0xe8], 10, 1))) feat |= 2;
@@ -368,7 +387,7 @@ export class GxGl implements GxBackend {
 
   draw(regs: GxRegs, mem: Memory, vd: VertexData, tris: number[], lines: number[], points: number[], prims: { type: number; base: number; count: number }[]): void {
     if (!this.drawing) return;
-    const t0 = performance.now();
+    const t0 = this.measure ? performance.now() : 0;
     this.attach(mem, regs);
     if (regs.tmemVersion !== this.tmemVersion) { this.flush(); this.uploadTmem(regs); }
     const st = this.stateFor(regs);
@@ -431,7 +450,7 @@ export class GxGl implements GxBackend {
         }
       }
     }
-    this.stats.cpuMs += performance.now() - t0;
+    if (this.measure) this.stats.cpuMs += performance.now() - t0;
   }
 
   /** the header words of the triangle set up last (TS), at word o of the queue, and its place in the bins */
@@ -463,11 +482,11 @@ export class GxGl implements GxBackend {
   flush(): void {
     const nt = this.triOffsets.length;
     // memory writes that have landed go to the GPU now, before anything that writes memory there (a copy) or reads it
-    const tu = performance.now();
+    const tu = this.measure ? performance.now() : 0;
     if (this.attached) this.uploadDirty(this.attached);
-    this.stats.uploadMs += performance.now() - tu;
+    if (this.measure) this.stats.uploadMs += performance.now() - tu;
     if (nt === 0) { this.used.clear(); return; }
-    const t0 = performance.now();
+    const t0 = this.measure ? performance.now() : 0;
     const gl = this.gl;
     // bins: every triangle goes into the tiles its blocks can reach and where its three edge tests can pass for some pixel. The edge test
     // of a pixel is C + DX * 16y - DY * 16x > 0 (32-bit); its largest value over a tile is at one corner, so a tile where that corner
@@ -554,7 +573,7 @@ export class GxGl implements GxBackend {
     this.cur = 1 - this.cur;
     this.passes++;
     this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.needFeatures = 0;
-    this.stats.flushMs += performance.now() - t0;
+    if (this.measure) this.stats.flushMs += performance.now() - t0;
     this.onFlush?.();
   }
 
