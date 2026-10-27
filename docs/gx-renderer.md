@@ -29,6 +29,14 @@ program on a discrete GPU with a cold cache). `await gx.prepare(features)` waits
 stream needs (1: the indirect texture unit, 2: exponential fog and fog range adjustment); `gx.warm()` compiles the others in the background, one at a time. A draw that
 needs a variant that is not ready waits for it (`gx.compileWaits` counts these; it stays zero when `prepare` was given the stream's features).
 
+### Frame time
+
+- Show the picture with `gx.present(canvas)`; `onPicture` reads the frame buffer back (`readPixels` waits for the GPU and moves 1.2 MB: about 7 ms a frame).
+- Let the event loop run between frames (a page draws one frame per animation frame): the worker threads start and deliver only then.
+- Before play: `await gx.prepare(scanFeatures(...))`, `gx.prepareMemory(mem, regs)`, then draw two to five frames before showing anything (the first drawn frames include the JavaScript
+  engine warming up, 20 to 70 ms; after that a replay with HUD and particles takes a median of 7 ms, p99 under 15 ms on a discrete GPU, 38 ms of GPU time on an integrated one).
+- `tools/gxr/web/replayperf.ts` measures a stream's frames (`timing=1` per-pass GPU times, `ablate=` shader parts, `flags=force_low_power_gpu` for an integrated GPU).
+
 ## How it is checked
 
 Everything is compared against the spec's own numbers, never against another implementation of this code's guesses.
