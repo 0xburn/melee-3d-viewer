@@ -60,7 +60,42 @@ export interface Tape {
   /** what the graphics build of the simulator reads beyond the wire config (render3d/gxpath/tapebridge.ts): the patch bits its
    *  admission derives from the code list (MSL_PATCH_*), and each slot's level byte (a human's, 1..9, for Nana's AI) */
   gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2; ports: number[] };
+  /** (graphics build) the recording has no raw C-stick bytes (Slippi before 3.17): the tape header says so (MSL_PATCH_RAW_CSTICK_ABSENT) and
+   *  the simulator owns the rule (playback slippi: as Slippi plays it; original: the fit, render3d/gxpath/cfit.ts) */
+  rawCAbsent: boolean;
+  /** (graphics build) a slot's recorded C-stick floats, one per row (0 on a row the slot has none): the fit's input */
+  cstick(slot: number): { x: Float32Array; y: Float32Array };
+  /** (graphics build) row i as the native driver's TapeFrame (120 bytes, replay_drive.py build_tape: recorded stick floats, a slot without
+   *  a row all zero), into out; rawC[slot] = [x, y] replaces the raw C-stick bytes (the fit's choice) of a recording without them */
+  gxFrame(i: number, out: Uint8Array, rawC?: ([Int16Array, Int16Array] | null)[]): void;
+  /** (graphics build) what follows the tape's last frame: the name tags, the display names, the starting timer (build_tape's trailers) */
+  gxTrailer(): Uint8Array;
+  /** what the recording says row i ended with, every lane replay_drive.py frame_diff compares (render3d/gxpath/framediff.ts) */
+  recorded(i: number): RecordedRow;
 }
+
+/** wire.h MSL_PATCH_RAW_CSTICK_ABSENT (the tape header's slippi_patches byte) */
+export const PATCH_RAW_CSTICK_ABSENT = 1 << 7;
+
+/** one fighter's recorded post-frame lanes (replay_drive.py frame_diff) */
+export interface RecordedFighter { x: number; y: number; percent: number; shield: number; action: number; stocks: number; facing: number }
+/** one recorded item (Slippi's item event; a lane the recording's version lacks is null) */
+export interface RecordedItem {
+  type: number; state: number; owner: number | null; direction: number; velX: number; velY: number; x: number; y: number;
+  damage: number; timer: number; spawnId: number; misc: number[] | null; instanceId: number | null;
+}
+export interface RecordedRow {
+  /** per slot: the leader (null: no row), and whether the slot has a follower lane at all, and her row (null: absent) */
+  players: { leader: RecordedFighter | null; hasFollower: boolean; follower: RecordedFighter | null }[];
+  /** the row's items (at most 15), or null when the recording has no item events */
+  items: RecordedItem[] | null;
+  /** the item instance id is compared (Slippi 3.16 on) */
+  withInstance: boolean;
+}
+
+/** the native driver's TapeFrame (replay_drive.c, replay_drive.py FRAME_FMT) */
+export const GX_FRAME_SIZE = 120;
+const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
 
 /** a replay the simulator does not play, and why (the tape is not made) */
 export class Unsupported extends Error {}
@@ -177,16 +212,14 @@ function stadiumFrozen(isFrozenPs: boolean, codes: Map<number, Uint8Array>): boo
 interface FrameRow {
   seed: number;
   pre: Int32Array; post: Int32Array;
+  fpost: Int32Array; // the followers' (Nana) post rows, by slot (the frame's last pass)
+  items: number[]; // offsets of the frame's 0x3B events (its last pass)
   fod: number[]; // offsets of 0x3F events
   whispy: number;  // offset of the last 0x40 event, -1 none
 }
 
 /** how a tape is read beyond the validator's way */
 export interface TapeOptions {
-  /** a replay that records only the processed C-stick (before Slippi 3.17) gets the raw bytes melee-sim-light's replay driver
-   *  rebuilds (replay_drive.py reconstructed_cstick, GATE_SNAP): the processed axis times 80, truncated and clamped, and a
-   *  stick held at 0.9875 on one axis with the other at 0 is a raw 80 (UCF 1.0's cardinal snap reads it) */
-  cstickSnap?: boolean;
   /** Pokemon Stadium with its transformations on is played (the graphics build of the simulator has them: MSL_STADIUM_*); without this
    *  such a replay is refused, as the track simulator cannot play it */
   stadiumTransformations?: boolean;
@@ -244,10 +277,11 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
   const geckoParts: Uint8Array[] = [];
   const row = (frame: number) => {
     let r = rows.get(frame);
-    if (!r) rows.set(frame, (r = { seed: 0, pre: new Int32Array(4).fill(-1), post: new Int32Array(4).fill(-1), fod: [], whispy: -1 }));
+    if (!r) rows.set(frame, (r = { seed: 0, pre: new Int32Array(4).fill(-1), post: new Int32Array(4).fill(-1), fpost: new Int32Array(4).fill(-1), items: [], fod: [], whispy: -1 }));
     return r;
   };
   let sawFrameStart = false, minFrame = Infinity, maxFrame = -Infinity;
+  const hasFollower = [false, false, false, false];
   let o = startAt + startSize + 1;
   while (o < raw.length) {
     const cmd = v.getUint8(o), size = sizes.get(cmd);
@@ -257,20 +291,24 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
         const fr = v.getInt32(o + 1);
         const r = row(fr);
         r.seed = v.getUint32(o + 5);
-        r.fod = []; r.whispy = -1;
+        r.fod = []; r.whispy = -1; r.items = []; r.fpost.fill(-1);
         sawFrameStart = true;
         if (fr < minFrame) minFrame = fr;
         if (fr > maxFrame) maxFrame = fr;
         break;
       }
       case 0x37: case 0x38: {
-        if (v.getUint8(o + 6) !== 0) break; // a follower (Nana): her rows are not inputs
         const slot = slotOfPort.get(v.getUint8(o + 5));
         if (slot === undefined) break;
+        if (v.getUint8(o + 6) !== 0) { // a follower (Nana): her rows are not inputs, only compared
+          if (cmd === 0x38) { row(v.getInt32(o + 1)).fpost[slot] = o; hasFollower[slot] = true; }
+          break;
+        }
         const r = row(v.getInt32(o + 1));
         (cmd === 0x37 ? r.pre : r.post)[slot] = o;
         break;
       }
+      case 0x3b: row(v.getInt32(o + 1)).items.push(o); break;
       case 0x3f: if (has(0x3f, 6)) row(v.getInt32(o + 1)).fod.push(o); break;
       case 0x40: if (has(0x40, 5)) row(v.getInt32(o + 1)).whispy = o; break;
       case 0x3d: geckoParts.push(raw.subarray(o + 1, o + 1 + size)); break;
@@ -333,12 +371,15 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
   // (Slippi 3.18 on records Fountain's platforms and Whispy's direction: the streams are present)
   const streams = atLeast(3, 18, 0) ? 3 : 0;
   const hasRawY = has(0x37, 0x40), hasRawC = has(0x37, 0x42);
+  // (the item event's lanes by Slippi version: misc from 3.2, owner from 3.6, instance id from 3.16; a lane the event is too short for is
+  // not in the recording)
+  const itemSize = sizes.get(0x3b) ?? 0;
+  const itemMisc = itemSize >= 0x29, itemOwner = itemSize >= 0x2a, itemInstance = itemSize >= 0x2c;
 
-  // (reconstructed_cstick: float64 arithmetic on the float32 axes)
-  const rebuilt = (axis: number, other: number) => {
-    const raw = Math.max(-80, Math.min(80, Math.trunc(axis * 80)));
-    return Math.abs(Math.abs(axis) - 0.9875) < 1e-6 && other === 0 ? Math.sign(axis) * 80 : raw;
-  };
+  // (the graphics build's tape, replay_drive.py build_tape: a derived axis is the recorded float times 80 in float64, truncated and
+  // clamped; for a recording without raw C-stick bytes this is reconstructed_cstick(GATE_EXACT), the fit's starting point, and the
+  // simulator owns what is done with it)
+  const derived = (axis: number) => Math.max(-80, Math.min(80, Math.trunc(axis * 80)));
   const writeInput = (out: RowWriter, base: number, i: number) => {
     for (let s = 0; s < slots.length; s++) {
       const p = preOf[i][s], b = base + INPUT_PLAYER.size * s;
@@ -346,9 +387,8 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
       out.set(INPUT_PLAYER, "buttons", v.getUint16(p + 0x31), 0, b);
       out.set(INPUT_PLAYER, "main_x", v.getInt8(p + 0x3b), 0, b);
       out.set(INPUT_PLAYER, "main_y", hasRawY ? v.getInt8(p + 0x40) : processedStick(at(0x1d)), 0, b);
-      const snap = options.cstickSnap && !hasRawC;
-      out.set(INPUT_PLAYER, "c_x", hasRawC ? v.getInt8(p + 0x41) : snap ? rebuilt(at(0x21), at(0x25)) : processedStick(at(0x21)), 0, b);
-      out.set(INPUT_PLAYER, "c_y", hasRawC ? v.getInt8(p + 0x42) : snap ? rebuilt(at(0x25), at(0x21)) : processedStick(at(0x25)), 0, b);
+      out.set(INPUT_PLAYER, "c_x", hasRawC ? v.getInt8(p + 0x41) : processedStick(at(0x21)), 0, b);
+      out.set(INPUT_PLAYER, "c_y", hasRawC ? v.getInt8(p + 0x42) : processedStick(at(0x25)), 0, b);
       out.set(INPUT_PLAYER, "nml_main_x", processedStick(at(0x19)), 0, b);
       out.set(INPUT_PLAYER, "nml_main_y", processedStick(at(0x1d)), 0, b);
       out.set(INPUT_PLAYER, "nml_c_x", processedStick(at(0x21)), 0, b);
@@ -366,7 +406,7 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
     recordedUcf: recorded,
     gameFrame: (i) => minFrame + i,
     gx: {
-      patches: simPatches(codes),
+      patches: simPatches(codes) | (hasRawC ? 0 : PATCH_RAW_CSTICK_ABSENT),
       stadium,
       // (each slot's controller port, 0 to 3)
       ports: slots.map((s) => s.port - 1),
@@ -450,6 +490,93 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
         w.set(STAGE_EVENTS, "dreamland_whispy_direction", v.getUint8(r.whispy + 5), 0, se);
         w.set(STAGE_EVENTS, "dreamland_whispy_valid", 1, 0, se);
       }
+    },
+    rawCAbsent: !hasRawC,
+    cstick(s) {
+      const x = new Float32Array(order.length), y = new Float32Array(order.length);
+      for (let i = 0; i < order.length; i++) if (present[i][s]) { x[i] = v.getFloat32(preOf[i][s] + 0x21); y[i] = v.getFloat32(preOf[i][s] + 0x25); }
+      return { x, y };
+    },
+    gxFrame(i, out, rawC) {
+      out.fill(0, 0, GX_FRAME_SIZE);
+      const o = new DataView(out.buffer, out.byteOffset, GX_FRAME_SIZE), r = order[i];
+      let seedSlot = present[i].indexOf(1);
+      if (seedSlot < 0) seedSlot = 0;
+      o.setUint32(0, r.seed, true);
+      o.setUint32(4, v.getUint32(preOf[i][seedSlot] + 0x7), true);
+      o.setUint8(8, 1);
+      let fodValid = 0;
+      for (const e of r.fod) {
+        if (v.getUint8(e + 5) === 0) { o.setFloat32(12, v.getFloat32(e + 6), true); fodValid |= 1; }
+        else { o.setFloat32(16, v.getFloat32(e + 6), true); fodValid |= 2; }
+      }
+      o.setUint8(9, fodValid);
+      if (r.whispy >= 0) { o.setUint8(10, 1); o.setUint8(11, v.getUint8(r.whispy + 5)); }
+      for (let s = 0; s < slots.length; s++) {
+        if (!present[i][s]) continue;
+        const p = preOf[i][s], d = 20 + 25 * s, at = (k: number) => v.getFloat32(p + k);
+        const fit = rawC?.[s] ?? null;
+        o.setUint16(d, v.getUint16(p + 0x31), true);
+        o.setInt8(d + 2, v.getInt8(p + 0x3b));
+        // (main_y without the raw byte: build_tape multiplies the float32 column by 80 in float32, numpy's rule for an array times a
+        // Python float, where reconstructed_cstick converts to float64 first)
+        o.setInt8(d + 3, hasRawY ? v.getInt8(p + 0x40) : Math.max(-80, Math.min(80, Math.trunc(Math.fround(at(0x1d) * 80)))));
+        o.setInt8(d + 4, hasRawC ? v.getInt8(p + 0x41) : fit ? fit[0][i] : derived(at(0x21)));
+        o.setInt8(d + 5, hasRawC ? v.getInt8(p + 0x42) : fit ? fit[1][i] : derived(at(0x25)));
+        o.setUint8(d + 6, triggerByte(at(0x33)));
+        o.setUint8(d + 7, triggerByte(at(0x37)));
+        o.setUint8(d + 8, 3);
+        o.setFloat32(d + 9, at(0x19), true); o.setFloat32(d + 13, at(0x1d), true);
+        o.setFloat32(d + 17, at(0x21), true); o.setFloat32(d + 21, at(0x25), true);
+      }
+    },
+    gxTrailer() {
+      const parts: number[] = [];
+      const human = (s: { cpu: number }) => s.cpu === 0;
+      // name tags: (slot id, 16 text bytes) per player and "NTG1" (replay_drive.py nametag_trailer), when a human shows one
+      if (startSize >= 0x161 + 0x40) {
+        const rows = slots.map((s) => {
+          const port = s.port - 1, id = v.getUint8(g(0x65 + 0xa + 0x24 * port)), text = raw.subarray(g(0x161 + 0x10 * port), g(0x161 + 0x10 * port) + 16);
+          return human(s) && id < 0x78 && text[0] !== 0 ? [id, ...text] : [0x78, ...new Array(16).fill(0)];
+        });
+        if (rows.some((x) => x[0] !== 0x78)) { while (rows.length < 4) rows.push([0x78, ...new Array(16).fill(0)]); for (const x of rows) parts.push(...x); parts.push(...ascii("NTG1")); }
+      }
+      // display names: 31 Shift JIS bytes per player and "DNM1" (displayname_trailer, Slippi 3.9 on)
+      if (startSize >= 0x1a5 + 4 * 0x1f) {
+        const rows = slots.map((s) => {
+          const at = g(0x1a5 + 0x1f * (s.port - 1)), name = raw.subarray(at, at + 31);
+          return human(s) && name[0] !== 0 ? [...name] : new Array(31).fill(0);
+        });
+        if (rows.some((x) => x[0] !== 0)) { while (rows.length < 4) rows.push(new Array(31).fill(0)); for (const x of rows) parts.push(...x); parts.push(...ascii("DNM1")); }
+      }
+      // the starting timer: u32 seconds (big-endian) and "RUL1" (timer_trailer), unless it is the usual 8:00
+      const seconds = v.getUint32(g(0x15));
+      if (seconds && seconds !== 480) { parts.push(seconds >>> 24, (seconds >>> 16) & 255, (seconds >>> 8) & 255, seconds & 255); parts.push(...ascii("RUL1")); }
+      return new Uint8Array(parts);
+    },
+    recorded(i) {
+      const fighter = (p: number): RecordedFighter => ({
+        x: v.getFloat32(p + 0xa), y: v.getFloat32(p + 0xe), percent: v.getFloat32(p + 0x16), shield: v.getFloat32(p + 0x1a),
+        action: v.getUint16(p + 0x8), stocks: v.getUint8(p + 0x21), facing: v.getFloat32(p + 0x12) > 0 ? 1 : 0,
+      });
+      const r = order[i];
+      const items = r.items.slice(0, 15).map((e): RecordedItem => ({
+        type: v.getUint16(e + 0x5), state: v.getUint8(e + 0x7), direction: v.getFloat32(e + 0x8),
+        velX: v.getFloat32(e + 0xc), velY: v.getFloat32(e + 0x10), x: v.getFloat32(e + 0x14), y: v.getFloat32(e + 0x18),
+        damage: v.getUint16(e + 0x1c), timer: v.getFloat32(e + 0x1e), spawnId: v.getUint32(e + 0x22),
+        misc: itemMisc ? [0, 1, 2, 3].map((k) => v.getUint8(e + 0x26 + k)) : null,
+        owner: itemOwner ? v.getInt8(e + 0x2a) : null,
+        instanceId: itemInstance ? v.getUint16(e + 0x2b) : null,
+      }));
+      return {
+        players: slots.map((_, s) => ({
+          leader: present[i][s] ? fighter(postOf[i][s]) : null,
+          hasFollower: hasFollower[s],
+          follower: r.fpost[s] >= 0 ? fighter(r.fpost[s]) : null,
+        })),
+        items,
+        withInstance: itemInstance && atLeast(3, 16, 0),
+      };
     },
     expected(i) {
       return slots.map((_, s) => {

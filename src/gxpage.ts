@@ -95,9 +95,9 @@ async function loadReplay(url: string, frame: number, play = q.get("paused") !==
   info("reading the replay...");
   const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
   const parsed = decode(bytes, { useTypedArrays: true }) as { raw: Uint8Array; metadata?: { playedOn?: string } };
-  // (a replay from before Slippi 3.17 records the C-stick only after the game processed it: Slippi's playback plays a +-0.9875 as the
-  // raw 79 it reads back to; the console's own game may have had 80 there, which only the snap of UCF 1.0's cardinals tells apart)
-  const tape = readTape(parsed.raw, parsed.metadata, { cstickSnap: playbackMode === "original", stadiumTransformations: true });
+  // (a replay from before Slippi 3.17 records the C-stick only after the game processed it: the simulator plays it as Slippi's playback
+  // does, or, for Original, works out the raw bytes the console had from the recorded positions: session.ts, cfit.ts)
+  const tape = readTape(parsed.raw, parsed.metadata, { stadiumTransformations: true });
   mark("replay");
   if (!filesFrom) throw new Error("no game files: give ?files=<folder url> or hand over the folder's files");
   if (!gameFiles) {

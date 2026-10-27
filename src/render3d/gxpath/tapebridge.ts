@@ -9,6 +9,7 @@ import {
   ARITHMETIC_LEGACY_FNMSUBS, ARITHMETIC_SPLIT_FMA, CONFIG, CONFIG_PLAYER, INPUT_PLAYER, offsetOf, readField, STAGE_EVENTS,
   STREAM_FRAME,
 } from "../../sim/wire";
+import type { DriveOptions, Tape } from "../../sim/tape";
 
 export const TAPE_CONFIG_SIZE = 77;
 export const TAPE_FRAME_SIZE = 120;
@@ -28,7 +29,8 @@ export function tapeConfigOf(config: Uint8Array, frameCount: number, gx: { patch
   o.setFloat32(20, f("match_damage_ratio"), true);
   const arithmetic = f("arithmetic_flags");
   const bytes = [
-    f("num_players"), f("is_teams"), f("friendly_fire"), f("stock_count"),
+    // (friendly_fire: the driver's tape always carries 0, replay_drive.py build_tape; the gate and the fit play with that)
+    f("num_players"), f("is_teams"), 0, f("stock_count"),
     arithmetic & ARITHMETIC_LEGACY_FNMSUBS ? 1 : 0, // online_fnmsubs_zero
     f("brawl_offscreen_damage"), f("freeze_dead_up_fall_physics"), f("whispy_dead_fighter_fix"),
     f("ucf_cardinals_1_0_enabled"), f("ucf_shield_sdi_enabled"), f("ucf_sdi_enabled"),
@@ -78,3 +80,18 @@ export function tapeFrameOf(frame: Uint8Array, out: Uint8Array): void {
     o.setFloat32(d + 17, stickFloat(r("nml_c_x")), true); o.setFloat32(d + 21, stickFloat(r("nml_c_y")), true);
   }
 }
+
+/** The whole tape the native driver reads (replay_drive.py build_tape, byte for byte): the config for a drive choice, every row
+ *  (tape.ts gxFrame: the recorded stick floats; rawC is the fit's raw C-stick choice for a recording without raw bytes) and the
+ *  trailers (name tags, display names, the starting timer), which the viewer build's HUD reads. */
+export function nativeTape(tape: Tape, drive: DriveOptions, rawC?: ([Int16Array, Int16Array] | null)[]): Uint8Array {
+  const trailer = tape.gxTrailer();
+  const out = new Uint8Array(TAPE_CONFIG_SIZE + tape.count * TAPE_FRAME_SIZE + trailer.length);
+  out.set(tapeConfigOf(tape.config(drive), tape.count, tape.gx));
+  for (let i = 0; i < tape.count; i++) tape.gxFrame(i, out.subarray(TAPE_CONFIG_SIZE + i * TAPE_FRAME_SIZE, TAPE_CONFIG_SIZE + (i + 1) * TAPE_FRAME_SIZE), rawC);
+  out.set(trailer, TAPE_CONFIG_SIZE + tape.count * TAPE_FRAME_SIZE);
+  return out;
+}
+
+/** row i of a whole tape (a view) */
+export const nativeRow = (whole: Uint8Array, i: number) => whole.subarray(TAPE_CONFIG_SIZE + i * TAPE_FRAME_SIZE, TAPE_CONFIG_SIZE + (i + 1) * TAPE_FRAME_SIZE);
