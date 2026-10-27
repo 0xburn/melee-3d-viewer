@@ -23,9 +23,10 @@ const FIGHTER_PREFIXES = [
 ];
 
 // (the graphics build's display pass loads these too: the HUD archive, the screen flash and refraction files, the name tags' font,
-// Pokemon Stadium's English text; main.dol when it is there)
-const GX_EXTRA = ["IfAll.usd", "LbBf.dat", "LbRf.dat", "SdIntro.dat", "GrPs.usd"];
-const GX_OPTIONAL = ["main.dol", "IfAll.dat", "IfVsCam.dat", "IfVsCam.usd"];
+// Pokemon Stadium's English text, the coin-get notice, the English item and Captain Falcon result files; and the game's executable,
+// whose tables and font the display code reads at run time)
+const GX_EXTRA = ["main.dol", "IfAll.usd", "LbBf.dat", "LbRf.dat", "SdIntro.dat", "GrPs.usd", "ItCo.usd", "PlCaRe.usd", "IfCoGet.dat"];
+const GX_OPTIONAL = ["IfAll.dat", "IfVsCam.dat", "IfVsCam.usd"];
 
 /** the names the graphics build reads: the simulator's, and the display pass's files */
 export function gxNames(have: string[]): string[] {
