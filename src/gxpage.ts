@@ -46,7 +46,7 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
       const { GxGl } = await import("./render3d/gxr/gl");
       const gl = document.createElement("canvas").getContext("webgl2");
       if (gl) {
-        const b = new GxGl(gl);
+        const b = new GxGl(gl, {}, { workers: Math.max(0, Number(q.get("workers") ?? Math.min(3, Math.max(0, (navigator.hardwareConcurrency || 4) - 2)))) });
         await b.prepare();
         const dbg = gl.getExtension("WEBGL_debug_renderer_info");
         console.log("gx: GL renderer " + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "unknown"));
@@ -92,6 +92,7 @@ async function loadReplay(url: string, frame: number) {
   post({ type: "loaded", frames: tape.count });
   (window as unknown as { __gx: object }).__gx = { session, playback };
   await playback.seek(Math.max(0, frame - FIRST_FRAME));
+  if (q.get("bench")) void bench(session);
   if (q.get("paused") !== "1" && frame === FIRST_FRAME) playback.play();
   pads.set(padShow, you);
   update();
@@ -177,3 +178,24 @@ window.addEventListener("message", (e) => {
 const replayUrl = q.get("replayUrl");
 if (replayUrl) void loadReplay(replayUrl, Number(q.get("frame") ?? FIRST_FRAME)).catch(fail);
 else info("waiting for a replay: replayUrl=<url> or a {type: \"load\"} message");
+
+/** ?bench=1 (a measuring run, for the checks): every row of the replay stepped and drawn as fast as the page can, the per-row times posted to /bench */
+async function bench(s: GxSession) {
+  const total: number[] = [], render: number[] = [], step: number[] = [];
+  await s.start();
+  const t0 = performance.now();
+  while (s.index < s.frameCount) {
+    const t = performance.now();
+    while (performance.now() - t < 12 && s.index < s.frameCount) {
+      const a = performance.now();
+      s.step(true);
+      total.push(performance.now() - a);
+      step.push(s.times.step);
+      render.push(s.times.render);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
+  const body = JSON.stringify({ rows: total.length, seconds: (performance.now() - t0) / 1000, isolated: (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true, total, step, render, wasmHeap: s.memoryBytes, jsHeap: heap, pool: (s as unknown as { backend?: { poolStats?: unknown } }).backend?.poolStats ?? null });
+  await fetch("/bench", { method: "POST", body });
+}
