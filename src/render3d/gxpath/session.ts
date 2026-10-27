@@ -9,10 +9,10 @@ import { GxGpu } from "../gxr/gpu";
 import type { Dff, GxFrame } from "../gxr/dff";
 import type { GxBackend } from "../gxr/gpu";
 import { differs } from "../../sim/compare";
-import { STREAM_FRAME } from "../../sim/wire";
 import { driveOrder, type DriveOptions, type Tape } from "../../sim/tape";
+import { fitCstick, type RawC } from "./cfit";
 import { GxCore, type GxCoreFactory, type PlaybackMode } from "./core";
-import { tapeConfigOf, tapeFrameOf, TAPE_FRAME_SIZE } from "./tapebridge";
+import { nativeRow, nativeTape } from "./tapebridge";
 
 /** what the session needs of a renderer (CpuBackend, GxGl) */
 export interface SessionBackend extends GxBackend {
@@ -47,6 +47,8 @@ export interface SessionOptions {
   drive?: DriveOptions;
   /** how the replay is played back (core.ts PlaybackMode; default slippi): fixed for the session, a change is a new session */
   playback?: PlaybackMode;
+  /** what the page is doing before the match can start (the C-stick fit of playback original), or null when that is over */
+  onProgress?: (text: string | null) => void;
   /** at most this many drive choices are tried when the game parts from the replay (default 3, as the track simulator) */
   maxDrives?: number;
   /** a renderer, made with the way to the GPU's memory it reads (the CPU reference needs it); the same one is used for every restart
@@ -73,8 +75,11 @@ export class GxSession {
   private core: GxCore | null = null;
   private gpu: GxGpu | null = null;
   private backend: SessionBackend | null = null;
-  private w = new Uint8Array(STREAM_FRAME.size);
-  private t = new Uint8Array(TAPE_FRAME_SIZE);
+  /** the whole tape the match plays (tapebridge.ts nativeTape), and the C-stick fit made for each drive choice (playback original) */
+  private whole: Uint8Array | null = null;
+  private fits = new Map<number, RawC | null>();
+  /** (playback original) drives and kept trials the C-stick fit took, for the drive choice playing */
+  fitStats: { drives: number; flips: number } | null = null;
   private picturedRow = -1;
   private closed = false;
   private firstStepped = false;
@@ -93,10 +98,10 @@ export class GxSession {
     this.core = null;
     const core = await GxCore.create((opt) => this.o.factory({ ...opt, ...this.o.coreOptions }), files.files);
     if (this.closed) { core.destroy(); return; }
-    const drive = this.o.drive ?? driveOrder(tape, this.o.maxDrives ?? 3)[this.driveIndex] ?? driveOrder(tape, 1)[0];
-    tape.frame(0, this.w);
-    tapeFrameOf(this.w, this.t);
-    core.openMatch(tapeConfigOf(tape.config(drive), tape.count, tape.gx), this.t, files.names, this.playback);
+    const whole = await this.tapeFor(this.driveIndex);
+    if (this.closed) { core.destroy(); return; }
+    this.whole = whole;
+    core.openMatch(whole, files.names, this.playback);
     this.core = core;
     if (this.backend?.reset) this.backend.reset();
     else this.backend = await this.o.makeBackend(() => {
@@ -107,7 +112,7 @@ export class GxSession {
     backend.drawing = false;
     backend.onPicture = this.wantPictures ? (rgba) => { this.onPicture?.(rgba, this.index - 1); } : null;
     // (the register files the stream starts from are taken when the first frame is stepped: row 0 is stepped here and fed first)
-    core.step(this.t);
+    core.step(nativeRow(whole, 0));
     this.firstStepped = true;
     this.gpu = new GxGpu(backend, core.initial() as unknown as Dff);
     backend.prepareMemory?.(this.gpu.mem, this.gpu.regs);
@@ -122,11 +127,9 @@ export class GxSession {
     const core = this.core, gpu = this.gpu;
     if (!core || !gpu || this.index >= this.frameCount) return false;
     const i = this.index;
-    this.o.tape.frame(i, this.w);
-    tapeFrameOf(this.w, this.t);
     const t0 = performance.now();
     if (i === 0 && this.firstStepped) this.firstStepped = false;
-    else core.step(this.t);
+    else core.step(nativeRow(this.whole!, i));
     const t1 = performance.now();
     this.index = i + 1;
     if (i > 0 && !this.diverged) {
@@ -191,6 +194,27 @@ export class GxSession {
     return row < this.index - 1 || !this.core;
   }
 
+  /** the whole tape of drive choice d: its config, every row, the trailers; in playback original, for a recording without raw C-stick
+   *  bytes, the raw bytes the simulator's fit chooses for that choice (cfit.ts; made once per choice) */
+  private async tapeFor(d: number): Promise<Uint8Array> {
+    const { tape } = this.o;
+    const drive = this.o.drive ?? driveOrder(tape, this.o.maxDrives ?? 3)[d] ?? driveOrder(tape, 1)[0];
+    if (this.playback !== "original" || !tape.rawCAbsent) return nativeTape(tape, drive);
+    if (!this.fits.has(d)) {
+      const fit = await fitCstick({
+        factory: this.o.factory, coreOptions: this.o.coreOptions, files: this.o.files, tape, drive,
+        onProgress: (text) => this.o.onProgress?.(text),
+      });
+      this.o.onProgress?.(null);
+      this.fits.set(d, fit?.rawC ?? null);
+      if (d === this.driveIndex) this.fitStats = fit ? { drives: fit.drives, flips: fit.flips } : null;
+    }
+    return nativeTape(tape, drive, this.fits.get(d) ?? undefined);
+  }
+
+  /** the whole tape the match plays now (the checks compare it with the native driver's) */
+  get wholeTape(): Uint8Array | null { return this.whole; }
+
   /** bytes the simulator's memory holds */
   get memoryBytes(): number { return this.core?.memoryBytes ?? 0; }
 
@@ -215,19 +239,17 @@ export class GxSession {
     const choices = driveOrder(tape, this.o.maxDrives ?? 3);
     this.drivesTried = [{ index: this.driveIndex, row: this.diverged?.row ?? tape.count }];
     let best = this.drivesTried[0];
-    const w = new Uint8Array(STREAM_FRAME.size), t = new Uint8Array(TAPE_FRAME_SIZE);
     for (let d = 0; d < choices.length && best.row < tape.count; d++) {
       if (d === this.driveIndex) continue;
       onProgress?.(`the game parts from the replay at frame ${this.diverged?.frame}: trying setting ${d + 1} of ${choices.length}`);
       const core = await GxCore.create((opt) => this.o.factory({ ...opt, ...this.o.coreOptions }), files.files);
       let reached = tape.count;
       try {
-        tape.frame(0, w); tapeFrameOf(w, t);
-        core.openMatch(tapeConfigOf(tape.config(choices[d]), tape.count, tape.gx), t, files.names, this.playback);
+        const whole = await this.tapeFor(d);
+        core.openMatch(whole, files.names, this.playback);
         let i = 0, t0 = now();
         for (; i < tape.count; i++) {
-          tape.frame(i, w); tapeFrameOf(w, t);
-          core.step(t);
+          core.step(nativeRow(whole, i));
           if (i > 0 && differs(core.output(), tape.expected(i))) { reached = i; break; }
           if (now() - t0 > 12) { await pause(); t0 = now(); if (this.closed) return false; }
         }

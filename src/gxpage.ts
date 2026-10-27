@@ -111,7 +111,7 @@ async function loadReplay(url: string, frame: number, play = q.get("paused") !==
   const factory = (await import(/* @vite-ignore */ coreUrl)).default as GxCoreFactory;
   session = new GxSession({
     factory, coreOptions: { locateFile: (p: string) => new URL(p, coreUrl).href }, files: gameFiles, tape,
-    makeBackend, playback: playbackMode,
+    makeBackend, playback: playbackMode, onProgress: (text) => { if (text) info(text + "..."); },
   });
   session.setPictures(true);
   await session.warmup();

@@ -39,6 +39,15 @@ export interface GxCoreModule {
   _msl_gxw_initial_state(which: number): number;
   _msl_gxw_output_ptr(): number;
   _msl_gxw_output_size(): number;
+  _msl_gxw_out_row(): number;
+  _msl_gxw_out_row_size(): number;
+  _msl_gxw_cfit_new(lanes: number, count: number): number;
+  _msl_gxw_cfit_lane(lane: number, cx: number, cy: number): number;
+  _msl_gxw_cfit_raw(lane: number, axis: number): number;
+  _msl_gxw_cfit_next(first: number): number;
+  _msl_gxw_cfit_result(moved: number): void;
+  _msl_gxw_cfit_first(): number;
+  _msl_gxw_cfit_flips(): number;
 }
 
 /** how the replay is played back: as Slippi's playback shows it, or as the console recorded it (NOTE_FROM_W12.md) */
@@ -69,18 +78,17 @@ export class GxCore {
     return new GxCore(mod);
   }
 
-  /** the match for a tape config (TAPE_CONFIG_SIZE bytes) and the first frame, played back the given way (set before any step); the game
-   *  files are dropped from the file system after */
-  openMatch(config: Uint8Array, first: Uint8Array, names: string[], playback: PlaybackMode = "slippi"): void {
+  /** the match for a whole tape (tapebridge.ts nativeTape: config, every row, the trailers the HUD reads), played back the given way (set
+   *  before any step); the game files are dropped from the file system after. Rows are then stepped one at a time (step). */
+  openMatch(whole: Uint8Array, names: string[], playback: PlaybackMode = "slippi"): void {
     const m = this.mod;
     this.setPlayback(playback);
-    if (config.length !== TAPE_CONFIG_SIZE || first.length !== TAPE_FRAME_SIZE) throw new Error("bad tape sizes");
-    const tape = m._malloc(config.length + first.length), root = m._malloc(DATA_ROOT.length + 1);
+    if (whole.length < TAPE_CONFIG_SIZE + TAPE_FRAME_SIZE) throw new Error("bad tape size");
+    const tape = m._malloc(whole.length), root = m._malloc(DATA_ROOT.length + 1);
     try {
-      m.HEAPU8.set(config, tape);
-      m.HEAPU8.set(first, tape + config.length);
+      m.HEAPU8.set(whole, tape);
       m.HEAPU8.set(new TextEncoder().encode(DATA_ROOT + "\0"), root);
-      const r = m._msl_gxw_open(tape, config.length + first.length, root);
+      const r = m._msl_gxw_open(tape, whole.length, root);
       if (r !== 0) throw new Error(`msl_gxw_open: ${RESULTS[r] ?? r}`);
     } finally {
       m._free(tape); m._free(root);
@@ -149,6 +157,12 @@ export class GxCore {
   output(): DataView {
     const m = this.mod, p = m._msl_gxw_output_ptr();
     return new DataView(m.HEAPU8.buffer, p, m._msl_gxw_output_size());
+  }
+
+  /** the last step's row as the native driver writes it (replay_drive.c OutFrame: framediff.ts reads it; a view, valid until the next step) */
+  outRow(): DataView {
+    const m = this.mod, p = m._msl_gxw_out_row();
+    return new DataView(m.HEAPU8.buffer, p, m._msl_gxw_out_row_size());
   }
 
   /** bytes the module holds (its memory, wasm pages) */
