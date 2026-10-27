@@ -4,17 +4,18 @@
  *
  * URL parameters: replayUrl, name, frame (game frame, -123 = first), files (the game files folder URL; the names it reads come from
  * sim-files.json beside the module, else the extraction's list), core (the module, default gx/gx-core.js), backend (gl, cpu),
- * speed, paused=1.
+ * speed, playback (slippi, original), pace (60, console), paused=1.
  * Messages in: {type: "load", url, name?, frame?}, {type: "seek", frame}, play, pause, toggle, {type: "gameFiles", files},
- * {type: "speed", speed}. Out: {type: "loaded", frames}, {type: "frame", frame, running}, {type: "renderer", renderer, reason}.
+ * {type: "speed", speed}, {type: "playback", playback}, {type: "pace", pace}. Out: {type: "loaded", frames, playback, pace},
+ * {type: "frame", frame, running}, {type: "renderer", renderer, reason}.
  */
 import { decode } from "@shelacek/ubjson";
 import { CpuBackend } from "./render3d/gxr/cpu";
 import { gxNames, namesToRead, readGameFiles } from "./sim/gamefiles";
 import type { GameFilesFrom } from "./sim/protocol";
 import { readTape } from "./sim/tape";
-import type { GxCoreFactory } from "./render3d/gxpath/core";
-import { GxPlayback, SPEEDS } from "./render3d/gxpath/playback";
+import { isPlaybackMode, PLAYBACK_MODES, type GxCoreFactory, type PlaybackMode } from "./render3d/gxpath/core";
+import { GxPlayback, isPace, PACES, SPEEDS, type Pace } from "./render3d/gxpath/playback";
 import { ControllerOverlay, isOverlayShow, type OverlayShow } from "./render3d/gxpath/overlay";
 import { GxScreen } from "./render3d/gxpath/screen";
 import { CRT_PRESETS, CURVE_MAX, isCrtPreset, type CrtPreset } from "./render3d/crt";
@@ -40,6 +41,20 @@ let padShow: OverlayShow = isOverlayShow(q.get("controllers")) ? (q.get("control
 let crtPreset: CrtPreset = isCrtPreset(q.get("crt")) ? (q.get("crt") as CrtPreset) : "off";
 screen.setCrt(crtPreset);
 let retryText: string | null = null;
+let playbackMode: PlaybackMode = isPlaybackMode(q.get("playback")) ? (q.get("playback") as PlaybackMode) : "slippi";
+let pace: Pace = isPace(q.get("pace")) ? (q.get("pace") as Pace) : "60";
+let currentUrl: string | null = null;
+
+/** Playback is fixed from the replay's first frame: a change plays the replay again from the start, back to the frame shown */
+function setPlaybackMode(m: PlaybackMode) {
+  if (m === playbackMode) return;
+  playbackMode = m;
+  showButtons();
+  if (!currentUrl || !session) return;
+  const frame = session.tape.gameFrame(Math.max(0, session.shown)), wasPlaying = playback?.playing ?? false;
+  void loadReplay(currentUrl, frame, wasPlaying).catch(fail);
+}
+function setPace(p: Pace) { pace = p; playback?.setPace(p); showButtons(); }
 
 async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Promise<SessionBackend> {
   if (q.get("backend") !== "cpu") {
@@ -65,25 +80,27 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
   return new CpuBackend(env as never) as unknown as SessionBackend;
 }
 
-async function loadReplay(url: string, frame: number) {
+async function loadReplay(url: string, frame: number, play = q.get("paused") !== "1" && frame === FIRST_FRAME) {
   playback?.pause();
   session?.close();
   info("reading the replay...");
   const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
   const parsed = decode(bytes, { useTypedArrays: true }) as { raw: Uint8Array; metadata?: { playedOn?: string } };
-  const tape = readTape(parsed.raw, parsed.metadata, { cstickSnap: true, stadiumTransformations: true });
+  // (a replay from before Slippi 3.17 records the C-stick only after the game processed it: Slippi's playback plays a +-0.9875 as the
+  // raw 79 it reads back to; the console's own game may have had 80 there, which only the snap of UCF 1.0's cardinals tells apart)
+  const tape = readTape(parsed.raw, parsed.metadata, { cstickSnap: playbackMode === "original", stadiumTransformations: true });
   if (!filesFrom) throw new Error("no game files: give ?files=<folder url> or hand over the folder's files");
   if (!gameFiles) {
     info("reading the game files...");
-    const names = await namesToRead(filesFrom, new URL("sim-files.json", coreUrl).href)
-      .catch(() => (filesFrom!.kind === "files" ? gxNames(filesFrom!.list.map((f) => f.name)) : Promise.reject(new Error("no file list"))));
+    // (a picked folder: the names the draw path reads, from what is in it; a folder by URL: the module's own list beside it)
+    const names = filesFrom.kind === "files" ? gxNames(filesFrom.list.map((f) => f.name)) : await namesToRead(filesFrom, new URL("sim-files.json", coreUrl).href);
     gameFiles = { names, files: await readGameFiles(filesFrom, names) };
   }
   info("starting the simulator...");
   const factory = (await import(/* @vite-ignore */ coreUrl)).default as GxCoreFactory;
   session = new GxSession({
     factory, coreOptions: { locateFile: (p: string) => new URL(p, coreUrl).href }, files: gameFiles, tape,
-    makeBackend,
+    makeBackend, playback: playbackMode,
   });
   session.setPictures(true);
   await session.warmup();
@@ -96,7 +113,9 @@ async function loadReplay(url: string, frame: number) {
     onRetry: (text) => { retryText = text; update(); },
   });
   playback.setSpeed(Number(q.get("speed") ?? 1) || 1);
-  post({ type: "loaded", frames: tape.count });
+  playback.setPace(pace);
+  currentUrl = url;
+  post({ type: "loaded", frames: tape.count, playback: playbackMode, pace });
   (window as unknown as { __gx: object }).__gx = { session, playback };
   await playback.seek(Math.max(0, frame - FIRST_FRAME));
   if (q.get("bench")) void bench(session);
@@ -107,7 +126,7 @@ async function loadReplay(url: string, frame: number) {
     await fetch("/done", { method: "POST", body: "ok " + msg });
     return;
   }
-  if (q.get("paused") !== "1" && frame === FIRST_FRAME) playback.play();
+  if (play) playback.play();
   pads.set(padShow, you);
   update();
 }
@@ -142,11 +161,18 @@ function fail(e: unknown) {
 }
 
 const label = (v: string) => v.charAt(0).toUpperCase() + v.slice(1);
-const showButtons = () => { $("crt").textContent = `TV: ${label(crtPreset)}`; $("pads").textContent = `Controllers: ${label(padShow)}`; };
+const showButtons = () => {
+  $("crt").textContent = `TV: ${label(crtPreset)}`;
+  $("pads").textContent = `Controllers: ${label(padShow)}`;
+  $("playback").textContent = `Playback: ${label(playbackMode)}`;
+  $("pace").textContent = `Speed: ${pace === "console" ? "Console (59.94)" : "60"}`;
+};
 showButtons();
 $("crt").onclick = () => { crtPreset = CRT_PRESETS[(CRT_PRESETS.indexOf(crtPreset) + 1) % CRT_PRESETS.length]; screen.setCrt(crtPreset, crtPreset === "off" ? 0 : undefined); session?.setPictures(screen.needsPixels); showButtons(); };
 const PAD_CHOICES: OverlayShow[] = ["off", "both", "left", "right"];
 $("pads").onclick = () => { padShow = PAD_CHOICES[(PAD_CHOICES.indexOf(padShow) + 1) % PAD_CHOICES.length]; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); };
+$("playback").onclick = () => setPlaybackMode(PLAYBACK_MODES[(PLAYBACK_MODES.indexOf(playbackMode) + 1) % PLAYBACK_MODES.length]);
+$("pace").onclick = () => setPace(PACES[(PACES.indexOf(pace) + 1) % PACES.length]);
 $("play").onclick = () => playback?.toggle();
 $("fwd").onclick = () => playback?.stepForward();
 $("back").onclick = () => { void playback?.stepBack(); };
@@ -187,6 +213,8 @@ window.addEventListener("message", (e) => {
       post({ type: "hudslots", slots: "game", note: "the HUD is drawn by the game, in its own slots" });
       break;
     case "speed": if (typeof m.speed === "number") playback?.setSpeed(m.speed); break;
+    case "playback": if (isPlaybackMode(m.playback)) setPlaybackMode(m.playback); break;
+    case "pace": if (isPace(m.pace)) setPace(m.pace); break;
   }
 });
 const replayUrl = q.get("replayUrl");

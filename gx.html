@@ -9,8 +9,8 @@
   <body>
     <!-- The replay drawn by the game's own draw path: the simulator's graphics build plays the match and runs the game's display pass,
          and the GX renderer draws the commands it sends. Same parameters as embed.html where they apply (replayUrl, name, frame,
-         files, paused), plus core (the module's URL), backend (gl or cpu) and speed. Messages: load, seek (game frame), play,
-         pause, toggle, gameFiles, speed. Nothing leaves the browser. -->
+         files, paused), plus core (the module's URL), backend (gl or cpu), speed, playback (slippi or original) and pace (60 or console).
+         Messages: load, seek (game frame), play, pause, toggle, gameFiles, speed, playback, pace. Nothing leaves the browser. -->
     <div id="app">
       <div id="stage"><div id="view"></div></div>
       <div id="bar">
@@ -18,6 +18,8 @@
         <button id="back" title="One frame back (starts the match again)">&#9664;|</button>
         <button id="fwd" title="One frame forward">|&#9654;</button>
         <span id="speeds"></span>
+        <button id="playback" title="Slippi: the replay as Slippi's replay playback shows it. Original: as the console played it when the replay was recorded. Changing it plays the replay again from the start.">Playback: Slippi</button>
+        <button id="pace" title="60: 60 frames a second, one frame per refresh on a 60 Hz screen. Console: 59.94 frames a second, the rate a GameCube runs at. Every frame is shown either way.">Speed: 60</button>
         <button id="crt" title="The TV the picture is shown on (a display layer: the picture itself is the same)">TV: Off</button>
         <button id="pads" title="Controllers drawn beside the HUD slots (a layer over the picture)">Controllers: Off</button>
         <div id="seek"><div id="seekfill"></div></div>
