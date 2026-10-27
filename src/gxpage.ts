@@ -236,9 +236,11 @@ const replayUrl = q.get("replayUrl");
 if (replayUrl) void loadReplay(replayUrl, Number(q.get("frame") ?? FIRST_FRAME)).catch(fail);
 else info("waiting for a replay: replayUrl=<url> or a {type: \"load\"} message");
 
-/** ?bench=1 (a measuring run, for the checks): every row of the replay stepped and drawn as fast as the page can, the per-row times posted to /bench */
+/** ?bench=1 (a measuring run, for the checks): every row of the replay stepped and drawn as fast as the page can, the per-row times posted to /bench;
+ *  with hash=1 also each row's stream hash as the native recorder prints it (streamhash.ts) */
 async function bench(s: GxSession) {
-  const total: number[] = [], render: number[] = [], step: number[] = [];
+  const total: number[] = [], render: number[] = [], step: number[] = [], hashes: string[] = [];
+  const frameHash = q.get("hash") ? (await import("./render3d/gxpath/streamhash")).frameHash : null;
   s.setPictures(false);
   await s.start();
   const t0 = performance.now();
@@ -249,12 +251,13 @@ async function bench(s: GxSession) {
       s.step(true);
       if (glBackend) glBackend.present();
       total.push(performance.now() - a);
+      if (frameHash) hashes.push(frameHash(s.core_!));
       step.push(s.times.step);
       render.push(s.times.render);
     }
     await new Promise((r) => setTimeout(r, 0));
   }
   const heap = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory?.usedJSHeapSize ?? 0;
-  const body = JSON.stringify({ rows: total.length, seconds: (performance.now() - t0) / 1000, isolated: (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true, total, step, render, wasmHeap: s.memoryBytes, jsHeap: heap, pool: (s as unknown as { backend?: { poolStats?: unknown } }).backend?.poolStats ?? null });
+  const body = JSON.stringify({ rows: total.length, seconds: (performance.now() - t0) / 1000, isolated: (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true, total, step, render, wasmHeap: s.memoryBytes, jsHeap: heap, diverged: s.diverged, playback: s.playback, hashes, loadTimes, pool: (s as unknown as { backend?: { poolStats?: unknown } }).backend?.poolStats ?? null });
   await fetch("/bench", { method: "POST", body });
 }
