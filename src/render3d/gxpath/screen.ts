@@ -7,6 +7,9 @@ import { Crt, CRT_LOOKS, type CrtLook, type CrtPreset } from "../crt";
 export class GxScreen {
   readonly flat: HTMLCanvasElement;
   readonly tube: HTMLCanvasElement;
+  /** the WebGL renderer draws into this one (present(), no read-back) and it is what shows when no TV is chosen */
+  readonly glFlat: HTMLCanvasElement;
+  private glMode = false;
   private ctx: CanvasRenderingContext2D;
   private img = new ImageData(640, 480);
   private gl: WebGL2RenderingContext | null = null;
@@ -21,12 +24,16 @@ export class GxScreen {
     this.flat.width = 640;
     this.flat.height = 480;
     this.flat.id = "screen";
+    this.glFlat = document.createElement("canvas");
+    this.glFlat.width = 640;
+    this.glFlat.height = 480;
+    this.glFlat.style.display = "none";
     this.tube = document.createElement("canvas");
     this.tube.width = 1280;
     this.tube.height = 960;
     this.tube.style.display = "none";
-    for (const c of [this.flat, this.tube]) Object.assign(c.style, { background: "#000" });
-    host.append(this.flat, this.tube);
+    for (const c of [this.flat, this.glFlat, this.tube]) Object.assign(c.style, { background: "#000" });
+    host.append(this.flat, this.glFlat, this.tube);
     this.ctx = this.flat.getContext("2d")!;
   }
 
@@ -35,11 +42,10 @@ export class GxScreen {
     this.preset = preset;
     this.curve = curve;
     const on = preset !== "off";
-    this.flat.style.display = on ? "none" : "";
-    this.tube.style.display = on ? "" : "none";
+    this.layout();
     if (on && !this.gl) {
       this.gl = this.tube.getContext("webgl2", { preserveDrawingBuffer: true });
-      if (!this.gl) { this.flat.style.display = ""; this.tube.style.display = "none"; return; }
+      if (!this.gl) { this.preset = "off"; this.layout(); return; }
       this.tex = this.gl.createTexture();
       this.gl.bindTexture(this.gl.TEXTURE_2D, this.tex);
       this.gl.texParameteri(this.gl.TEXTURE_2D, this.gl.TEXTURE_MIN_FILTER, this.gl.LINEAR);
@@ -51,6 +57,19 @@ export class GxScreen {
       else this.crt = new Crt(this.gl, look);
     }
     if (this.last) this.show(this.last);
+  }
+
+  /** the renderer is the WebGL one drawing into glFlat (true) or not */
+  setGlMode(on: boolean): void { this.glMode = on; this.layout(); }
+
+  /** whether the page needs the picture's pixels (a TV is chosen, or the renderer is the CPU one) */
+  get needsPixels(): boolean { return this.preset !== "off" || !this.glMode; }
+
+  private layout(): void {
+    const tube = this.preset !== "off";
+    this.tube.style.display = tube ? "" : "none";
+    this.glFlat.style.display = !tube && this.glMode ? "" : "none";
+    this.flat.style.display = !tube && !this.glMode ? "" : "none";
   }
 
   show(rgba: Uint8Array): void {

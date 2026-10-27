@@ -22,6 +22,12 @@ export interface SessionBackend extends GxBackend {
   fastForward?: boolean;
   /** the picture the game copies to the screen: 640 x 480 RGBA, and its number */
   onPicture: ((rgba: Uint8Array, index: number) => void) | null;
+  /** the number of pictures the game has copied to the screen so far */
+  pictures: number;
+  /** (GxGl) memory the renderer mirrors, before the first frame; and the shaders for the features a stream may need */
+  prepareMemory?(mem: unknown, regs: unknown): void;
+  /** (GxGl) draw the last picture into the renderer's own canvas, no read-back */
+  present?(): void;
   /** back to the state before any frame (GxGl has it) */
   reset?(): void;
   pictures: number;
@@ -52,6 +58,8 @@ export class GxSession {
   index = 0;
   /** the first row the simulator's game parted from the replay's, and the lane */
   diverged: { row: number; frame: number; lane: string } | null = null;
+  /** pictures are read back from the renderer (the CPU reference always; WebGL only for a display that needs the pixels, such as the CRT pass: a read-back waits for the GPU) */
+  wantPictures = true;
   /** called with each picture the game copies to the screen (rgba is the renderer's own buffer: copy to keep) */
   onPicture: ((rgba: Uint8Array, row: number) => void) | null = null;
   times: FrameTimes = { step: 0, handoff: 0, render: 0 };
@@ -95,11 +103,12 @@ export class GxSession {
     });
     const backend = this.backend;
     backend.drawing = false;
-    backend.onPicture = (rgba) => { this.picturedRow = this.index - 1; this.onPicture?.(rgba, this.index - 1); };
+    backend.onPicture = this.wantPictures ? (rgba) => { this.onPicture?.(rgba, this.index - 1); } : null;
     // (the register files the stream starts from are taken when the first frame is stepped: row 0 is stepped here and fed first)
     core.step(this.t);
     this.firstStepped = true;
     this.gpu = new GxGpu(backend, core.initial() as unknown as Dff);
+    backend.prepareMemory?.(this.gpu.mem, this.gpu.regs);
     this.index = 0;
     this.diverged = null;
     this.picturedRow = -1;
@@ -128,7 +137,9 @@ export class GxSession {
     // (frame 0 sets the registers up and draws nothing; a frame only played through for a seek is fast-forwarded: no draws, no copies)
     this.backend!.drawing = i > 0;
     this.backend!.fastForward = !draw;
+    const before = this.backend!.pictures;
     gpu.runFrame(frame);
+    if (this.backend!.pictures > before) this.picturedRow = i;
     const t3 = performance.now();
     this.times = { step: t1 - t0, handoff: t2 - t1, render: t3 - t2 };
     const T = this.totals;
@@ -138,6 +149,22 @@ export class GxSession {
     if (t1 - t0 > T.maxStep) T.maxStep = t1 - t0;
     if (t3 - t0 > T.maxFrame) T.maxFrame = t3 - t0;
     return true;
+  }
+
+  /** read pictures back (or not) from now on: the backend's onPicture is set or cleared at once */
+  setPictures(on: boolean): void {
+    this.wantPictures = on;
+    if (this.backend) this.backend.onPicture = on ? (rgba) => { this.onPicture?.(rgba, this.index - 1); } : null;
+  }
+
+  /** Draw the first few rows once, hidden, and start the match again: the JavaScript engine and the renderer's caches are warm before the first row shown */
+  async warmup(rows = 4): Promise<void> {
+    await this.start();
+    const was = this.wantPictures;
+    this.setPictures(false);
+    for (let i = 0; i < rows && this.index < this.frameCount; i++) { this.step(true); await new Promise((r) => setTimeout(r, 0)); }
+    this.setPictures(was);
+    await this.start();
   }
 
   /** the row whose picture the screen shows now (-1: none yet) */

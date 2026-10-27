@@ -10,6 +10,8 @@ export interface PlaybackHooks {
   /** the state changed: playing, speed, row, seeking, the end */
   onState(): void;
   onError(e: unknown): void;
+  /** a frame has been drawn and is the one to show (when the renderer shows its own canvas, present() goes here) */
+  onShown?(): void;
   /** the game parted from the replay and the other settings are being tried (text), or that is over (null) */
   onRetry?(text: string | null): void;
 }
@@ -44,6 +46,7 @@ export class GxPlayback {
   stepForward(): void {
     this.pause();
     this.session.step(true);
+    this.hooks.onShown?.();
     this.hooks.onState();
   }
 
@@ -73,6 +76,7 @@ export class GxPlayback {
         }
         if (s.seekStep(this.seeking)) {
           this.seeking = null;
+          this.hooks.onShown?.();
           const done = this.seekDone; this.seekDone = [];
           this.hooks.onState();
           done.forEach((f) => f());
@@ -93,6 +97,7 @@ export class GxPlayback {
         n--;
         if (this.clock() - t0 > 14 && n > 0) { this.acc += n; break; }
       }
+      this.hooks.onShown?.();
       this.hooks.onState();
       if (s.wantsRetry) this.retry();
     } catch (e) {

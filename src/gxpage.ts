@@ -29,6 +29,7 @@ let lastLogged = "";
 const info = (s: string) => { $("info").textContent = s; const first = s.split(String.fromCharCode(10))[0]; if (first.startsWith("step ")) return; if (first !== lastLogged) { lastLogged = first; console.log("gx: " + first); } };
 
 let playback: GxPlayback | null = null;
+let glBackend: { present(): void } | null = null;
 let session: GxSession | null = null;
 let filesFrom: GameFilesFrom | null = q.get("files") ? { kind: "url", base: new URL(q.get("files")!, location.href).href } : null;
 const coreUrl = new URL(q.get("core") ?? "gx/gx-core.js", location.href).href;
@@ -44,10 +45,13 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
   if (q.get("backend") !== "cpu") {
     try {
       const { GxGl } = await import("./render3d/gxr/gl");
-      const gl = document.createElement("canvas").getContext("webgl2");
+      const gl = screen.glFlat.getContext("webgl2", { preserveDrawingBuffer: true });
       if (gl) {
         const b = new GxGl(gl, {}, { workers: Math.max(0, Number(q.get("workers") ?? Math.min(3, Math.max(0, (navigator.hardwareConcurrency || 4) - 2)))) });
         await b.prepare();
+        await b.warm();
+        glBackend = b;
+        screen.setGlMode(true);
         const dbg = gl.getExtension("WEBGL_debug_renderer_info");
         console.log("gx: GL renderer " + (dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "unknown"));
         post({ type: "renderer", renderer: "gx-gl", reason: null });
@@ -81,9 +85,12 @@ async function loadReplay(url: string, frame: number) {
     factory, coreOptions: { locateFile: (p: string) => new URL(p, coreUrl).href }, files: gameFiles, tape,
     makeBackend,
   });
-  await session.start();
+  session.setPictures(true);
+  await session.warmup();
+  session.setPictures(screen.needsPixels);
   playback = new GxPlayback(session, {
     onPicture: (rgba) => screen.show(rgba),
+    onShown: () => { if (glBackend && !screen.needsPixels) glBackend.present(); },
     onState: update,
     onError: fail,
     onRetry: (text) => { retryText = text; update(); },
@@ -93,6 +100,13 @@ async function loadReplay(url: string, frame: number) {
   (window as unknown as { __gx: object }).__gx = { session, playback };
   await playback.seek(Math.max(0, frame - FIRST_FRAME));
   if (q.get("bench")) void bench(session);
+  if (q.get("harness")) {
+    const names = q.get("harness")!.split(",");
+    const { runHarness } = await import("./render3d/gxpath/harness");
+    const msg = await runHarness(session, names, (w) => replayUrl !== null && w.startsWith(replayUrl.split("/").pop()!.replace(/\.slp$/, "") + "-"));
+    await fetch("/done", { method: "POST", body: "ok " + msg });
+    return;
+  }
   if (q.get("paused") !== "1" && frame === FIRST_FRAME) playback.play();
   pads.set(padShow, you);
   update();
@@ -130,7 +144,7 @@ function fail(e: unknown) {
 const label = (v: string) => v.charAt(0).toUpperCase() + v.slice(1);
 const showButtons = () => { $("crt").textContent = `TV: ${label(crtPreset)}`; $("pads").textContent = `Controllers: ${label(padShow)}`; };
 showButtons();
-$("crt").onclick = () => { crtPreset = CRT_PRESETS[(CRT_PRESETS.indexOf(crtPreset) + 1) % CRT_PRESETS.length]; screen.setCrt(crtPreset, crtPreset === "off" ? 0 : undefined); showButtons(); };
+$("crt").onclick = () => { crtPreset = CRT_PRESETS[(CRT_PRESETS.indexOf(crtPreset) + 1) % CRT_PRESETS.length]; screen.setCrt(crtPreset, crtPreset === "off" ? 0 : undefined); session?.setPictures(screen.needsPixels); showButtons(); };
 const PAD_CHOICES: OverlayShow[] = ["off", "both", "left", "right"];
 $("pads").onclick = () => { padShow = PAD_CHOICES[(PAD_CHOICES.indexOf(padShow) + 1) % PAD_CHOICES.length]; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); };
 $("play").onclick = () => playback?.toggle();
@@ -163,7 +177,7 @@ window.addEventListener("message", (e) => {
     case "pause": playback?.pause(); break;
     case "toggle": playback?.toggle(); break;
     case "crt":
-      if (isCrtPreset(m.crt)) { crtPreset = m.crt; const c = Number(m.curve); screen.setCrt(crtPreset, Number.isFinite(c) ? Math.min(CURVE_MAX, Math.max(0, c)) : undefined); showButtons(); }
+      if (isCrtPreset(m.crt)) { crtPreset = m.crt; const c = Number(m.curve); screen.setCrt(crtPreset, Number.isFinite(c) ? Math.min(CURVE_MAX, Math.max(0, c)) : undefined); session?.setPictures(screen.needsPixels); showButtons(); }
       break;
     case "controllers":
       if (isOverlayShow(m.show)) { padShow = m.show; const n = Number(m.you); you = Number.isInteger(n) && n >= 1 && n <= 4 ? n - 1 : null; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); }
@@ -182,13 +196,15 @@ else info("waiting for a replay: replayUrl=<url> or a {type: \"load\"} message")
 /** ?bench=1 (a measuring run, for the checks): every row of the replay stepped and drawn as fast as the page can, the per-row times posted to /bench */
 async function bench(s: GxSession) {
   const total: number[] = [], render: number[] = [], step: number[] = [];
+  s.setPictures(false);
   await s.start();
   const t0 = performance.now();
   while (s.index < s.frameCount) {
     const t = performance.now();
-    while (performance.now() - t < 12 && s.index < s.frameCount) {
+    while (performance.now() - t < 1 && s.index < s.frameCount) {
       const a = performance.now();
       s.step(true);
+      if (glBackend) glBackend.present();
       total.push(performance.now() - a);
       step.push(s.times.step);
       render.push(s.times.render);
