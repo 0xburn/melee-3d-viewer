@@ -63,7 +63,7 @@ const server = Deno.serve({ port: 0, hostname: "127.0.0.1", onListen: () => {} }
 });
 const port = (server.addr as Deno.NetAddr).port;
 const chrome = new Deno.Command(CHROME, {
-  args: [...(kv.find((a) => a.startsWith("angle=")) ? ["--use-angle=" + kv.find((a) => a.startsWith("angle="))!.slice(6)] : []), "--headless=new", ...(kv.includes("profile=1") ? ["--remote-debugging-port=9333"] : []), "--enable-unsafe-swiftshader", "--user-data-dir=" + ROOT + "/chrome-profile", "--disable-gpu-sandbox", "--no-first-run", "--disable-background-timer-throttling",
+  args: [...(kv.find((a) => a.startsWith("flags="))?.slice(6).split(",").map((x) => "--" + x) ?? []), ...(kv.find((a) => a.startsWith("angle=")) ? ["--use-angle=" + kv.find((a) => a.startsWith("angle="))!.slice(6)] : []), "--headless=new", ...(kv.includes("profile=1") ? ["--remote-debugging-port=9333"] : []), "--enable-unsafe-swiftshader", "--user-data-dir=" + ROOT + "/chrome-profile", "--disable-gpu-sandbox", "--no-first-run", "--disable-background-timer-throttling",
     "--disable-renderer-backgrounding", `http://127.0.0.1:${port}/?${kv.join("&")}`],
   stdout: "null", stderr: "null",
 }).spawn();

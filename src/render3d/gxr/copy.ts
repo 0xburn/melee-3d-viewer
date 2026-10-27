@@ -21,7 +21,7 @@ export function copyParams(bp: Uint32Array): CopyParams {
 }
 
 /** names of the encodings */
-export type CopyFormat = "I4" | "I8" | "IA4" | "IA8" | "RGB565" | "RGB5A3" | "RGBA8" | "R4" | "RA4" | "RA8" | "A8" | "R8" | "G8" | "B8" | "RG8" | "GB8" | "none";
+export type CopyFormat = "Z16" | "Z16L" | "I4" | "I8" | "IA4" | "IA8" | "RGB565" | "RGB5A3" | "RGBA8" | "R4" | "RA4" | "RA8" | "A8" | "R8" | "G8" | "B8" | "RG8" | "GB8" | "none";
 
 export function copyFormat(tp: number, intensity: boolean): CopyFormat {
   const cf = (tp >> 1) + ((tp & 1) * 8);
@@ -38,7 +38,26 @@ export function copyFormat(tp: number, intensity: boolean): CopyFormat {
   }
 }
 
+/** the encoding of a copy: with the depth pixel format (3) the codes are the Z formats (12.4), whose texels are the depth's bytes (z2, z1, z0) in
+ *  the place of (r, g, b) with alpha 255. Z4, Z8, Z8M, Z8L and Z24X8 use the layouts of R4, R8, G8, B8 and RGBA8 (Z24X8's half-size order swaps its
+ *  last bytes: see the encoder), Z16 and Z16L write two bytes in the order the spec gives for the size. No intensity bit matters. */
+export function copyFormatFor(p: { tp: number; intensity: boolean; pixFmt: number }): CopyFormat {
+  if (p.pixFmt !== 3) return copyFormat(p.tp, p.intensity);
+  const cf = (p.tp >> 1) + ((p.tp & 1) * 8);
+  switch (cf) {
+    case 0: return "R4";
+    case 1: return "R8";
+    case 3: case 11: return "Z16";
+    case 6: return "RGBA8";
+    case 9: return "G8";
+    case 10: return "B8";
+    case 12: return "Z16L";
+    default: return "none";
+  }
+}
+
 const BLOCK: Record<string, [number, number, number]> = {
+  Z16: [2, 2, 32], Z16L: [2, 2, 32],
   I4: [3, 3, 32], I8: [3, 2, 32], IA4: [3, 2, 32], IA8: [2, 2, 32], RGB565: [2, 2, 32], RGB5A3: [2, 2, 32], RGBA8: [2, 2, 64],
   R4: [3, 3, 32], RA4: [3, 2, 32], RA8: [2, 2, 32], A8: [3, 2, 32], R8: [3, 2, 32], G8: [3, 2, 32], B8: [3, 2, 32], RG8: [2, 2, 32], GB8: [2, 2, 32],
 };
@@ -47,6 +66,7 @@ const BLOCK: Record<string, [number, number, number]> = {
 function texelAt(efb: Efb, p: number, half: boolean, fmt: number, out: number[]): void {
   const get = (i: number, o: number[]): void => {
     if (i < 0 || i >= EFB_W * EFB_H) { o[0] = o[1] = o[2] = 0; o[3] = 0; return; }
+    if (fmt === 3) { const z = efb.depth[i]; o[0] = (z >> 16) & 255; o[1] = (z >> 8) & 255; o[2] = z & 255; o[3] = 255; return; }
     readColor(efb.color[i], fmt, o);
   };
   if (!half) { get(p, out); return; }
@@ -57,7 +77,7 @@ function texelAt(efb: Efb, p: number, half: boolean, fmt: number, out: number[])
 
 /** encode the copy into `mem` (main memory bytes); returns [start, length] ranges written */
 export function encodeCopy(efb: Efb, p: CopyParams, mem: Uint8Array): void {
-  const fmt = copyFormat(p.tp, p.intensity);
+  const fmt = copyFormatFor(p);
   if (fmt === "none") return;
   const [kw, kh, bsize] = BLOCK[fmt];
   const k = p.half ? 2 : 1;
@@ -81,7 +101,8 @@ export function encodeCopy(efb: Efb, p: CopyParams, mem: Uint8Array): void {
         for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
           tex(i, j);
           const q = (j * 4 + i) * 2;
-          put(base + q, px[3]); put(base + q + 1, px[0]); put(base + 32 + q, px[1]); put(base + 32 + q + 1, px[2]);
+          const zh = p.pixFmt === 3 && p.half;
+          put(base + q, px[3]); put(base + q + 1, zh ? px[2] : px[0]); put(base + 32 + q, px[1]); put(base + 32 + q + 1, zh ? px[0] : px[2]);
         }
         continue;
       }
@@ -106,6 +127,8 @@ export function encodeCopy(efb: Efb, p: CopyParams, mem: Uint8Array): void {
               const v = 0x8000 | ((px[0] << 7) & 0x7c00) | ((px[1] << 2) & 0x03e0) | ((px[2] >> 3) & 0x001e);
               put(base + o++, v >> 8); put(base + o++, v); break;
             }
+            case "Z16": put(base + o++, p.half ? px[0] : px[1]); put(base + o++, p.half ? px[1] : px[0]); break;
+            case "Z16L": put(base + o++, p.half ? px[1] : px[2]); put(base + o++, p.half ? px[2] : px[1]); break;
             case "RA4": put(base + o++, 0xf0 | (px[0] >> 4)); break;
             case "RA8": put(base + o++, 255); put(base + o++, px[0]); break;
             case "A8": put(base + o++, 255); break;

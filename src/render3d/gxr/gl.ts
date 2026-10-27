@@ -8,24 +8,50 @@
  * a texture a queued triangle uses, a new TMEM. Everything else is queued across draws.
  */
 import { Memory } from "./dff";
-import { copyFormat, copyParams } from "./copy";
+import { copyFormatFor, copyParams } from "./copy";
 import { COPY_FS, CLEAR_FS, PICTURE_FS, PRESENT_FS } from "./glsl-copy";
-import { MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE } from "./glsl-pixel";
+import { expConstants, MEM_BYTES, MEM_PAL, MEM_PAL_SIZE, MEM_ROW, MEM_TMEM, pixelShader, STATE_WORDS, TILE, TILE_SHIFT } from "./glsl-pixel";
 import { compile, compileDone, Compiling, finishCompile, FULLSCREEN_VS, intTexture, IntTex, startCompile, uploadRows } from "./glutil";
 import { FrontCtx, Growable, HEADER_TEXELS, needsMainThread } from "./front";
 import { FrontPool } from "./frontpool";
 import { setLastZ } from "./setup";
-import type { GxBackend } from "./gpu";
+import { GxGpu, type GxBackend } from "./gpu";
+import type { GxInitial } from "./dff";
 import { bits, GxRegs } from "./state";
 import { formatInfo, levelOffset } from "./texunit";
 import { VertexData } from "./vertex";
 
 const EFB_W = 640, EFB_H = 528;
+const EXP_CONSTS = expConstants();
 const TILES_X = EFB_W / TILE, TILES_Y = EFB_H / TILE;
 const NO_PAL = 0xffffffff;
 const MEM_ROWS = MEM_BYTES / MEM_ROW;
 
 interface Fbo { fbo: WebGLFramebuffer; tex: IntTex }
+
+/** the optional pixel shader variants a draw's state needs: 1 the indirect texture unit (some TEV stage has indirect settings while indirect stages exist),
+ *  2 the exponential fog forms or the fog range adjustment. Only the registers decide, so a stream can be scanned for them ahead of time (`scanFeatures`). */
+export function drawFeatures(bp: Uint32Array): number {
+  let feat = 0;
+  const nStages = bits(bp[0], 10, 4) + 1;
+  if (bits(bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (bp[0x10 + si] !== 0) feat |= 1;
+  if (bits(bp[0xf1], 21, 3) > 2 || (bits(bp[0xf1], 21, 3) !== 0 && bits(bp[0xe8], 10, 1))) feat |= 2;
+  return feat;
+}
+
+/** the shader variants a whole stream needs (the union of `drawFeatures` over its draws): plays the stream without drawing anything */
+export function scanFeatures(init: GxInitial, mem1: Uint8Array | undefined, frames: { fifo: Uint8Array; updates: unknown[] }[]): number {
+  let feat = 0;
+  const be = {
+    drawing: true, fastForward: false,
+    draw(regs: GxRegs) { feat |= drawFeatures(regs.bp); },
+    copy() { return { toXfb: false, rect: [], clear: false }; },
+    copyClear() {},
+  };
+  const gpu = new GxGpu(be as unknown as GxBackend, init, mem1);
+  for (const fr of frames) gpu.runFrame(fr as never);
+  return feat;
+}
 
 export class GxGl implements GxBackend {
   /** draws are skipped while this is false (the spec's reference draws nothing in the first frame of a recording; a viewer leaves it on) */
@@ -35,6 +61,7 @@ export class GxGl implements GxBackend {
   onPicture: ((rgba: Uint8Array, frame: number) => void) | null = null;
   pictures = 0;
   tris = 0;
+  draws = 0;
   /** called after a pass has been drawn (tests compare the EFB there) */
   onFlush: (() => void) | null = null;
   passes = 0;
@@ -63,8 +90,6 @@ export class GxGl implements GxBackend {
   private setNo = 0;
   private statesTex: IntTex;
   private q = new Growable();
-  private bb: number[] = [];
-  private triOffsets: number[] = [];
   private states = new Growable();
   private stateCount = 0;
   private stateUploaded = 0;
@@ -91,7 +116,7 @@ export class GxGl implements GxBackend {
   private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
 
   /** options of the pixel shader (test aids) */
-  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number] } = {}, front: { workers?: number; factory?: () => Worker } = {}) {
+  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number]; mutate?: (source: string) => string } = {}, front: { workers?: number; factory?: () => Worker } = {}) {
     this.gl = gl;
     // the front half on worker threads (a page that is cross-origin isolated); otherwise it runs on this thread, with the same result
     if ((front.workers ?? 0) > 0 && FrontPool.available()) {
@@ -114,9 +139,9 @@ export class GxGl implements GxBackend {
     gl.bindFramebuffer(gl.FRAMEBUFFER, pf);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, pt, 0);
     this.pictureFbo = { fbo: pf, tex: pt };
-    for (let i = 0; i < 4; i++) this.sets.push({ data: intTexture(gl, "RGBA32UI", 1024, 64), list: intTexture(gl, "R32UI", 4096, 64), tiles: intTexture(gl, "RG32UI", 1024, 2) });
+    for (let i = 0; i < 4; i++) this.sets.push({ data: intTexture(gl, "RGBA32UI", 1024, 64), list: intTexture(gl, "R32UI", 4096, 64), tiles: intTexture(gl, "RG32UI", 1024, Math.ceil(TILES_X * TILES_Y / 1024)) });
     this.statesTex = intTexture(gl, "R32UI", 4096, 64);
-    this.timer = { ext: null, pending: [], ms: {} };
+    this.timer = { ext: gl.getExtension("EXT_disjoint_timer_query_webgl2"), pending: [], ms: {} };
   }
 
   private syncPixel = new Uint32Array(4);
@@ -125,16 +150,35 @@ export class GxGl implements GxBackend {
     const gl = this.gl;
     gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.UNSIGNED_INT, this.syncPixel);
   }
-  private timeBegin(): number { if (!this.timing) return 0; this.sync(); return performance.now(); }
+  private timeBegin(): number {
+    if (!this.timing) return 0;
+    const t = this.timer!;
+    if (t.ext) { const q = this.gl.createQuery()!; this.gl.beginQuery(t.ext.TIME_ELAPSED_EXT, q); (t as { cur?: WebGLQuery }).cur = q; return 0; }
+    this.sync();
+    return performance.now();
+  }
   private timeEnd(t0: number, what: string): void {
     if (!this.timing || !this.timer) return;
+    const t = this.timer as { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number>; cur?: WebGLQuery };
+    if (t.ext) { this.gl.endQuery(t.ext.TIME_ELAPSED_EXT); t.pending.push({ q: t.cur!, what }); return; }
     this.sync();
-    this.timer.ms[what] = (this.timer.ms[what] ?? 0) + performance.now() - t0;
+    t.ms[what] = (t.ms[what] ?? 0) + performance.now() - t0;
   }
-  /** wall-clock ms of the passes by kind since the last call (only with `timing`: every pass waits for the GPU) */
+  /** ms of the passes by kind since the last call. With `timing` on: the GPU's own time per pass (timer queries) where the browser offers them, otherwise the wall-clock time with a wait after each pass */
   collectTimes(): Record<string, number> {
     const t = this.timer;
     if (!t) return {};
+    const gl = this.gl;
+    if (t.ext) {
+      // wait for the queries to finish
+      gl.finish();
+      for (const p of t.pending) {
+        for (let i = 0; i < 1000 && !gl.getQueryParameter(p.q, gl.QUERY_RESULT_AVAILABLE); i++) { /* spin */ }
+        t.ms[p.what] = (t.ms[p.what] ?? 0) + Number(gl.getQueryParameter(p.q, gl.QUERY_RESULT)) / 1e6;
+        gl.deleteQuery(p.q);
+      }
+      t.pending = [];
+    }
     const out = t.ms;
     t.ms = {};
     return out;
@@ -146,7 +190,7 @@ export class GxGl implements GxBackend {
     if (this.attached) { this.attached.onTouch = null; this.attached.beforeWrite = null; }
     this.attached = null;
     this.drainFront();
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.dirty = [];
+    this.q.n = 0; this.used.clear(); this.dirty = [];
     this.palMap.clear(); this.palNext = 0;
     this.resetStates();
     this.tmemVersion = -1;
@@ -175,12 +219,31 @@ export class GxGl implements GxBackend {
     }
   }
 
+  /** compile the optional pixel shader variants one after another in the background (the browser compiles on its own threads where it can), so that a draw
+   *  that needs one finds it ready. Resolves when all are done; nothing waits for it. Call after `prepare()`. */
+  async warm(features = 3): Promise<void> {
+    for (const f of [2, 1, 3]) {
+      if ((features & f) !== f || this.progs.has("pixel" + f)) continue;
+      if (!this.pending.has("pixel" + f)) this.pending.set("pixel" + f, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ ...this.shaderOptions, indirect: (f & 1) !== 0, fogExtra: (f & 2) !== 0 })));
+      const c = this.pending.get("pixel" + f)!;
+      while (!compileDone(this.gl, c)) await new Promise((r) => setTimeout(r, 50));
+      if (this.pending.has("pixel" + f)) this.program("pixel" + f);
+    }
+  }
+
+  /** counters of the draws that had to wait for a shader to compile (it should stay zero when `prepare` or `warm` ran early enough) */
+  compileWaits = { count: 0, ms: 0 };
+
   /** the pixel program for a set of features (compiled when first needed) */
   private pixelProgram(features: number): WebGLProgram {
     if (features === 0) return this.progPixel;
     const key = "pixel" + features;
-    if (!this.progs.has(key) && !this.pending.has(key)) this.pending.set(key, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ ...this.shaderOptions, indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })));
-    return this.program(key);
+    if (this.progs.has(key)) return this.progs.get(key)!;
+    if (!this.pending.has(key)) this.pending.set(key, startCompile(this.gl, FULLSCREEN_VS, pixelShader({ ...this.shaderOptions, indirect: (features & 1) !== 0, fogExtra: (features & 2) !== 0 })));
+    const t0 = performance.now();
+    const p = this.program(key);
+    this.compileWaits.count++; this.compileWaits.ms += performance.now() - t0;
+    return p;
   }
 
   private fboOf(t: IntTex): WebGLFramebuffer {
@@ -207,6 +270,9 @@ export class GxGl implements GxBackend {
 
   // -------------------------------------------------------------------------------------------------------------------
   // memory
+
+  /** upload main memory and TMEM to the GPU now, rather than at the first draw (which then would take a frame's time for it): call it once the memory holds the game's first state, off the frame loop */
+  prepareMemory(mem: Memory, regs: GxRegs): void { this.attach(mem, regs); }
 
   private attach(mem: Memory, regs: GxRegs): void {
     if (this.attached === mem) return;
@@ -362,10 +428,7 @@ export class GxGl implements GxBackend {
       this.states.n = this.stateCount * STATE_WORDS;
       if (cands) cands.push(found); else this.stateIndex.set(h, [found]);
       this.stateRanges[found] = this.textureRanges(regs, nStages);
-      let feat = 0;
-      if (bits(regs.bp[0], 16, 3) > 0) for (let si = 0; si < nStages; si++) if (regs.bp[0x10 + si] !== 0) feat |= 1;
-      if (bits(regs.bp[0xf1], 21, 3) > 2 || (bits(regs.bp[0xf1], 21, 3) !== 0 && bits(regs.bp[0xe8], 10, 1))) feat |= 2;
-      this.stateFeatures[found] = feat;
+      this.stateFeatures[found] = drawFeatures(regs.bp);
     }
     this.lastStateVersion = [regs.bpVersion, regs.xfVersion, tv];
     this.lastState = found;
@@ -377,6 +440,7 @@ export class GxGl implements GxBackend {
 
   draw(regs: GxRegs, mem: Memory, vd: VertexData, tris: number[], lines: number[], points: number[], prims: { type: number; base: number; count: number }[]): void {
     if (!this.drawing || this.fastForward) return;
+    this.draws++;
     const t0 = this.measure ? performance.now() : 0;
     this.attach(mem, regs);
     if (regs.tmemVersion !== this.tmemVersion) { this.flush(); this.uploadTmem(regs); }
@@ -390,19 +454,8 @@ export class GxGl implements GxBackend {
       this.drainFront();
       const q = this.q, o0 = q.n;
       this.ctx.run(regs, vd, prims, st, q);
-      this.registerTris(o0, q.n);
     }
     if (this.measure) this.stats.cpuMs += performance.now() - t0;
-  }
-
-  /** the triangles the queue holds from word o0 to o1: their places in the bins */
-  private registerTris(o0: number, o1: number): void {
-    const I = this.q.ints, U = this.q.words;
-    for (let o = o0; o < o1; o += (HEADER_TEXELS + U[o + 18]) * 4) {
-      this.triOffsets.push(o);
-      this.bb.push(Math.max(0, I[o]), Math.max(0, I[o + 2]), Math.min(EFB_W - 1, I[o + 1]), Math.min(EFB_H - 1, I[o + 3]));
-      this.tris++;
-    }
   }
 
   /** the draws on the worker threads, taken into the queue in draw order */
@@ -415,13 +468,12 @@ export class GxGl implements GxBackend {
       const o0 = q.n;
       q.words.set(words, o0);
       q.n += words.length;
-      this.registerTris(o0, q.n);
     });
     if (fp.zFresh) { fp.zFresh = false; setLastZ(fp.zPlane!); }
   }
 
   /** the worker pool's counters (null without one) */
-  get poolStats(): { mainJobs: number; jobs: number; waitMs: number; mergeMs: number } | null { return this.fp ? this.fp.stats : null; }
+  get poolStats(): { mainJobs: number; jobs: number; waitMs: number; mergeMs: number; workerJobs: number; workersStarted: number } | null { return this.fp ? { ...this.fp.stats, workerJobs: this.fp.workerJobs, workersStarted: this.fp.workersStarted } : null; }
 
   /** stop the worker threads (the backend draws on this thread from then on) */
   dispose(): void { this.drainFront(); this.fp?.dispose(); this.fp = null; }
@@ -440,12 +492,12 @@ export class GxGl implements GxBackend {
 
   flush(): void {
     this.drainFront();
-    const nt = this.triOffsets.length;
+    const qn = this.q.n;
     // memory writes that have landed go to the GPU now, before anything that writes memory there (a copy) or reads it
     const tu = this.measure ? performance.now() : 0;
     if (this.attached) this.uploadDirty(this.attached);
     if (this.measure) this.stats.uploadMs += performance.now() - tu;
-    if (nt === 0) { this.used.clear(); return; }
+    if (qn === 0) { this.used.clear(); return; }
     const t0 = this.measure ? performance.now() : 0;
     const gl = this.gl;
     // bins: every triangle goes into the tiles its blocks can reach and where its three edge tests can pass for some pixel. The edge test
@@ -454,14 +506,15 @@ export class GxGl implements GxBackend {
     // arithmetic of the shader are binned by their bounds only.
     const nTiles = TILES_X * TILES_Y;
     const counts = new Uint32Array(nTiles + 1);
-    const bb = this.bb;
-    const I = this.q.ints;
+    const I = this.q.ints, U = this.q.words;
     let ent = this.entTile;
     let entTri = this.entTri;
     let ne = 0;
-    for (let i = 0; i < nt; i++) {
-      const o = this.triOffsets[i];
-      const tx0 = bb[i * 4] >> 4, ty0 = bb[i * 4 + 1] >> 4, tx1 = bb[i * 4 + 2] >> 4, ty1 = bb[i * 4 + 3] >> 4;
+    // the triangles follow each other in the queue: a header, then its planes
+    for (let o = 0; o < qn; o += (HEADER_TEXELS + U[o + 18]) * 4) {
+      this.tris++;
+      const minx = I[o], maxx = I[o + 1], miny = I[o + 2], maxy = I[o + 3];
+      const tx0 = Math.max(0, minx) >> TILE_SHIFT, ty0 = Math.max(0, miny) >> TILE_SHIFT, tx1 = Math.min(EFB_W - 1, maxx) >> TILE_SHIFT, ty1 = Math.min(EFB_H - 1, maxy) >> TILE_SHIFT;
       const dx12 = I[o + 4], dy12 = I[o + 5], dx23 = I[o + 6], dy23 = I[o + 7], dx31 = I[o + 8], dy31 = I[o + 9], c1 = I[o + 10], c2 = I[o + 11], c3 = I[o + 12];
       const safe = Math.abs(dx12) < 16384 && Math.abs(dy12) < 16384 && Math.abs(dx23) < 16384 && Math.abs(dy23) < 16384 && Math.abs(dx31) < 16384 &&
         Math.abs(dy31) < 16384 && Math.abs(c1) < 1073741824 && Math.abs(c2) < 1073741824 && Math.abs(c3) < 1073741824;
@@ -472,17 +525,27 @@ export class GxGl implements GxBackend {
         ent = this.entTile = e2; entTri = this.entTri = t2;
       }
       for (let ty = ty0; ty <= ty1; ty++) {
-        const y0 = ty << 4, y1 = y0 + 15;
         for (let tx = tx0; tx <= tx1; tx++) {
-          if (safe) {
-            const x0 = tx << 4, x1 = x0 + 15;
-            if (c1 + 16 * (dx12 > 0 ? dx12 * y1 : dx12 * y0) - 16 * (dy12 > 0 ? dy12 * x0 : dy12 * x1) <= 0) continue;
-            if (c2 + 16 * (dx23 > 0 ? dx23 * y1 : dx23 * y0) - 16 * (dy23 > 0 ? dy23 * x0 : dy23 * x1) <= 0) continue;
-            if (c3 + 16 * (dx31 > 0 ? dx31 * y1 : dx31 * y0) - 16 * (dy31 > 0 ? dy31 * x0 : dy31 * x1) <= 0) continue;
+          // which 8 x 8 quarters of the tile the triangle can reach: inside its bounds, and where each edge test passes at the quarter's best corner
+          let mask = 0;
+          for (let sy = 0; sy < 2; sy++) {
+            const y0 = (ty << TILE_SHIFT) + (sy << 3), y1 = y0 + 7;
+            if (y1 < miny || y0 > maxy) continue;
+            for (let sx = 0; sx < 2; sx++) {
+              const x0 = (tx << TILE_SHIFT) + (sx << 3), x1 = x0 + 7;
+              if (x1 < minx || x0 > maxx) continue;
+              if (safe) {
+                if (c1 + 16 * (dx12 > 0 ? dx12 * y1 : dx12 * y0) - 16 * (dy12 > 0 ? dy12 * x0 : dy12 * x1) <= 0) continue;
+                if (c2 + 16 * (dx23 > 0 ? dx23 * y1 : dx23 * y0) - 16 * (dy23 > 0 ? dy23 * x0 : dy23 * x1) <= 0) continue;
+                if (c3 + 16 * (dx31 > 0 ? dx31 * y1 : dx31 * y0) - 16 * (dy31 > 0 ? dy31 * x0 : dy31 * x1) <= 0) continue;
+              }
+              mask |= 1 << (sy * 2 + sx);
+            }
           }
+          if (mask === 0) continue;
           const t = ty * TILES_X + tx;
           counts[t]++;
-          ent[ne] = t; entTri[ne] = o >> 2; ne++;
+          ent[ne] = t; entTri[ne] = (o >> 2) | (mask << 24); ne++;
         }
       }
     }
@@ -493,7 +556,8 @@ export class GxGl implements GxBackend {
     const list = new Uint32Array(Math.max(1, Math.ceil(total / 4096)) * 4096);
     const fill = new Uint32Array(nTiles);
     for (let e = 0; e < ne; e++) { const t = ent[e]; list[start[t] + fill[t]++] = entTri[e]; }
-    const tiles = new Uint32Array(1024 * 2 * 2);
+    const tileRows = Math.ceil(nTiles / 1024);
+    const tiles = new Uint32Array(1024 * tileRows * 2);
     for (let t = 0; t < TILES_X * TILES_Y; t++) { tiles[t * 2] = start[t]; tiles[t * 2 + 1] = counts[t]; }
     // uploads
     const set = this.sets[this.setNo++ % this.sets.length];
@@ -502,7 +566,7 @@ export class GxGl implements GxBackend {
     uploadRows(gl, set.data, 0, 0, 1024, dataRows, this.q.words.subarray(0, dataRows * 4096));
     set.list = this.grow(set.list, list.length, 4096);
     uploadRows(gl, set.list, 0, 0, 4096, list.length / 4096, list);
-    uploadRows(gl, set.tiles, 0, 0, 1024, 2, tiles);
+    uploadRows(gl, set.tiles, 0, 0, 1024, tileRows, tiles);
     const st0 = this.statesTex;
     this.statesTex = this.grow(this.statesTex, this.states.n, 4096);
     if (this.statesTex !== st0) this.stateUploaded = 0;
@@ -527,12 +591,13 @@ export class GxGl implements GxBackend {
     this.bindTex(p, 5, "uEfb", src.tex);
     gl.uniform1i(this.u(p, "uTilesX"), TILES_X);
     gl.uniform4i(this.u(p, "uK"), 4, 25, 3, 2);
+    if (this.needFeatures & 2) gl.uniform4uiv(this.u(p, "uExpC"), EXP_CONSTS);
     const tq = this.timeBegin();
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     this.timeEnd(tq, "pixel");
     this.cur = 1 - this.cur;
     this.passes++;
-    this.q.n = 0; this.bb = []; this.triOffsets = []; this.used.clear(); this.needFeatures = 0;
+    this.q.n = 0; this.used.clear(); this.needFeatures = 0;
     if (this.measure) this.stats.flushMs += performance.now() - t0;
     this.onFlush?.();
   }
@@ -550,12 +615,12 @@ export class GxGl implements GxBackend {
       if (this.onPicture) this.onPicture(this.readPicture(p.pixFmt), this.pictures);
       this.pictures++;
     } else {
-      const fmt = copyFormat(p.tp, p.intensity);
-      const ID: Record<string, number> = { I4: 0, I8: 1, IA4: 2, IA8: 3, RGB565: 4, RGB5A3: 5, RGBA8: 6, R4: 7, RA4: 8, RA8: 9, A8: 10, R8: 11, G8: 12, B8: 13, RG8: 14, GB8: 15 };
+      const fmt = copyFormatFor(p);
+      const ID: Record<string, number> = { I4: 0, I8: 1, IA4: 2, IA8: 3, RGB565: 4, RGB5A3: 5, RGBA8: 6, R4: 7, Z16: 16, Z16L: 17, RA4: 8, RA8: 9, A8: 10, R8: 11, G8: 12, B8: 13, RG8: 14, GB8: 15 };
       if (fmt !== "none") {
         const BL: Record<string, [number, number, number]> = {
           I4: [3, 3, 32], I8: [3, 2, 32], IA4: [3, 2, 32], IA8: [2, 2, 32], RGB565: [2, 2, 32], RGB5A3: [2, 2, 32], RGBA8: [2, 2, 64],
-          R4: [3, 3, 32], RA4: [3, 2, 32], RA8: [2, 2, 32], A8: [3, 2, 32], R8: [3, 2, 32], G8: [3, 2, 32], B8: [3, 2, 32], RG8: [2, 2, 32], GB8: [2, 2, 32],
+          R4: [3, 3, 32], Z16: [2, 2, 32], Z16L: [2, 2, 32], RA4: [3, 2, 32], RA8: [2, 2, 32], A8: [3, 2, 32], R8: [3, 2, 32], G8: [3, 2, 32], B8: [3, 2, 32], RG8: [2, 2, 32], GB8: [2, 2, 32],
         };
         const [kw, kh, bytes] = BL[fmt];
         const sh = p.half ? 1 : 0;

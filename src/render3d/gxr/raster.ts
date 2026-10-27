@@ -121,6 +121,8 @@ export function indirectOffsets(bp: Uint32Array, ind: number, tx: number[], S: n
       const exp = bits(A, 22, 2) | (bits(B, 22, 2) << 2) | (bits(C, 22, 2) << 4);
       const shift = 17 - exp;
       const type = mid & 12;
+      // matrix type 12 is not defined: the stage's coordinate stays what the previous stage left (spec 10.5)
+      if (type === 12) return [prevS, prevT, bump];
       if (type === 0) { o0 = (ma * v[0] + mc * v[1] + me * v[2]) >> 3; o1 = (mb * v[0] + md * v[1] + mf * v[2]) >> 3; }
       else if (type === 4) { o0 = Math.trunc((S * v[0]) / 256); o1 = Math.trunc((T * v[0]) / 256); }
       else if (type === 8) { o0 = Math.trunc((S * v[1]) / 256); o1 = Math.trunc((T * v[1]) / 256); }
@@ -133,6 +135,9 @@ export function indirectOffsets(bp: Uint32Array, ind: number, tx: number[], S: n
   }
 
 /** prepared state of a draw for the CPU pixel stage */
+/** counters for profiling scenes (not part of the rules): pixels that pass the coverage test, and how many of them fail the depth test */
+export const RSTAT = { covered: 0, zFail: 0, zOff: 0, textured: 0 };
+
 export class DrawPixels {
   readonly bp: Uint32Array;
   readonly st: PixState;
@@ -269,6 +274,8 @@ export class DrawPixels {
           let z = trunc32(zf > 16777215 ? 16777215 : zf < 0 ? 0 : zf);
           z &= 0xffffff;
           const stored = efb.depth[pi];
+          RSTAT.covered++;
+          if (!zEnable) RSTAT.zOff++; else if (!cmpOp(zFunc, z, stored)) RSTAT.zFail++;
           if (zEarly) {
             if (!cmpOp(zFunc, z, stored) || !zEnable) continue;
             if (zUpdate) efb.depth[pi] = z;
@@ -442,6 +449,15 @@ function fogFloat(w: number): number {
   return fromBits(((sign << 31) | (exp << 23) | (man << 12)) >>> 0);
 }
 
+/** the exponential fog shapes (spec 11.3): 2^x is computed in double precision and rounded once to binary32 */
+export function fogShape(fsel: number, fog: number): number {
+  if (fsel === 4) return f(1 - f(Math.pow(2, f(-8 * fog))));
+  if (fsel === 5) return f(1 - f(Math.pow(2, f(f(-8 * fog) * fog))));
+  if (fsel === 6) { const g = f(1 - fog); return f(Math.pow(2, f(-8 * g))); }
+  if (fsel === 7) { const g = f(1 - fog); return f(Math.pow(2, f(f(-8 * g) * g))); }
+  return fog;
+}
+
 export function fogPixel(bp: Uint32Array, fsel: number, z: number, c: number[], x: number, wd: number): void {
   const A = fogFloat(bp[0xee]), C = fogFloat(bp[0xf1] & 0xfffff);
   const Bm = bp[0xef], Bs = bp[0xf0] & 31;
@@ -465,10 +481,7 @@ export function fogPixel(bp: Uint32Array, fsel: number, z: number, c: number[], 
   ze = f(ze - C);
   let fog = ze < 0 ? 0 : ze > 1 ? 1 : ze;
   if (!(ze === ze)) fog = ze;
-  if (fsel === 4) fog = f(1 - f(Math.pow(2, f(-8 * fog))));
-  else if (fsel === 5) fog = f(1 - f(Math.pow(2, f(f(-8 * fog) * fog))));
-  else if (fsel === 6) { const g = f(1 - fog); fog = f(Math.pow(2, f(-8 * g))); }
-  else if (fsel === 7) { const g = f(1 - fog); fog = f(Math.pow(2, f(f(-8 * g) * g))); }
+  fog = fogShape(fsel, fog);
   const fi = trunc32(f(fog * 256));
   const fc = bp[0xf2];
   const fr = [(fc >> 16) & 255, (fc >> 8) & 255, fc & 255];

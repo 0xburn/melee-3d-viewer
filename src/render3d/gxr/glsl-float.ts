@@ -100,18 +100,22 @@ uint f_div(uint a, uint b) {
   int ea = int(aa >> 23), eb = int(ab >> 23);
   int e = ea - eb + 127;
   uint ma = (aa & 0x7fffffu) | 0x800000u, mb = (ab & 0x7fffffu) | 0x800000u;
-  uint r = ma;
-  bool less = r < mb;
-  r = less ? r << 1 : r;
+  // q = floor(r0 * 2^24 / mb) for r0 = ma, or twice ma when that is below mb (so r0 / mb is in [1, 2)): 25 bits, and the remainder says whether the quotient is exact.
+  // The GPU's own division gives the quotient to within a few units; the exact remainder, taken modulo 2^32 (it is far smaller than that), then corrects it.
+  bool less = ma < mb;
+  uint r0 = less ? ma << 1 : ma;
   e -= less ? 1 : 0;
-  uint q = 0u;
-  for (int i = 0; i < uK.y; i++) {
-    bool ge = r >= mb;
-    q = (q << 1) | (ge ? 1u : 0u);
-    r = ge ? r - mb : r;
-    r <<= 1;
+  int q = int(float(r0) / float(mb) * 16777216.0);
+  int imb = int(mb);
+  int rem = int((r0 << 24) - uint(q) * mb);
+  int dq = int(floor(float(rem) / float(mb)));
+  q += dq; rem -= dq * imb;
+  for (int i = 0; i < 2; i++) {
+    if (rem < 0) { q -= 1; rem += imb; }
+    else if (rem >= imb) { q += 1; rem -= imb; }
   }
-  uint res = f_pack(s, e, q >> 1, q & 1u, r != 0u ? 1u : 0u);
+  uint qu = uint(q);
+  uint res = f_pack(s, e, qu >> 1, qu & 1u, rem != 0 ? 1u : 0u);
   bool za = ea == 0, zb = eb == 0, ia = aa == F_INF, ib = ab == F_INF;
   bool nan = aa > F_INF || ab > F_INF || (ia && ib) || (za && zb);
   res = (ib || za) ? (s << 31) : res;

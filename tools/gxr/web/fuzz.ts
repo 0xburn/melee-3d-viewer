@@ -52,7 +52,7 @@ function buildScene(seed: number, o: Opts): { stream: Uint8Array; mem: Uint8Arra
     const wrapS = r.int(3), wrapT = r.int(3);
     const mag = r.int(2), min = r.pick([0, 1, 2, 4, 5, 6]), diag = r.int(2);
     const bias = r.chance(0.7) ? 0 : (r.int(40) - 20) & 255;
-    const minlod = r.chance(0.8) ? 0 : r.int(24), maxlod = r.chance(0.8) ? 255 : minlod + r.int(40);
+    const minlod = r.chance(0.8) ? 0 : r.int(24), maxlod = r.chance(0.25) ? minlod : r.chance(0.8) ? 255 : minlod + r.int(40);
     w.bp(0x80 + m, wrapS | (wrapT << 2) | (mag << 4) | (min << 5) | (diag << 8) | (bias << 9));
     w.bp(0x84 + m, minlod | (maxlod << 8));
     w.bp(0x88 + m, (W - 1) | ((H - 1) << 10) | (fmt << 20));

@@ -3,11 +3,11 @@ import nodeTest from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { basicScene, colorVertices, FifoWriter } from "../src/render3d/gxr/encode.ts";
-import { EFB_W, Efb, fogPixel, readColor } from "../src/render3d/gxr/raster.ts";
+import { EFB_W, Efb, fogPixel, fogShape, readColor } from "../src/render3d/gxr/raster.ts";
 import { copyParams, encodeCopy } from "../src/render3d/gxr/copy.ts";
 import { fetchTexel, sample, TexData } from "../src/render3d/gxr/texunit.ts";
 import { blend, tevRegular } from "../src/render3d/gxr/tev.ts";
-import { bitsOf, f, trunc32 } from "../src/render3d/gxr/f32.ts";
+import { bitsOf, f, fromBits, trunc32 } from "../src/render3d/gxr/f32.ts";
 import { hex, runStream, toHex } from "./gxr/scene.ts";
 
 // the spec's vector files: the folder is named by GX_SPEC_VECTORS (the tests skip without it)
@@ -66,10 +66,10 @@ test("tev color arithmetic", () => {
   }
 });
 
-// The alpha vectors do not follow the spec's alpha formula with the d they list (QUESTIONS.md, Q1): half of them differ.
-test("tev alpha arithmetic", { todo: "QUESTIONS.md Q1" }, () => {
+// The result alpha is what shows: the stored alpha (the clamp bit decides its range) saturated to 0..255 by the next stage's color combiner.
+test("tev alpha arithmetic", () => {
   for (const c of V("tev-alpha").cases) {
-    const r = tevRegular(true, c.a, c.b, c.c, c.d, BIAS[c.bias], c.op === "subtract" ? 1 : 0, SCALE[c.scale], c.clamp) & 255;
+    const r = Math.max(0, Math.min(255, tevRegular(true, c.a, c.b, c.c, c.d, BIAS[c.bias], c.op === "subtract" ? 1 : 0, SCALE[c.scale], c.clamp)));
     assert.equal(r, c.resultAlpha, JSON.stringify(c));
   }
 });
@@ -164,4 +164,16 @@ test("linear perspective fog", () => {
     fogPixel(bp, 2, c.depth24, px, 0, 320);
     assert.deepEqual(px.slice(0, 3), c.result, JSON.stringify(c));
   }
+});
+
+test("fog shapes (exponential forms)", () => {
+  const bad: string[] = [];
+  for (const c of V("fog-shapes").cases) {
+    const fog = fromBits(parseInt(c.fogBits, 16));
+    for (const [name, fsel] of [["exp", 4], ["exp2", 5], ["backwardExp", 6], ["backwardExp2", 7]] as [string, number][]) {
+      const got = fogShape(fsel, fog);
+      if (bitsOf(got) !== parseInt(c[name].bits, 16) || trunc32(f(got * 256)) !== c[name].level) bad.push(`${name} ${c.fogBits}`);
+    }
+  }
+  if (bad.length) throw new Error(bad.slice(0, 5).join("; "));
 });
