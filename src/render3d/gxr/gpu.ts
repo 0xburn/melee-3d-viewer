@@ -38,7 +38,7 @@ export class GxGpu {
   /** whether `timers` are kept (reading the clock per run costs about 1% of a frame) */
   measure = false;
   private cpVersion = 0;
-  private layouts = new Map<number, { v: number; l: VertexLayout }>();
+  private layouts = new Map<number, { v: number; l: VertexLayout; w0: number; w1: number; w2: number; w3: number; w4: number }>();
   private vd = new VertexData(null as never);
   private run: { vd: VertexData; tris: number[]; lines: number[]; points: number[]; prims: { type: number; base: number; count: number }[] } | null = null;
 
@@ -69,8 +69,12 @@ export class GxGpu {
   private layout(vat: number): VertexLayout {
     const c = this.layouts.get(vat);
     if (c && c.v === this.cpVersion) return c.l;
-    const l = vertexLayout(this.regs.cp, vat);
-    this.layouts.set(vat, { v: this.cpVersion, l });
+    const cp = this.regs.cp;
+    // the games write the vertex descriptor before every draw: a layout depends on five words only, and the same words give the same layout
+    const w0 = cp[0x50], w1 = cp[0x60], w2 = cp[0x70 + vat], w3 = cp[0x80 + vat], w4 = cp[0x90 + vat];
+    if (c && c.w0 === w0 && c.w1 === w1 && c.w2 === w2 && c.w3 === w3 && c.w4 === w4) { c.v = this.cpVersion; return c.l; }
+    const l = vertexLayout(cp, vat);
+    this.layouts.set(vat, { v: this.cpVersion, l, w0, w1, w2, w3, w4 });
     return l;
   }
 

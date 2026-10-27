@@ -25,7 +25,9 @@ export const MEM_ROW = 4096;
 import { HEADER_TEXELS } from "./front";
 export { HEADER_TEXELS };
 export const STATE_WORDS = 288;
-export const TILE = 16;
+/** the pixel tiles the triangle lists are binned in: 1 << TILE_SHIFT pixels on a side */
+export const TILE_SHIFT = 3;
+export const TILE = 1 << TILE_SHIFT;
 
 /** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5) and `fogExtra` the exponential fog forms and the range adjustment (11.3), compiled only for draws that use them */
 /** the correctly rounded 2^x for binary32 x in [-8, 0] (fog shaping), GLSL ES 3.00 */
@@ -109,8 +111,8 @@ uint f_exp2(uint x) {
 }
 `;
 
-export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean; debugRegs?: [number, number] } = {}): string {
-  return /* glsl */ `#version 300 es
+export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean; debugRegs?: [number, number]; mutate?: (source: string) => string } = {}): string {
+  const src = /* glsl */ `#version 300 es
 ${opts.indirect ? "#define INDIRECT 1" : ""}
 ${opts.fogExtra ? "#define FOG_EXTRA 1" : ""}
 ${opts.debugRegs ? `#define DEBUG_REGS 1
@@ -374,7 +376,7 @@ uint f_max(uint a, uint b) { return f_lt(a, b) ? b : a; }
 int log2fix(uint d) { return int(((d & 0x7f800000u) >> 19) + ((d & 0x007fffffu) >> 19)) - 2032; }
 
 // the texture stage's coordinates: the pixel's s and t of generator n (7 fractional bits) and the level of detail map mp gives (8.3, 8.4)
-void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
+void stageCoordsQuad(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
   int bx = x & ~1, by = y & ~1;
   uint sv[4], tv[4];
   for (int j = 0; j < uK.x; j++) genST(n, bx + (j & 1), by + (j >> 1), sv[j], tv[j]);
@@ -398,6 +400,21 @@ void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out in
   int me = (x & 1) + ((y & 1) << 1);
   S24 = (f_trunc(f_mul(sv[me], 0x43000000u)) << 8) >> 8;
   T24 = (f_trunc(f_mul(tv[me], 0x43000000u)) << 8) >> 8;
+}
+
+void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
+  // When the clamp range of the level of detail is one value and the magnification and minification filters agree on linear or not, neither the level of
+  // detail nor the filter depends on the differences across the block: the pixel's own coordinates are all there is to compute (the clamp of 8.4 gives
+  // that one value for every lod, and 'linear' is the same on both sides of lod 0).
+  int cmaxl = bfi(mp.mode1, 8, 8), cminl = bfi(mp.mode1, 0, 8);
+  bool magLin = bf(mp.mode0, 4, 1) == 1u, minLin = (bf(mp.mode0, 5, 3) & 4u) != 0u;
+  if (cmaxl == cminl && magLin == minLin) {
+    uint s0, t0;
+    genST(n, x, y, s0, t0);
+    lod = cminl; linear = magLin;
+    S24 = (f_trunc(f_mul(s0, 0x43000000u)) << 8) >> 8;
+    T24 = (f_trunc(f_mul(t0, 0x43000000u)) << 8) >> 8;
+  } else stageCoordsQuad(mp, n, x, y, S24, T24, lod, linear);
 }
 
 #ifdef INDIRECT
@@ -923,7 +940,7 @@ void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
   uvec2 e = texelFetch(uEfb, p, 0).rg;
   uint col = e.x, dep = e.y;
-  int tile = (p.x >> 4) + (p.y >> 4) * uTilesX;
+  int tile = (p.x >> ${TILE_SHIFT}) + (p.y >> ${TILE_SHIFT}) * uTilesX;
   uvec2 ti = texelFetch(uTiles, ivec2(tile & 1023, tile >> 10), 0).rg;
   for (uint i = 0u; i < ti.y; i++) {
     uint tri = wd(uList, ti.x + i);
@@ -947,6 +964,7 @@ void main() {
   o = uvec4(col, dep, 0u, 0u);
 }
 `;
+  return opts.mutate ? opts.mutate(src) : src;
 }
 
 export const PIXEL_FS = pixelShader();

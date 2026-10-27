@@ -135,6 +135,9 @@ export function indirectOffsets(bp: Uint32Array, ind: number, tx: number[], S: n
   }
 
 /** prepared state of a draw for the CPU pixel stage */
+/** counters for profiling scenes (not part of the rules): pixels that pass the coverage test, and how many of them fail the depth test */
+export const RSTAT = { covered: 0, zFail: 0, zOff: 0, textured: 0 };
+
 export class DrawPixels {
   readonly bp: Uint32Array;
   readonly st: PixState;
@@ -271,6 +274,8 @@ export class DrawPixels {
           let z = trunc32(zf > 16777215 ? 16777215 : zf < 0 ? 0 : zf);
           z &= 0xffffff;
           const stored = efb.depth[pi];
+          RSTAT.covered++;
+          if (!zEnable) RSTAT.zOff++; else if (!cmpOp(zFunc, z, stored)) RSTAT.zFail++;
           if (zEarly) {
             if (!cmpOp(zFunc, z, stored) || !zEnable) continue;
             if (zUpdate) efb.depth[pi] = z;

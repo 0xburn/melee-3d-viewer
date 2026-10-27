@@ -67,8 +67,10 @@ function exact(xb: number): number {
 const f32 = new Float32Array(1), u32 = new Uint32Array(f32.buffer);
 const toF = (b: number) => { u32[0] = b; return f32[0]; };
 // the spec's vectors/fog-shapes.json: the four shaped values (bits) and the levels, all in the shader's own float arithmetic
-{
-  const cases = await (await fetch("/vec/fog-shapes.json")).json();
+const shapesRes = await fetch("/vec/fog-shapes.json");
+if (!shapesRes.ok) await log("fog-shapes.json is not available (GX_SPEC_VECTORS): that part is skipped");
+else {
+  const cases = await shapesRes.json();
   const FS2 = `#version 300 es
 precision highp float; precision highp int; precision highp usampler2D;
 uniform usampler2D uIn;

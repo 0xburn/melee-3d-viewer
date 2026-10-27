@@ -142,10 +142,11 @@ function claim(sh: Shared): number {
 export function workerMain(sab: SharedArrayBuffer, cfg: PoolConfig): void {
   const sh = new Shared(sab, cfg);
   const ctx = new FrontCtx(), lq = new Growable();
+  Atomics.add(sh.ctl, 9, 1);
   for (;;) {
     if (Atomics.load(sh.ctl, C_STOP)) return;
     const j = claim(sh);
-    if (j >= 0) { doJob(sh, ctx, lq, j); continue; }
+    if (j >= 0) { doJob(sh, ctx, lq, j); Atomics.add(sh.ctl, 8, 1); continue; }
     const tail = Atomics.load(sh.ctl, C_TAIL);
     if (Atomics.load(sh.ctl, C_HEAD) >= tail) Atomics.wait(sh.ctl, C_TAIL, tail);
   }
@@ -171,7 +172,8 @@ export class FrontPool {
   stats = { mainJobs: 0, jobs: 0, waitMs: 0, mergeMs: 0 };
 
   static available(): boolean {
-    return typeof SharedArrayBuffer === "function" && typeof Atomics !== "undefined" && (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+    // a page has `crossOriginIsolated` (false unless its headers allow shared buffers); outside a page it is not defined and shared buffers just work
+    return typeof SharedArrayBuffer === "function" && typeof Atomics !== "undefined" && (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated !== false;
   }
 
   constructor(count: number, factory: () => Worker, cfg: PoolConfig = DEFAULT_POOL) {
@@ -191,6 +193,10 @@ export class FrontPool {
     for (const w of this.workers) w.terminate();
     this.workers = [];
   }
+
+  /** jobs the worker threads have run, and how many of them have started (a worker counts in [9] when its loop begins) */
+  get workerJobs(): number { return Atomics.load(this.sh.ctl, 8); }
+  get workersStarted(): number { return Atomics.load(this.sh.ctl, 9); }
 
   /** whether jobs are outstanding */
   get busy(): boolean { return this.tail > this.base; }
