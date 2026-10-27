@@ -108,9 +108,14 @@ function mapState(fmt: number, W: number, H: number, addr: number, pf: number, p
   rows.forEach((r, i) => { inputs.set(r.in.slice(0, 4), i * 16); inputs.set(r.in.slice(4, 8), i * 16 + 4); inputs.set([r.in[8], 0, 0, 0], i * 16 + 8); });
   const out = runFn("tev", `res = uvec4(uint(tevRegular(in0.x == 1u, int(in0.y), int(in0.z), int(in0.w), int(in1.x), int(in1.y), int(in1.z), int(in1.w), int(in2.x))) & 0xffffu);`, inputs, rows.length, null, null);
   const bad: string[] = [], badA: string[] = [];
-  rows.forEach((r, i) => { if ((out[i * 4] & 255) !== r.want) (r.check ? bad : badA).push(`${r.nm} got ${out[i * 4] & 255}`); });
+  // colors show the low 8 bits; the alpha result shows saturated to 0..255 (the stored value is 11 bits signed)
+  rows.forEach((r, i) => {
+    const raw = (out[i * 4] << 16) >> 16;
+    const shown = i >= nCol ? Math.max(0, Math.min(255, raw)) : raw & 255;
+    if (shown !== r.want) (i >= nCol ? badA : bad).push(`${r.nm} got ${shown}`);
+  });
   await report("tev color arithmetic", bad, nCol);
-  await log(`info tev alpha vectors: ${rows.length - nCol - badA.length}/${rows.length - nCol} (spec question Q1, same as the CPU reference)`);
+  await report("tev alpha arithmetic", badA, al.length);
 }
 
 // ---- blend

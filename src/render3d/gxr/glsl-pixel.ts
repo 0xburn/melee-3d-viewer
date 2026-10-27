@@ -28,6 +28,87 @@ export const STATE_WORDS = 288;
 export const TILE = 16;
 
 /** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5) and `fogExtra` the exponential fog forms and the range adjustment (11.3), compiled only for draws that use them */
+/** the correctly rounded 2^x for binary32 x in [-8, 0] (fog shaping), GLSL ES 3.00 */
+export const EXP2_GLSL = /* glsl */ `// 2^x for a binary32 x in [-8, 0], correctly rounded to binary32 (spec 11.3: the reference rounds a double-precision power once). The GPU's own exp2 is an
+// approximation that is off in the last bit for about one argument in 300,000, which can move a fog level, so the power is computed in 64-bit fixed point
+// from 16-bit limbs: |x| = n + t (t in [0, 1)); 2^-t is the product of 2^(-2^-k) for the first six bits of t, and of 2^-b for the rest b (< 2^-6), a Taylor
+// series in z = b ln 2. The error is about 2^-60 of 1; the result's 24 bits and the 40 bits after them decide the rounding.
+uniform uvec4 uExpC[8];     // 2^(-2^-k) for k = 1..6, ln 2, and in [7].x the number of Taylor terms (8); each a fraction of four 16-bit limbs, most significant first
+
+// the high 64 bits of the product of two such fractions
+uvec4 fxMul(uvec4 A, uvec4 B) {
+  uint h0 = (A.x * B.x) >> 16;
+  uint l0 = (A.x * B.x) & 0xffffu;
+  uint p01 = A.x * B.y, p10 = A.y * B.x;
+  uint h1 = (p01 >> 16) + (p10 >> 16), l1 = (p01 & 0xffffu) + (p10 & 0xffffu);
+  uint p02 = A.x * B.z, p11 = A.y * B.y, p20 = A.z * B.x;
+  uint h2 = (p02 >> 16) + (p11 >> 16) + (p20 >> 16), l2 = (p02 & 0xffffu) + (p11 & 0xffffu) + (p20 & 0xffffu);
+  uint p03 = A.x * B.w, p12 = A.y * B.z, p21 = A.z * B.y, p30 = A.w * B.x;
+  uint h3 = (p03 >> 16) + (p12 >> 16) + (p21 >> 16) + (p30 >> 16), l3 = (p03 & 0xffffu) + (p12 & 0xffffu) + (p21 & 0xffffu) + (p30 & 0xffffu);
+  uint p13 = A.y * B.w, p22 = A.z * B.z, p31 = A.w * B.y;
+  uint h4 = (p13 >> 16) + (p22 >> 16) + (p31 >> 16);
+  uint a4 = l3 + h4;
+  uint a3 = l2 + h3 + (a4 >> 16);
+  uint a2 = l1 + h2 + (a3 >> 16);
+  uint a1 = l0 + h1 + (a2 >> 16);
+  uint a0 = h0 + (a1 >> 16);
+  return uvec4(a0 & 0xffffu, a1 & 0xffffu, a2 & 0xffffu, a3 & 0xffffu);
+}
+
+uvec4 fxAdd(uvec4 A, uvec4 B) {
+  uint s3 = A.w + B.w; uint s2 = A.z + B.z + (s3 >> 16); uint s1 = A.y + B.y + (s2 >> 16); uint s0 = A.x + B.x + (s1 >> 16);
+  return uvec4(s0 & 0xffffu, s1 & 0xffffu, s2 & 0xffffu, s3 & 0xffffu);
+}
+
+// A - B for A >= B
+uvec4 fxSub(uvec4 A, uvec4 B) {
+  int d3 = int(A.w) - int(B.w); int c3 = d3 < 0 ? 1 : 0; d3 += c3 << 16;
+  int d2 = int(A.z) - int(B.z) - c3; int c2 = d2 < 0 ? 1 : 0; d2 += c2 << 16;
+  int d1 = int(A.y) - int(B.y) - c2; int c1 = d1 < 0 ? 1 : 0; d1 += c1 << 16;
+  int d0 = int(A.x) - int(B.x) - c1;
+  return uvec4(uint(d0) & 0xffffu, uint(d1), uint(d2), uint(d3));
+}
+
+uvec4 fxDiv(uvec4 A, uint k) {
+  uint c = A.x; uint x = c / k; uint r = c - x * k;
+  c = (r << 16) | A.y; uint y = c / k; r = c - y * k;
+  c = (r << 16) | A.z; uint z = c / k; r = c - z * k;
+  c = (r << 16) | A.w; uint w = c / k;
+  return uvec4(x, y, z, w);
+}
+
+uint f_exp2(uint x) {
+  uint ex = (x >> 23) & 255u;
+  // |x| < 2^-25 (and zero): the power rounds to 1
+  if (ex < 102u) return 0x3f800000u;
+  uint m = (x & 0x7fffffu) | 0x800000u;
+  int q = 150 - int(ex);                       // |x| = m * 2^-q
+  uint n = ex >= 127u ? (m >> uint(q)) : 0u;   // the whole part
+  uint mf = m & (q >= 32 ? 0xffffffffu : ((1u << uint(q)) - 1u));
+  uint hi = q <= 32 ? (mf << uint(32 - q)) : (mf >> uint(q - 32));
+  uint lo = q <= 32 ? 0u : (mf << uint(64 - q));
+  if (hi == 0u && lo == 0u) return (127u - n) << 23;
+  uint top6 = hi >> 26;
+  uint hb = hi & 0x03ffffffu;
+  uvec4 b = uvec4(hb >> 16, hb & 0xffffu, lo >> 16, lo & 0xffffu);
+  uvec4 P = uvec4(0xffffu);
+  for (int k = 0; k < 6; k++) if (((top6 >> uint(5 - k)) & 1u) == 1u) P = fxMul(P, uExpC[k]);
+  uvec4 z = fxMul(b, uExpC[6]);
+  uvec4 p = z, D = z;
+  for (uint k = 2u; k <= uExpC[7].x; k++) {
+    p = fxDiv(fxMul(p, z), k);
+    D = (k & 1u) == 0u ? fxSub(D, p) : fxAdd(D, p);
+  }
+  uvec4 V = fxSub(P, fxMul(P, D));
+  uint mant = (V.x << 8) | (V.y >> 8);                 // 24 bits, the top one set
+  uint rest = ((V.y & 0xffu) << 24) | (V.z << 8) | (V.w >> 8);   // the next 32 bits (the last 8 of the 64 do not matter for the rounding)
+  if (rest > 0x80000000u || (rest == 0x80000000u && (mant & 1u) == 1u)) mant += 1u;
+  uint ee = 126u - n;
+  if (mant == 0x1000000u) { mant = 0x800000u; ee += 1u; }
+  return (ee << 23) | (mant & 0x7fffffu);
+}
+`;
+
 export function pixelShader(opts: { indirect?: boolean; fogExtra?: boolean; debugRegs?: [number, number] } = {}): string {
   return /* glsl */ `#version 300 es
 ${opts.indirect ? "#define INDIRECT 1" : ""}
@@ -332,6 +413,7 @@ void indirectOffsets(uint ind, ivec4 tx, int cs, int ct, int prevS, int prevT, o
   ivec3 v = i & vmask;
   for (int k = 0; k < 3; k++) if (((biasBits >> k) & 1) == 1) v[k] += fmt == 0 ? -128 : 1;
   int o0 = 0, o1 = 0;
+  bool keep = false;
   int m = mid & 3;
   if (m != 0) {
     uint A = S(0x06u + 3u * uint(m - 1)), B = S(0x07u + 3u * uint(m - 1)), C = S(0x08u + 3u * uint(m - 1));
@@ -339,7 +421,9 @@ void indirectOffsets(uint ind, ivec4 tx, int cs, int ct, int prevS, int prevT, o
     int ex = bfi(A, 22, 2) | (bfi(B, 22, 2) << 2) | (bfi(C, 22, 2) << 4);
     int shift = 17 - ex;
     int type = mid & 12;
-    if (type == 0) { o0 = (ma * v.x + mc * v.y + me * v.z) >> 3; o1 = (mb * v.x + md * v.y + mf * v.z) >> 3; }
+    // matrix type 12 is not defined: the stage's coordinate stays what the previous stage left (spec 10.5)
+    if (type == 12) keep = true;
+    else if (type == 0) { o0 = (ma * v.x + mc * v.y + me * v.z) >> 3; o1 = (mb * v.x + md * v.y + mf * v.z) >> 3; }
     else if (type == 4) { o0 = idiv(cs * v.x, 256); o1 = idiv(ct * v.x, 256); }
     else if (type == 8) { o0 = idiv(cs * v.y, 256); o1 = idiv(ct * v.y, 256); }
     // shift counts are taken modulo 32 (as the CPU reference's shifts do)
@@ -349,8 +433,8 @@ void indirectOffsets(uint ind, ivec4 tx, int cs, int ct, int prevS, int prevT, o
   int wt = tw == 0 ? ct : (tw >= 6 ? 0 : (ct & (((256 >> (tw - 1)) << 7) - 1)));
   int rs = ws + o0, rt = wt + o1;
   if (bf(ind, 20, 1) == 1u) { rs += prevS; rt += prevT; }
-  oS = (rs << 8) >> 8;
-  oT = (rt << 8) >> 8;
+  oS = keep ? prevS : (rs << 8) >> 8;
+  oT = keep ? prevT : (rt << 8) >> 8;
 }
 #endif
 
@@ -550,7 +634,7 @@ uint f_sqrt(uint a) {
   return (a << 1) == 0u ? 0u : res;
 }
 
-uint f_exp2(uint e) { return floatBitsToUint(exp2(uintBitsToFloat(e))); }
+${EXP2_GLSL}
 #endif
 
 void fogPixel(uint fsel, int z, int x, inout ivec4 c) {
@@ -866,3 +950,28 @@ void main() {
 }
 
 export const PIXEL_FS = pixelShader();
+
+
+/** the constants of f_exp2: 2^(-2^-k) for k = 1..6, ln 2, and the number of Taylor terms, as 64-bit fractions of four 16-bit limbs (the uniform uExpC) */
+export function expConstants(): Uint32Array {
+  const PREC = 200n;
+  const ONE = 1n << PREC;
+  let ln2 = 0n;
+  for (let k = 1n; k < 220n; k++) ln2 += ONE / (k << k);
+  // e^-w for a fixed-point w
+  const expNeg = (w: bigint): bigint => {
+    let term = ONE, sum = ONE;
+    for (let j = 1n; term !== 0n; j++) { term = (term * w) / ONE / j; sum += j % 2n === 1n ? -term : term; }
+    return sum;
+  };
+  const limbs = (v: bigint): number[] => {
+    const r = (v + (1n << (PREC - 65n))) >> (PREC - 64n);   // 64 bits, rounded (all values here are below 1)
+    const x = r >= (1n << 64n) ? (1n << 64n) - 1n : r;
+    return [Number((x >> 48n) & 0xffffn), Number((x >> 32n) & 0xffffn), Number((x >> 16n) & 0xffffn), Number(x & 0xffffn)];
+  };
+  const out = new Uint32Array(32);
+  for (let k = 1; k <= 6; k++) out.set(limbs(expNeg(ln2 >> BigInt(k))), (k - 1) * 4);
+  out.set(limbs(ln2), 24);
+  out[28] = 8;
+  return out;
+}
