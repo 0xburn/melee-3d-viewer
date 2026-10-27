@@ -382,45 +382,46 @@ uint f_max(uint a, uint b) { return f_lt(a, b) ? b : a; }
 int log2fix(uint d) { return int(((d & 0x7f800000u) >> 19) + ((d & 0x007fffffu) >> 19)) - 2032; }
 
 // the texture stage's coordinates: the pixel's s and t of generator n (7 fractional bits) and the level of detail map mp gives (8.3, 8.4)
-void stageCoordsQuad(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
-  int bx = x & ~1, by = y & ~1;
-  uint sv[4], tv[4];
-  for (int j = 0; j < uK.x; j++) genST(n, bx + (j & 1), by + (j >> 1), sv[j], tv[j]);
-  // the largest change of s and of t across the block, one copy of the differences for both
-  uint dm[2];
-  bool diag = bf(mp.mode0, 8, 1) == 1u;
-  for (int m = 0; m < uK.w; m++) {
-    uint c0 = m == 0 ? sv[0] : tv[0];
-    uint d1 = f_abs(f_sub(c0, m == 0 ? sv[1] : tv[1]));
-    uint d2 = f_abs(f_sub(c0, m == 0 ? sv[2] : tv[2]));
-    uint d3 = f_abs(f_sub(c0, m == 0 ? sv[3] : tv[3]));
-    dm[m] = diag ? d3 : f_max(d1, d2);
-  }
-  uint d = f_max(dm[0], dm[1]);
-  int bias = int(bf(mp.mode0, 9, 8) << 24) >> 24;
-  lod = log2fix(d) + (bias >> 1);
-  uint mf = bf(mp.mode0, 5, 3);
-  linear = (lod > 0 && (mf & 4u) != 0u) || (lod <= 0 && bf(mp.mode0, 4, 1) == 1u);
-  int maxl = bfi(mp.mode1, 8, 8), minl = bfi(mp.mode1, 0, 8);
-  if (lod > maxl) lod = maxl; else if (lod < minl) lod = minl;
-  int me = (x & 1) + ((y & 1) << 1);
-  S24 = (f_trunc(f_mul(sv[me], 0x43000000u)) << 8) >> 8;
-  T24 = (f_trunc(f_mul(tv[me], 0x43000000u)) << 8) >> 8;
-}
-
 void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out int lod, out bool linear) {
+  int bx = x & ~1, by = y & ~1;
+  int me = (x & 1) + ((y & 1) << 1);
+  int maxl = bfi(mp.mode1, 8, 8), minl = bfi(mp.mode1, 0, 8);
+  bool magLin = bf(mp.mode0, 4, 1) == 1u;
+  uint mf = bf(mp.mode0, 5, 3);
   // When the clamp range of the level of detail is one value and the magnification and minification filters agree on linear or not, neither the level of
-  // detail nor the filter depends on the differences across the block: the pixel's own coordinates are all there is to compute (the clamp of 8.4 gives
-  // that one value for every lod, and 'linear' is the same on both sides of lod 0).
-  int cmaxl = bfi(mp.mode1, 8, 8), cminl = bfi(mp.mode1, 0, 8);
-  bool magLin = bf(mp.mode0, 4, 1) == 1u, minLin = (bf(mp.mode0, 5, 3) & 4u) != 0u;
-  if (cmaxl == cminl && magLin == minLin) {
-    uint s0, t0;
-    genST(n, x, y, s0, t0);
-    lod = cminl; linear = magLin;
-    S24 = (f_trunc(f_mul(s0, 0x43000000u)) << 8) >> 8;
-    T24 = (f_trunc(f_mul(t0, 0x43000000u)) << 8) >> 8;
-  } else stageCoordsQuad(mp, n, x, y, S24, T24, lod, linear);
+  // detail nor the filter depends on the differences across the block (the clamp gives that one value for every lod, and 'linear' is the same on both
+  // sides of lod 0): the pixel's own coordinates are all there is to compute.
+  bool constLod = maxl == minl && magLin == ((mf & 4u) != 0u);
+  uint sv[4], tv[4];
+  for (int j = 0; j < uK.x; j++) {
+    sv[j] = 0u; tv[j] = 0u;
+    if (!constLod || j == me) genST(n, bx + (j & 1), by + (j >> 1), sv[j], tv[j]);
+  }
+  if (constLod) {
+    lod = minl; linear = magLin;
+  } else {
+    // the largest change of s and of t across the block: one copy of the differences for both and for the three neighbours
+    uint dm[2];
+    bool diag = bf(mp.mode0, 8, 1) == 1u;
+    for (int m = 0; m < uK.w; m++) {
+      uint c0 = m == 0 ? sv[0] : tv[0];
+      uint dd[3];
+      for (int k = 0; k < uK.x - 1; k++) {
+        uint ck = m == 0 ? (k == 0 ? sv[1] : (k == 1 ? sv[2] : sv[3])) : (k == 0 ? tv[1] : (k == 1 ? tv[2] : tv[3]));
+        dd[k] = f_abs(f_sub(c0, ck));
+      }
+      dm[m] = diag ? dd[2] : f_max(dd[0], dd[1]);
+    }
+    uint d = f_max(dm[0], dm[1]);
+    int bias = int(bf(mp.mode0, 9, 8) << 24) >> 24;
+    lod = log2fix(d) + (bias >> 1);
+    linear = (lod > 0 && (mf & 4u) != 0u) || (lod <= 0 && magLin);
+    if (lod > maxl) lod = maxl; else if (lod < minl) lod = minl;
+  }
+  int st[2];
+  for (int c = 0; c < uK.w; c++) st[c] = (f_trunc(f_mul(c == 0 ? sv[me] : tv[me], 0x43000000u)) << 8) >> 8;
+  S24 = st[0];
+  T24 = st[1];
 }
 
 #ifdef INDIRECT
