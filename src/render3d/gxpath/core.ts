@@ -4,6 +4,9 @@
  * draws: gxr/ reads the stream.
  *
  *   msl_gxw_open(tape, size, root)    the match, the game files read from `root` of the module's file system
+ *   msl_gxw_set_playback(name)        "slippi" (what Slippi's playback shows: its hook at game frame -123 also sets each fighter's collision
+ *                                     position) or "original" (the console's recording); before the first step only (-2 after)
+ *   msl_gxw_playback()                the option's current name
  *   msl_gxw_step_frame(frame)         one frame of the tape (tapebridge.ts TapeFrame) and its display pass
  *   msl_gxw_stream_ptr/_len           the frame's FIFO bytes, valid until the next step
  *   msl_gxw_region_*(i)               the memory blocks first referenced by the frame (or rewritten): address, bytes, size, type, and
@@ -21,6 +24,8 @@ export interface GxCoreModule {
   _malloc(size: number): number;
   _free(ptr: number): void;
   _msl_gxw_open(tape: number, size: number, root: number): number;
+  _msl_gxw_set_playback(name: number): number;
+  _msl_gxw_playback(): number;
   _msl_gxw_step_frame(frame: number): number;
   _msl_gxw_tape_frame_size(): number;
   _msl_gxw_stream_ptr(): number;
@@ -35,6 +40,11 @@ export interface GxCoreModule {
   _msl_gxw_output_ptr(): number;
   _msl_gxw_output_size(): number;
 }
+
+/** how the replay is played back: as Slippi's playback shows it, or as the console recorded it (NOTE_FROM_W12.md) */
+export type PlaybackMode = "slippi" | "original";
+export const PLAYBACK_MODES: PlaybackMode[] = ["slippi", "original"];
+export const isPlaybackMode = (v: unknown): v is PlaybackMode => v === "slippi" || v === "original";
 
 /** the module's factory (the ES module's default export, -sMODULARIZE -sEXPORT_ES6) */
 export type GxCoreFactory = (options?: Record<string, unknown>) => Promise<GxCoreModule>;
@@ -59,9 +69,11 @@ export class GxCore {
     return new GxCore(mod);
   }
 
-  /** the match for a tape config (TAPE_CONFIG_SIZE bytes) and the first frame; the game files are dropped from the file system after */
-  openMatch(config: Uint8Array, first: Uint8Array, names: string[]): void {
+  /** the match for a tape config (TAPE_CONFIG_SIZE bytes) and the first frame, played back the given way (set before any step); the game
+   *  files are dropped from the file system after */
+  openMatch(config: Uint8Array, first: Uint8Array, names: string[], playback: PlaybackMode = "slippi"): void {
     const m = this.mod;
+    this.setPlayback(playback);
     if (config.length !== TAPE_CONFIG_SIZE || first.length !== TAPE_FRAME_SIZE) throw new Error("bad tape sizes");
     const tape = m._malloc(config.length + first.length), root = m._malloc(DATA_ROOT.length + 1);
     try {
@@ -78,6 +90,26 @@ export class GxCore {
     }
     this.frameBuf = m._malloc(TAPE_FRAME_SIZE);
     this.open = true;
+  }
+
+  /** the playback option (only before the first step: the option decides the very first frames) */
+  setPlayback(name: PlaybackMode): void {
+    const m = this.mod, s = m._malloc(16);
+    try {
+      m.HEAPU8.set(new TextEncoder().encode(name + "\0"), s);
+      const r = m._msl_gxw_set_playback(s);
+      if (r !== 0) throw new Error(`msl_gxw_set_playback(${name}): ${r === -1 ? "unknown name" : r === -2 ? "a frame was already played" : r}`);
+    } finally {
+      m._free(s);
+    }
+  }
+
+  /** the playback option the match plays with */
+  get playback(): PlaybackMode {
+    const m = this.mod, p = m._msl_gxw_playback();
+    let e = p;
+    while (m.HEAPU8[e]) e++;
+    return new TextDecoder().decode(m.HEAPU8.subarray(p, e)) as PlaybackMode;
   }
 
   /** play one frame (TAPE_FRAME_SIZE bytes) */

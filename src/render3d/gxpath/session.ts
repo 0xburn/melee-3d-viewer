@@ -11,7 +11,7 @@ import type { GxBackend } from "../gxr/gpu";
 import { differs } from "../../sim/compare";
 import { STREAM_FRAME } from "../../sim/wire";
 import { driveOrder, type DriveOptions, type Tape } from "../../sim/tape";
-import { GxCore, type GxCoreFactory } from "./core";
+import { GxCore, type GxCoreFactory, type PlaybackMode } from "./core";
 import { tapeConfigOf, tapeFrameOf, TAPE_FRAME_SIZE } from "./tapebridge";
 
 /** what the session needs of a renderer (CpuBackend, GxGl) */
@@ -30,7 +30,6 @@ export interface SessionBackend extends GxBackend {
   present?(): void;
   /** back to the state before any frame (GxGl has it) */
   reset?(): void;
-  pictures: number;
   stats?: { cpuMs: number; flushMs: number };
 }
 
@@ -46,6 +45,8 @@ export interface SessionOptions {
   files: GameFiles;
   tape: Tape;
   drive?: DriveOptions;
+  /** how the replay is played back (core.ts PlaybackMode; default slippi): fixed for the session, a change is a new session */
+  playback?: PlaybackMode;
   /** at most this many drive choices are tried when the game parts from the replay (default 3, as the track simulator) */
   maxDrives?: number;
   /** a renderer, made with the way to the GPU's memory it reads (the CPU reference needs it); the same one is used for every restart
@@ -82,6 +83,7 @@ export class GxSession {
 
   get frameCount(): number { return this.o.tape.count; }
   get tape(): Tape { return this.o.tape; }
+  get playback(): PlaybackMode { return this.o.playback ?? "slippi"; }
   get core_(): GxCore | null { return this.core; }
 
   /** the match from its first row (a fresh instance of the module; the renderer back to its start) */
@@ -94,7 +96,7 @@ export class GxSession {
     const drive = this.o.drive ?? driveOrder(tape, this.o.maxDrives ?? 3)[this.driveIndex] ?? driveOrder(tape, 1)[0];
     tape.frame(0, this.w);
     tapeFrameOf(this.w, this.t);
-    core.openMatch(tapeConfigOf(tape.config(drive), tape.count, tape.gx), this.t, files.names);
+    core.openMatch(tapeConfigOf(tape.config(drive), tape.count, tape.gx), this.t, files.names, this.playback);
     this.core = core;
     if (this.backend?.reset) this.backend.reset();
     else this.backend = await this.o.makeBackend(() => {
@@ -221,7 +223,7 @@ export class GxSession {
       let reached = tape.count;
       try {
         tape.frame(0, w); tapeFrameOf(w, t);
-        core.openMatch(tapeConfigOf(tape.config(choices[d]), tape.count, tape.gx), t, files.names);
+        core.openMatch(tapeConfigOf(tape.config(choices[d]), tape.count, tape.gx), t, files.names, this.playback);
         let i = 0, t0 = now();
         for (; i < tape.count; i++) {
           tape.frame(i, w); tapeFrameOf(w, t);
