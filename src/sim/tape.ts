@@ -100,6 +100,24 @@ export function geckoCodes(list: Uint8Array): Map<number, Uint8Array> {
   return out;
 }
 
+/**
+ * The gameplay codes that came and went across Slippi versions, as the driver's CONFIG bytes. THE one rule, the
+ * same as tools/replay/replay_drive.py code_flags (tests/code-flags-rule.test.ts holds the two equal against
+ * the fork's tools/replay/code_flags_cases.json): a replay with a gecko list gets each flag from whether the
+ * list carries that code (the game applies the list's codes); a replay without a list gets all three from
+ * scene major 8, the online code set.
+ */
+export const CODE_FLAG_ADDRESSES = {
+  brawl_offscreen_damage: 0xc206a880, freeze_dead_up_fall_physics: 0xc20d4c1c, whispy_dead_fighter_fix: 0xc208653c,
+} as const;
+export function codeFlags(codes: { has(address: number): boolean; size: number }, online: boolean): Record<keyof typeof CODE_FLAG_ADDRESSES, boolean> {
+  const f = {} as Record<keyof typeof CODE_FLAG_ADDRESSES, boolean>;
+  for (const name of Object.keys(CODE_FLAG_ADDRESSES) as (keyof typeof CODE_FLAG_ADDRESSES)[]) {
+    f[name] = codes.size ? codes.has(CODE_FLAG_ADDRESSES[name]) : online;
+  }
+  return f;
+}
+
 // the UCF injections by address (the fork's tools/replay/replay_drive.py UCF_CODES)
 const UCF_CARDINALS = 0xc206b460, UCF_SHIELD_SDI = 0xc2093294, UCF_SDI = 0xc208e54c, UCF_SD_EXTENDED = 0xc209a0b8;
 const UCF_SHIELD_DROP = 0xc20998a4, UCF_084_SHIELD_DROP_SIZE = 208;
@@ -308,9 +326,9 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
 
   // ---- the platform's patches (parse_start, parse_metadata)
   const playedOn = metadata?.playedOn ?? "";
-  let fnmsubsZero = sceneMajor === 8, dolphinPatches = sceneMajor === 8;
-  if (playedOn === "dolphin" || playedOn === "mainline dolphin") dolphinPatches = true;
+  let fnmsubsZero = sceneMajor === 8;
   if (playedOn === "mainline dolphin") fnmsubsZero = false;
+  const flags = codeFlags(codes, sceneMajor === 8);
   const recorded = codes.size ? recordedUcf(codes) : null;
   // (Slippi 3.18 on records Fountain's platforms and Whispy's direction: the streams are present)
   const streams = atLeast(3, 18, 0) ? 3 : 0;
@@ -371,9 +389,9 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
       w.set(CONFIG, "friendly_fire", friendlyFire ? 1 : 0);
       w.set(CONFIG, "stock_count", Math.max(1, ...slots.map((s) => s.stocks)));
       w.set(CONFIG, "arithmetic_flags", (fnmsubsZero ? ARITHMETIC_LEGACY_FNMSUBS : 0) | (splitFma ? ARITHMETIC_SPLIT_FMA : 0));
-      w.set(CONFIG, "brawl_offscreen_damage", dolphinPatches ? 1 : 0);
-      w.set(CONFIG, "freeze_dead_up_fall_physics", dolphinPatches ? 1 : 0);
-      w.set(CONFIG, "whispy_dead_fighter_fix", dolphinPatches ? 1 : 0);
+      w.set(CONFIG, "brawl_offscreen_damage", flags.brawl_offscreen_damage ? 1 : 0);
+      w.set(CONFIG, "freeze_dead_up_fall_physics", flags.freeze_dead_up_fall_physics ? 1 : 0);
+      w.set(CONFIG, "whispy_dead_fighter_fix", flags.whispy_dead_fighter_fix ? 1 : 0);
       w.set(CONFIG, "ucf_cardinals_1_0_enabled", ucf.cardinals10 ? 1 : 0);
       w.set(CONFIG, "ucf_shield_sdi_enabled", ucf.shieldSdi ? 1 : 0);
       w.set(CONFIG, "ucf_sdi_enabled", ucf.sdi ? 1 : 0);
