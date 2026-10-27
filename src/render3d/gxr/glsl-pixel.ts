@@ -25,8 +25,9 @@ export const MEM_ROW = 4096;
 import { HEADER_TEXELS } from "./front";
 export { HEADER_TEXELS };
 export const STATE_WORDS = 288;
-/** the pixel tiles the triangle lists are binned in: 1 << TILE_SHIFT pixels on a side */
-export const TILE_SHIFT = 3;
+/** the pixel tiles the triangle lists are binned in: 1 << TILE_SHIFT pixels on a side; each list entry also says which of the tile's four 8 x 8 quarters
+ *  the triangle can reach (bits 24..27 of the entry, bit 2 * (y >> 3 & 1) + (x >> 3 & 1)), so a pixel skips the triangles that miss its quarter after one read */
+export const TILE_SHIFT = 4;
 export const TILE = 1 << TILE_SHIFT;
 
 /** the pixel shader; `indirect` adds the indirect texture unit (spec 10.5) and `fogExtra` the exponential fog forms and the range adjustment (11.3), compiled only for draws that use them */
@@ -352,6 +353,9 @@ uint planeAt(uint k, uint dx, uint dy) {
   // a plane the triangle does not carry (a generator past BP's count) reads zero
   if (k >= gNp) return 0u;
   uvec4 p = td(gTri + HEADER_TEXELS + k);
+  // a plane with no slope (both differences zero) is its own constant: adding the zero products changes nothing in a finite non-zero value
+  uint ex = (p.x >> 23) & 255u;
+  if ((p.y & 0x7f800000u) == 0u && (p.z & 0x7f800000u) == 0u && ex != 0u && ex != 255u) return p.x;
   return f_add(f_add(p.x, f_mul(p.y, dx)), f_mul(p.z, dy));
 }
 
@@ -360,10 +364,12 @@ void genST(uint n, int px, int py, out uint s, out uint t) {
   uint dx = f_add(gOx, f_from_int(px - gXi)), dy = f_add(gOy, f_from_int(py - gYi));
   // the four planes (1/w, u, v, w) through one copy of the evaluation
   uint pv[4];
-  for (int k = 0; k < uK.x; k++) pv[k] = planeAt(k == 0 ? 0u : 9u + n * 3u + uint(k), dx, dy);
+  bool projective = ((S(272u) >> n) & 1u) == 1u;
+  int nPlanes = projective ? uK.x : uK.x - 1;
+  for (int k = 0; k < nPlanes; k++) pv[k] = planeAt(k == 0 ? 0u : 9u + n * 3u + uint(k), dx, dy);
   uint iw = f_div(F_ONE, pv[0]);
   uint proj = iw;
-  if (((S(272u) >> n) & 1u) == 1u) {
+  if (projective) {
     uint q = f_mul(pv[3], iw);
     proj = f_iszero(q) ? iw : f_div(iw, q);
   }
@@ -942,8 +948,11 @@ void main() {
   uint col = e.x, dep = e.y;
   int tile = (p.x >> ${TILE_SHIFT}) + (p.y >> ${TILE_SHIFT}) * uTilesX;
   uvec2 ti = texelFetch(uTiles, ivec2(tile & 1023, tile >> 10), 0).rg;
+  int sub = ((p.x >> 3) & 1) + (((p.y >> 3) & 1) << 1);
   for (uint i = 0u; i < ti.y; i++) {
-    uint tri = wd(uList, ti.x + i);
+    uint ent = wd(uList, ti.x + i);
+    if (((ent >> uint(24 + sub)) & 1u) == 0u) continue;
+    uint tri = ent & 0xffffffu;
     uvec4 h0 = td(tri);
     int bx = p.x & ~1, by = p.y & ~1;
     if (bx < int(h0.x) || bx >= int(h0.y) || by < int(h0.z) || by >= int(h0.w)) continue;

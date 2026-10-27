@@ -15,7 +15,7 @@ import { getLastZ, zInfo } from "./setup";
 import { XF_SIZE } from "./state";
 import type { VertexData, VertexLayout } from "./vertex";
 
-const C_HEAD = 0, C_TAIL = 1, C_DONE = 2, C_OUT = 3, C_STOP = 4;
+const C_HEAD = 0, C_TAIL = 1, C_DONE = 2, C_OUT = 3, C_STOP = 4, C_SLEEPERS = 10;
 const CTL_WORDS = 16;
 const JW = 16;
 const J_LAY0 = 0, J_LAY1 = 1, J_XF = 2, J_BP = 3, J_NV = 4, J_VOFF = 5, J_PRIMS = 6, J_NPRIMS = 7, J_ST = 8, J_OUT = 9, J_OUTLEN = 10, J_ZFLAG = 11, J_Z = 12, J_OVER = 15;
@@ -143,12 +143,18 @@ export function workerMain(sab: SharedArrayBuffer, cfg: PoolConfig): void {
   const sh = new Shared(sab, cfg);
   const ctx = new FrontCtx(), lq = new Growable();
   Atomics.add(sh.ctl, 9, 1);
+  let idle = 0;
   for (;;) {
     if (Atomics.load(sh.ctl, C_STOP)) return;
     const j = claim(sh);
-    if (j >= 0) { doJob(sh, ctx, lq, j); Atomics.add(sh.ctl, 8, 1); continue; }
+    if (j >= 0) { doJob(sh, ctx, lq, j); Atomics.add(sh.ctl, 8, 1); idle = 0; continue; }
+    // draws come a few tens of microseconds apart: look for the next one for a moment before sleeping (a sleeping worker costs the main thread a wake-up call)
+    if (++idle < 3000) continue;
+    Atomics.add(sh.ctl, C_SLEEPERS, 1);
     const tail = Atomics.load(sh.ctl, C_TAIL);
     if (Atomics.load(sh.ctl, C_HEAD) >= tail) Atomics.wait(sh.ctl, C_TAIL, tail);
+    Atomics.sub(sh.ctl, C_SLEEPERS, 1);
+    idle = 0;
   }
 }
 
@@ -234,7 +240,8 @@ export class FrontPool {
     J[b + J_PRIMS] = primAt; J[b + J_NPRIMS] = prims.length; J[b + J_ST] = st; J[b + J_OVER] = 0; J[b + J_OUTLEN] = 0; J[b + J_ZFLAG] = 0;
     this.tail++;
     Atomics.store(sh.ctl, C_TAIL, this.tail);
-    Atomics.notify(sh.ctl, C_TAIL, 1);
+    // only a worker that went to sleep needs a call
+    if (Atomics.load(sh.ctl, C_SLEEPERS) > 0) Atomics.notify(sh.ctl, C_TAIL, 1);
   }
 
   /** wait for every published job (helping with them), then hand the outputs over in draw order and start the buffers over */

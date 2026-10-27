@@ -116,7 +116,7 @@ export class GxGl implements GxBackend {
   private timer: { ext: any; pending: { q: WebGLQuery; what: string }[]; ms: Record<string, number> } | null = null;
 
   /** options of the pixel shader (test aids) */
-  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number] } = {}, front: { workers?: number; factory?: () => Worker } = {}) {
+  constructor(gl: WebGL2RenderingContext, private shaderOptions: { debugRegs?: [number, number]; mutate?: (source: string) => string } = {}, front: { workers?: number; factory?: () => Worker } = {}) {
     this.gl = gl;
     // the front half on worker threads (a page that is cross-origin isolated); otherwise it runs on this thread, with the same result
     if ((front.workers ?? 0) > 0 && FrontPool.available()) {
@@ -270,6 +270,9 @@ export class GxGl implements GxBackend {
 
   // -------------------------------------------------------------------------------------------------------------------
   // memory
+
+  /** upload main memory and TMEM to the GPU now, rather than at the first draw (which then would take a frame's time for it): call it once the memory holds the game's first state, off the frame loop */
+  prepareMemory(mem: Memory, regs: GxRegs): void { this.attach(mem, regs); }
 
   private attach(mem: Memory, regs: GxRegs): void {
     if (this.attached === mem) return;
@@ -510,7 +513,8 @@ export class GxGl implements GxBackend {
     // the triangles follow each other in the queue: a header, then its planes
     for (let o = 0; o < qn; o += (HEADER_TEXELS + U[o + 18]) * 4) {
       this.tris++;
-      const tx0 = Math.max(0, I[o]) >> TILE_SHIFT, ty0 = Math.max(0, I[o + 2]) >> TILE_SHIFT, tx1 = Math.min(EFB_W - 1, I[o + 1]) >> TILE_SHIFT, ty1 = Math.min(EFB_H - 1, I[o + 3]) >> TILE_SHIFT;
+      const minx = I[o], maxx = I[o + 1], miny = I[o + 2], maxy = I[o + 3];
+      const tx0 = Math.max(0, minx) >> TILE_SHIFT, ty0 = Math.max(0, miny) >> TILE_SHIFT, tx1 = Math.min(EFB_W - 1, maxx) >> TILE_SHIFT, ty1 = Math.min(EFB_H - 1, maxy) >> TILE_SHIFT;
       const dx12 = I[o + 4], dy12 = I[o + 5], dx23 = I[o + 6], dy23 = I[o + 7], dx31 = I[o + 8], dy31 = I[o + 9], c1 = I[o + 10], c2 = I[o + 11], c3 = I[o + 12];
       const safe = Math.abs(dx12) < 16384 && Math.abs(dy12) < 16384 && Math.abs(dx23) < 16384 && Math.abs(dy23) < 16384 && Math.abs(dx31) < 16384 &&
         Math.abs(dy31) < 16384 && Math.abs(c1) < 1073741824 && Math.abs(c2) < 1073741824 && Math.abs(c3) < 1073741824;
@@ -521,17 +525,27 @@ export class GxGl implements GxBackend {
         ent = this.entTile = e2; entTri = this.entTri = t2;
       }
       for (let ty = ty0; ty <= ty1; ty++) {
-        const y0 = ty << TILE_SHIFT, y1 = y0 + TILE - 1;
         for (let tx = tx0; tx <= tx1; tx++) {
-          if (safe) {
-            const x0 = tx << TILE_SHIFT, x1 = x0 + TILE - 1;
-            if (c1 + 16 * (dx12 > 0 ? dx12 * y1 : dx12 * y0) - 16 * (dy12 > 0 ? dy12 * x0 : dy12 * x1) <= 0) continue;
-            if (c2 + 16 * (dx23 > 0 ? dx23 * y1 : dx23 * y0) - 16 * (dy23 > 0 ? dy23 * x0 : dy23 * x1) <= 0) continue;
-            if (c3 + 16 * (dx31 > 0 ? dx31 * y1 : dx31 * y0) - 16 * (dy31 > 0 ? dy31 * x0 : dy31 * x1) <= 0) continue;
+          // which 8 x 8 quarters of the tile the triangle can reach: inside its bounds, and where each edge test passes at the quarter's best corner
+          let mask = 0;
+          for (let sy = 0; sy < 2; sy++) {
+            const y0 = (ty << TILE_SHIFT) + (sy << 3), y1 = y0 + 7;
+            if (y1 < miny || y0 > maxy) continue;
+            for (let sx = 0; sx < 2; sx++) {
+              const x0 = (tx << TILE_SHIFT) + (sx << 3), x1 = x0 + 7;
+              if (x1 < minx || x0 > maxx) continue;
+              if (safe) {
+                if (c1 + 16 * (dx12 > 0 ? dx12 * y1 : dx12 * y0) - 16 * (dy12 > 0 ? dy12 * x0 : dy12 * x1) <= 0) continue;
+                if (c2 + 16 * (dx23 > 0 ? dx23 * y1 : dx23 * y0) - 16 * (dy23 > 0 ? dy23 * x0 : dy23 * x1) <= 0) continue;
+                if (c3 + 16 * (dx31 > 0 ? dx31 * y1 : dx31 * y0) - 16 * (dy31 > 0 ? dy31 * x0 : dy31 * x1) <= 0) continue;
+              }
+              mask |= 1 << (sy * 2 + sx);
+            }
           }
+          if (mask === 0) continue;
           const t = ty * TILES_X + tx;
           counts[t]++;
-          ent[ne] = t; entTri[ne] = o >> 2; ne++;
+          ent[ne] = t; entTri[ne] = (o >> 2) | (mask << 24); ne++;
         }
       }
     }

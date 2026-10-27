@@ -34,12 +34,13 @@ await log(`shaders ready after ${(performance.now() - t0).toFixed(0)} ms (worker
 if (q.get("readback") === "1") be.onPicture = () => {};   // a page that shows the picture through readPicture (ImageData): the read-back waits for the GPU
 const gpu = new GxGpu(be, dff, new Uint8Array(0x1800000));
 gpu.measure = be.measure;
+if (q.get("premem") !== "0") { const m0 = performance.now(); for (let i = 0; i < Math.max(from, 1); i++) { be.drawing = false; be.fastForward = true; gpu.runFrame(dff.frames[i]); } be.prepareMemory(gpu.mem, gpu.regs); await log(`memory uploaded in ${(performance.now() - m0).toFixed(0)} ms (frames before ${Math.max(from, 1)} played)`); }
 const times: number[] = [], feats = new Set<number>();
 // a page draws one frame per animation frame and so lets the event loop run between frames (worker threads start and deliver only then): yield the same way
 const mc = new MessageChannel();
 const yieldLoop = () => new Promise<void>((r) => { mc.port1.onmessage = () => r(); mc.port2.postMessage(0); });
-for (let i = 0; i < dff.frames.length && i <= to; i++) {
-  be.drawing = i >= Math.max(from, 1);
+for (let i = (q.get("premem") !== "0" ? Math.max(from, 1) : 0); i < dff.frames.length && i <= to; i++) {
+  be.drawing = i >= Math.max(from, 1); be.fastForward = false;
   const s = performance.now();
   const b0 = { v: gpu.timers.vertex, c: be.stats.cpuMs, f: be.stats.flushMs, u: be.stats.uploadMs, w: be.poolStats?.waitMs ?? 0, m: be.poolStats?.mergeMs ?? 0, mem: be.stats.memBytes, d: be.draws, t: be.tris };
   gpu.runFrame(dff.frames[i]);
