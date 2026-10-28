@@ -28,6 +28,16 @@ const FIGHTER_PREFIXES = [
 const GX_EXTRA = ["main.dol", "IfAll.usd", "LbBf.dat", "LbRf.dat", "SdIntro.dat", "GrPs.usd", "ItCo.usd", "PlCaRe.usd", "IfCoGet.dat"];
 const GX_OPTIONAL = ["IfAll.dat", "IfVsCam.dat", "IfVsCam.usd"];
 
+/** every file the draw path needs that is not among these names (a fighter's files are named by their prefix, "PlFx*.dat"); empty when all are there */
+export function gxMissing(have: string[]): string[] {
+  const set = new Set(have);
+  return [
+    ...REQUIRED.filter((n) => !set.has(n)),
+    ...FIGHTER_PREFIXES.filter((p) => !have.some((n) => n.startsWith(p) && n.endsWith(".dat"))).map((p) => `${p}*.dat`),
+    ...GX_EXTRA.filter((n) => !set.has(n)),
+  ];
+}
+
 /** the names the graphics build reads: the simulator's, and the display pass's files */
 export function gxNames(have: string[]): string[] {
   const set = new Set(have);

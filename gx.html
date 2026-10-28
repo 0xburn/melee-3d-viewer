@@ -13,6 +13,11 @@
          Messages: load, seek (game frame), play, pause, toggle, gameFiles, speed, playback, pace. Nothing leaves the browser. -->
     <div id="app">
       <div id="stage"><div id="view"></div></div>
+      <div id="files">
+        <button id="pickfolder" title="The folder of game files extracted from your own copy of the game. The files are read here in the browser and never uploaded.">Choose Game Folder</button>
+        <input id="pickfiles" type="file" multiple webkitdirectory hidden />
+        <span id="filesnote"></span>
+      </div>
       <div id="bar">
         <button id="play">Play</button>
         <button id="back" title="One frame back (starts the match again)">&#9664;|</button>

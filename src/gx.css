@@ -5,6 +5,8 @@
       #stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; }
       #view { position: relative; aspect-ratio: 73 / 60; width: min(100%, calc((100vh - 120px) * 73 / 60)); }
       #view canvas#screen, #view > canvas { width: 100%; height: 100%; max-width: none; max-height: none; }
+      #files { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      #filesnote { white-space: pre-wrap; }
       #bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
       button { font: inherit; color: inherit; background: var(--btn); border: 1px solid var(--line); border-radius: 4px; padding: 3px 10px; cursor: pointer; }
       button[aria-pressed="true"] { background: var(--on); }

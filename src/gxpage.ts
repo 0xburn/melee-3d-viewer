@@ -11,7 +11,7 @@
  */
 import { decode } from "@shelacek/ubjson";
 import { CpuBackend } from "./render3d/gxr/cpu";
-import { gxNames, namesToRead, readGameFiles } from "./sim/gamefiles";
+import { gxMissing, gxNames, namesToRead, readGameFiles } from "./sim/gamefiles";
 import type { GameFilesFrom } from "./sim/protocol";
 import { readTape } from "./sim/tape";
 import { isPlaybackMode, PLAYBACK_MODES, type GxCoreFactory, type PlaybackMode } from "./render3d/gxpath/core";
@@ -46,6 +46,31 @@ let retryText: string | null = null;
 let playbackMode: PlaybackMode = isPlaybackMode(q.get("playback")) ? (q.get("playback") as PlaybackMode) : "slippi";
 let pace: Pace = isPace(q.get("pace")) ? (q.get("pace") as Pace) : "60";
 let currentUrl: string | null = null;
+let pending: { url: string; frame: number; play: boolean } | null = null;
+const note = (s: string) => { $("filesnote").textContent = s; };
+
+/** the game files from a picked folder (or files): checked for what the draw path needs, then used for the next load (and a waiting one) */
+function setGameFiles(list: File[]) {
+  const missing = gxMissing(list.map((f) => f.name));
+  if (missing.length) {
+    note(`These game files are missing from the folder: ${missing.join(", ")}`);
+    return;
+  }
+  filesFrom = { kind: "files", list };
+  gameFiles = null;
+  note(`Game files found (${list.length} files in the folder). They are read here and never uploaded.`);
+  const p = pending ?? (currentUrl ? { url: currentUrl, frame: session ? session.tape.gameFrame(Math.max(0, session.shown)) : FIRST_FRAME, play: false } : null);
+  if (p) void loadReplay(p.url, p.frame, p.play).catch(fail);
+}
+
+/** every file under a picked folder (its subfolders too: an extracted disc keeps them in files/), by name, the first of a name kept */
+async function folderFiles(dir: FileSystemDirectoryHandle, out = new Map<string, File>()): Promise<Map<string, File>> {
+  for await (const entry of (dir as unknown as { values(): AsyncIterable<FileSystemHandle> }).values()) {
+    if (entry.kind === "file") { if (!out.has(entry.name)) out.set(entry.name, await (entry as FileSystemFileHandle).getFile()); }
+    else await folderFiles(entry as FileSystemDirectoryHandle, out);
+  }
+  return out;
+}
 
 /** Playback is fixed from the replay's first frame: a change plays the replay again from the start, back to the frame shown */
 function setPlaybackMode(m: PlaybackMode) {
@@ -99,7 +124,14 @@ async function loadReplay(url: string, frame: number, play = q.get("paused") !==
   // does, or, for Original, works out the raw bytes the console had from the recorded positions: session.ts, cfit.ts)
   const tape = readTape(parsed.raw, parsed.metadata, { stadiumTransformations: true });
   mark("replay");
-  if (!filesFrom) throw new Error("no game files: give ?files=<folder url> or hand over the folder's files");
+  if (!filesFrom) {
+    // (the replay waits for the game files: the folder picker loads it once they are there)
+    pending = { url, frame, play };
+    note("Choose the folder of game files extracted from your copy of the game to play this replay.");
+    info("waiting for the game files");
+    return;
+  }
+  pending = null;
   if (!gameFiles) {
     info("reading the game files...");
     // (a picked folder: the names the draw path reads, from what is in it; a folder by URL: the module's own list beside it)
@@ -188,6 +220,24 @@ const PAD_CHOICES: OverlayShow[] = ["off", "both", "left", "right"];
 $("pads").onclick = () => { padShow = PAD_CHOICES[(PAD_CHOICES.indexOf(padShow) + 1) % PAD_CHOICES.length]; pads.set(padShow, you); if (session) pads.update(Math.max(0, session.shown)); showButtons(); };
 $("playback").onclick = () => setPlaybackMode(PLAYBACK_MODES[(PLAYBACK_MODES.indexOf(playbackMode) + 1) % PLAYBACK_MODES.length]);
 $("pace").onclick = () => setPace(PACES[(PACES.indexOf(pace) + 1) % PACES.length]);
+$("pickfolder").onclick = async () => {
+  const pick = (window as unknown as { showDirectoryPicker?: (o?: object) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker;
+  if (!pick) { $<HTMLInputElement>("pickfiles").click(); return; }
+  try {
+    note("Reading the folder...");
+    setGameFiles([...(await folderFiles(await pick({ mode: "read" }))).values()]);
+  } catch (e) {
+    if ((e as Error)?.name === "AbortError") { note(""); return; }
+    $<HTMLInputElement>("pickfiles").click(); // (a browser that refuses the folder picker here: the file input instead)
+  }
+};
+$<HTMLInputElement>("pickfiles").onchange = (e) => {
+  const list = [...((e.target as HTMLInputElement).files ?? [])];
+  const byName = new Map<string, File>();
+  for (const f of list) if (!byName.has(f.name)) byName.set(f.name, f);
+  if (byName.size) setGameFiles([...byName.values()]);
+};
+if (filesFrom) note("Game files from the given folder address.");
 $("play").onclick = () => playback?.toggle();
 $("fwd").onclick = () => playback?.stepForward();
 $("back").onclick = () => { void playback?.stepBack(); };
@@ -212,7 +262,7 @@ window.addEventListener("message", (e) => {
   if (!m || typeof m.type !== "string") return;
   switch (m.type) {
     case "load": void loadReplay(String(m.url), typeof m.frame === "number" ? m.frame : FIRST_FRAME).catch(fail); break;
-    case "gameFiles": filesFrom = { kind: "files", list: m.files as File[] }; gameFiles = null; break;
+    case "gameFiles": setGameFiles(m.files as File[]); break;
     case "seek": if (playback && typeof m.frame === "number") void playback.seek(m.frame - FIRST_FRAME); break;
     case "play": playback?.play(); break;
     case "pause": playback?.pause(); break;
