@@ -37,7 +37,8 @@ MELEE_ASSETS=<folder> deno test --no-check --sloppy-imports --allow-env --allow-
 deno run --sloppy-imports --allow-read scripts/check-effect-assets.ts <folder>   # every effect's model or generator is in your files
 ```
 
-`dist/` has `embed.html` (the player), `dev.html` (the dev page),
+`dist/` has `embed.html` (the player), `gx.html` (the GX player, with its
+simulator module in `gx/`), `dev.html` (the dev page),
 `LICENSE.txt` and `THIRD_PARTY_LICENSES.txt` (the bundled npm packages'
 notices). The build uses relative paths, so it can be served from any folder.
 
@@ -203,6 +204,51 @@ python scripts/generate-item-animations.py --check    # compares it with the rep
 `--native-root <folder>` reads a checkout somewhere else (`vendor/` is in
 `.gitignore`). The table in the repository was made from doldecomp/melee
 1f0499b.
+
+## The GX player (`gx.html`)
+
+`gx.html` plays a replay by running the game's own drawing code. melee-sim-light,
+built as WebAssembly with its graphics layer (`public/gx/gx-core.wasm`, see
+`public/gx/BUILD.txt`), plays the match and runs the game's display pass every
+frame; what the game would send to the GameCube's graphics processor comes out
+as a command stream, and a clean-room GX renderer written for this viewer
+(`src/render3d/gxr/`, WebGL 2) draws that stream. Nothing of the picture is
+re-created by hand: the camera, lights, models, effects and HUD are the game's.
+
+How to use it:
+
+- Open `gx.html` (in a build, `dist/gx.html`) with `?replayUrl=<.slp>`, or send
+  it a `load` message as with `embed.html`.
+- Click **Choose Game Folder** and pick the folder you extracted from your own
+  disc (see "Your game files"; subfolders are searched too). The page reads the
+  files it needs in the browser; nothing is uploaded. If something is missing
+  it says which files. It needs `main.dol`, `PlCo.dat`, `PdPm.dat`, `ItCo.dat`,
+  `ItCo.usd`, the `Ef*.dat` effect files, the stage files (`GrNLa.dat`,
+  `GrNBa.dat`, `GrIz.dat`, `GrPs.dat`, `GrSt.dat`, `GrOp.dat`, `GrPs.usd`, and
+  `GrPs1.dat` to `GrPs4.dat` when present), every fighter's `Pl*.dat` files,
+  `PlCaRe.usd`, `IfAll.usd`, `IfCoGet.dat`, `LbBf.dat`, `LbRf.dat` and
+  `SdIntro.dat`. A folder can also be given as `?files=<folder url>` (with
+  `gx/sim-files.json`, the list of names, beside the module).
+- **Playback**: *Slippi* (the default) shows the replay as Slippi's replay
+  playback shows it; *Original* follows the console's own recording. They
+  differ in a few small ways (for example a fighter's first frames on the
+  entry ramp, and the C-stick of replays from before Slippi 3.17, which the
+  simulator works out from the recorded positions; Original takes from a few
+  seconds to about half a minute more to load such a replay). Changing it plays the replay again from
+  the start, back to the frame shown.
+- **Speed**: *60* (the default) plays 60 frames a second, one per refresh on a
+  60 Hz screen; *Console (59.94)* plays at the GameCube's rate, 60000/1001 frames
+  a second. Every frame is drawn in both.
+- Play, pause, seek, frame step (arrow keys), and the slower and faster speeds
+  work as in the other player.
+
+Hosting: the page and its scripts (including the worker script) must be sent
+with `Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`; without them the renderer runs
+on one thread and is slower. A page that puts `gx.html` in an iframe must be
+cross-origin isolated too. `npm run dev` and `npm run preview` send both. It
+needs WebGL 2 and about 1.3 GB of memory; the first load compiles the
+renderer's shader (10 to 20 seconds, once per browser).
 
 ## Embedding
 
