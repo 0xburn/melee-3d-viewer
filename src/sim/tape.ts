@@ -59,7 +59,7 @@ export interface Tape {
   gameFrame(i: number): number;
   /** what the graphics build of the simulator reads beyond the wire config (render3d/gxpath/tapebridge.ts): the patch bits its
    *  admission derives from the code list (MSL_PATCH_*), and each slot's level byte (a human's, 1..9, for Nana's AI) */
-  gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2; ports: number[] };
+  gx: { patches: number; levels: number[]; stadium: 0 | 1 | 2; ports: number[]; streams: number };
   /** (graphics build) the recording has no raw C-stick bytes (Slippi before 3.17): the tape header says so (MSL_PATCH_RAW_CSTICK_ABSENT) and
    *  the simulator owns the rule (playback slippi: as Slippi plays it; original: the fit, render3d/gxpath/cfit.ts) */
   rawCAbsent: boolean;
@@ -74,6 +74,8 @@ export interface Tape {
   recorded(i: number): RecordedRow;
 }
 
+/** wire.h MslCoreMatchConfig.stage_event_streams bit 2 (the tape header's byte 37) */
+export const STREAM_FRAME_START_SEEDS = 1 << 2;
 /** wire.h MSL_PATCH_RAW_CSTICK_ABSENT (the tape header's slippi_patches byte) */
 export const PATCH_RAW_CSTICK_ABSENT = 1 << 7;
 
@@ -410,6 +412,10 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
       stadium,
       // (each slot's controller port, 0 to 3)
       ports: slots.map((s) => s.port - 1),
+      // (the tape header's stage_event_streams bits the graphics build reads beyond the wire config's: bit 2, the recording has Frame Start
+      // events (Slippi 2.2 on; replay_drive.py build_tape "frame_start_seeds"), so its frame seeds are the real frame-start seeds and the
+      // viewer build restores the RNG once at the frame start, not again at the fighters' point. The reader refuses a replay without them.)
+      streams: sawFrameStart ? STREAM_FRAME_START_SEEDS : 0,
       // (a human with a level byte of 1..9 is MSL_CORE_HUMAN_LEVEL | level)
       levels: slots.map((s) => {
         if (s.cpu) return s.cpu;
