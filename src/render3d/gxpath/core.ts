@@ -47,6 +47,7 @@ export interface GxCoreModule {
   _msl_gxw_cfit_next(first: number, nearOnly: number): number;
   _msl_gxw_cfit_mode(): number;
   _msl_gxw_set_recorded(buf: number, size: number): number;
+  _msl_gxw_set_display(on: number): number;
   _msl_gxw_cfit_result(moved: number): void;
   _msl_gxw_cfit_first(): number;
   _msl_gxw_cfit_flips(): number;
@@ -159,6 +160,12 @@ export class GxCore {
   output(): DataView {
     const m = this.mod, p = m._msl_gxw_output_ptr();
     return new DataView(m.HEAPU8.buffer, p, m._msl_gxw_output_size());
+  }
+
+  /** gameplay only: the steps run no display pass and record no GX stream (before the first step; the fit's and the drive check's drives) */
+  setDisplay(on: boolean): void {
+    const r = this.mod._msl_gxw_set_display(on ? 1 : 0);
+    if (r !== 0) throw new Error(`msl_gxw_set_display: ${r}`);
   }
 
   /** (a resynced drive) the recording's positions, one record per tape frame (replay_drive.py recorded_positions); before the first step.

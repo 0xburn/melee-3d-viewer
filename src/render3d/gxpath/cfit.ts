@@ -57,6 +57,7 @@ export async function fitCstick(o: FitOptions): Promise<{ rawC: RawC; drives: nu
     const core = await GxCore.create(make, files);
     try {
       core.openMatch(whole, [...files.keys()], "original");
+      core.setDisplay(false); // (only the gameplay rows matter)
       if (resynced) core.setRecorded(recorded);
       let t0 = performance.now();
       for (let i = 0; i < count; i++) {

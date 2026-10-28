@@ -243,6 +243,7 @@ export class GxSession {
       try {
         const whole = await this.tapeFor(d, "original");
         core.openMatch(whole, files.names, "original");
+        core.setDisplay(false); // (only the gameplay rows matter)
         let t0 = now();
         for (let i = 0; i < tape.count; i++) {
           core.step(nativeRow(whole, i));
