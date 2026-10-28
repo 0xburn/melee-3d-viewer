@@ -391,15 +391,27 @@ asset routes are not included here.
 - Lucky Stats by petey (0xburn): the fighters' native effect callbacks, Fox
   and Falco's up-B fire, item animations and effect lifetimes, and the
   projectile joint fixes were ported from its viewer.
-- [melee-sim-light](https://github.com/kyhavlov/melee-sim-light) by kyhavlov:
-  the simulator that writes viewer tracks, and that the viewer can run in the
-  browser as WebAssembly (`src/sim/`). `src/sim/tape.ts` follows its replay
-  validator's input reading.
+- [melee-sim-light](https://github.com/kyhavlov/melee-sim-light) by kyhavlov
+  (Kyle Havlovitz), with Vlad Firoiu, KeithG33 and Bradley Lewis Fargo among
+  its contributors: the simulator that writes viewer tracks, that the viewer
+  can run in the browser as WebAssembly (`src/sim/`), and whose graphics build
+  runs the game's drawing code for the GX player (`public/gx/`, built from the
+  fork named in `public/gx/BUILD.txt`). `src/sim/tape.ts` follows its replay
+  validator's and replay driver's input reading.
 - [Emscripten](https://emscripten.org) (MIT / University of Illinois NCSA):
   builds the simulator for the browser; its runtime is part of that build.
 - The [Melee decompilation](https://github.com/doldecomp/melee)
   (doldecomp/melee contributors): the game's code, which the renderer's
-  behavior is written from (function names in the comments are its names).
+  behavior is written from (function names in the comments are its names), and
+  which the simulator compiles, the GX player's drawing code included.
+- [Project Slippi](https://github.com/project-slippi) (Fizzi and the Project
+  Slippi team): the GX player's *Slippi* playback follows what Slippi's replay
+  playback does (its playback code's restore of the game's state, read for
+  behavior), and replays are its `.slp` files.
+- [Dolphin](https://github.com/dolphin-emu/dolphin) (the Dolphin team): its
+  GameCube graphics emulation was a reference for the GX player's behavior
+  only; no Dolphin code is used, and the GX renderer is written from a
+  specification of the hardware's behavior.
 - [noclip.website](https://github.com/magcius/noclip.website) by Jasper St.
   Pierre (magcius) (MIT): its SYSDOLPHIN loader was a reference for
   `src/render3d/hsd.ts`, and its keyframe decoding is adapted there. Its
