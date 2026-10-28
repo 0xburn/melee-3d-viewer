@@ -71,7 +71,7 @@ export async function fitCstick(o: FitOptions): Promise<{ rawC: RawC; drives: nu
       core.destroy();
     }
   };
-  // (replay_drive.drive_fitted's flow, as the planner's API states it: NOTE_FROM_W12.md 2026-10-28 (b))
+  // (replay_drive.drive_fitted's flow, as the planner's API states it: tools/replay/gx_wasm_api.c, msl_gxw_cfit_*)
   const plain = await drive(load(), false);
   let n = m._msl_gxw_cfit_next(plain.first, plain.first >= 0 && plain.near ? 1 : 0);
   if (n === 2 && plain.near) {

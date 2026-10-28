@@ -3,7 +3,7 @@
  * row i of the tape is stepped, its stream and new memory go to the renderer, and the picture that frame copies to the screen is
  * the frame shown. Seeking back starts the match again (the simulator has no way back) and plays forward without drawing.
  *
- * The renderer is anything with gxr's GxBackend (the CPU reference, the WebGL one); see INTERFACE.md for what is asked of it.
+ * The renderer is anything with gxr's GxBackend (the CPU reference, the WebGL one); its methods used here are listed in SessionBackend below.
  */
 import { GxGpu } from "../gxr/gpu";
 import type { Dff, GxFrame } from "../gxr/dff";

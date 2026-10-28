@@ -53,7 +53,7 @@ export interface GxCoreModule {
   _msl_gxw_cfit_flips(): number;
 }
 
-/** how the replay is played back: as Slippi's playback shows it, or as the console recorded it (NOTE_FROM_W12.md) */
+/** how the replay is played back: as Slippi's playback shows it, or as the console recorded it (the simulator's msl_gxw_set_playback) */
 export type PlaybackMode = "slippi" | "original";
 export const PLAYBACK_MODES: PlaybackMode[] = ["slippi", "original"];
 export const isPlaybackMode = (v: unknown): v is PlaybackMode => v === "slippi" || v === "original";

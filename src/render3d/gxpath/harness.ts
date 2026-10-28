@@ -1,7 +1,7 @@
 /* A checking mode of the page (?harness=<window names>), for the pixel checks: each named gate window (a replay's name and a capture frame;
  * its map file gives the tape rows) is played from the first row, and the pictures of the window's five frames are posted as
  * <name>/efb_00000k.raw, k = 1..5 (width, height, 28 as little-endian words, then RGBA rows from the top) to /save/. Frame k is tape row
- * swaps[1] + 122 + k, the way the integration's window recordings number them (W1's rec_all.py: tape frames from swaps[1] + 122 on, frame
+ * swaps[1] + 122 + k, the way the integration's window recordings number them (a recording of tape frames from swaps[1] + 122 on, frame
  * 0 the warm-up frame before the five); k = 0 is posted empty. The replay is played once from the first row, every row drawn, as in play
  * (a window late in the game sees what the frames before it drew: the screens that show the game's own earlier pictures). Not used in play.
  */
