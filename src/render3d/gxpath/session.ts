@@ -194,12 +194,12 @@ export class GxSession {
     return row < this.index - 1 || !this.core;
   }
 
-  /** the whole tape of drive choice d: its config, every row, the trailers; in playback original, for a recording without raw C-stick
-   *  bytes, the raw bytes the simulator's fit chooses for that choice (cfit.ts; made once per choice) */
-  private async tapeFor(d: number): Promise<Uint8Array> {
+  /** the whole tape of drive choice d: its config, every row, the trailers; played back `mode`, for a recording without raw C-stick bytes
+   *  in playback original, the raw bytes the simulator's fit chooses for that choice (cfit.ts; made once per choice) */
+  private async tapeFor(d: number, mode: PlaybackMode = this.playback): Promise<Uint8Array> {
     const { tape } = this.o;
     const drive = this.o.drive ?? driveOrder(tape, this.o.maxDrives ?? 3)[d] ?? driveOrder(tape, 1)[0];
-    if (this.playback !== "original" || !tape.rawCAbsent) return nativeTape(tape, drive);
+    if (mode !== "original" || !tape.rawCAbsent) return nativeTape(tape, drive);
     if (!this.fits.has(d)) {
       const fit = await fitCstick({
         factory: this.o.factory, coreOptions: this.o.coreOptions, files: this.o.files, tape, drive,
@@ -211,7 +211,6 @@ export class GxSession {
     }
     return nativeTape(tape, drive, this.fits.get(d) ?? undefined);
   }
-
   /** the whole tape the match plays now (the checks compare it with the native driver's) */
   get wholeTape(): Uint8Array | null { return this.whole; }
 
@@ -229,41 +228,52 @@ export class GxSession {
   get wantsRetry(): boolean { return this.diverged !== null && !this.retried && (this.o.maxDrives ?? 3) > 1 && !this.o.drive; }
 
   /**
-   * The game parted from the replay at `diverged.row` with this drive choice. Play the others from the start, the simulator alone (one
-   * instance at a time, sliced so the page stays alive), and keep the choice that goes furthest (src/sim/drive.ts does the same for the
-   * track). Resolves true when another choice held longer and the match is now on it, started again from the first row (the caller seeks back).
+   * The game parted from the replay at `diverged.row` with this drive choice. Which choice (UCF switches, arithmetic) the recorded game had
+   * is judged against the recording, so always with playback original (the game Slippi's playback shows differs from the recording by
+   * design: playback slippi's divergence alone says nothing): each choice is driven from the start, the simulator alone (sliced so the page
+   * stays alive, the match on screen goes on), and the one that holds longest is kept (src/sim/drive.ts does the same for the track).
+   * Resolves the better choice's index, or null when the one playing is as good; switchDrive() then starts the match again on it.
    */
-  async retryDrives(onProgress?: (text: string) => void, now = () => performance.now(), pause = () => new Promise<void>((r) => setTimeout(r, 0))): Promise<boolean> {
+  async bestDrive(onProgress?: (text: string) => void, now = () => performance.now(), pause = () => new Promise<void>((r) => setTimeout(r, 0))): Promise<number | null> {
     this.retried = true;
     const { tape, files } = this.o;
     const choices = driveOrder(tape, this.o.maxDrives ?? 3);
-    this.drivesTried = [{ index: this.driveIndex, row: this.diverged?.row ?? tape.count }];
-    let best = this.drivesTried[0];
-    for (let d = 0; d < choices.length && best.row < tape.count; d++) {
-      if (d === this.driveIndex) continue;
-      onProgress?.(`the game parts from the replay at frame ${this.diverged?.frame}: trying setting ${d + 1} of ${choices.length}`);
+    const reach = async (d: number): Promise<number> => {
       const core = await GxCore.create((opt) => this.o.factory({ ...opt, ...this.o.coreOptions }), files.files);
-      let reached = tape.count;
       try {
-        const whole = await this.tapeFor(d);
-        core.openMatch(whole, files.names, this.playback);
-        let i = 0, t0 = now();
-        for (; i < tape.count; i++) {
+        const whole = await this.tapeFor(d, "original");
+        core.openMatch(whole, files.names, "original");
+        let t0 = now();
+        for (let i = 0; i < tape.count; i++) {
           core.step(nativeRow(whole, i));
-          if (i > 0 && differs(core.output(), tape.expected(i))) { reached = i; break; }
-          if (now() - t0 > 12) { await pause(); t0 = now(); if (this.closed) return false; }
+          if (i > 0 && differs(core.output(), tape.expected(i))) return i;
+          if (now() - t0 > 12) { await pause(); t0 = now(); if (this.closed) return -1; }
         }
+        return tape.count;
       } catch {
-        reached = 0; // (a build that cannot play this choice)
+        return 0; // (a build that cannot play this choice)
       } finally {
         core.destroy();
       }
-      this.drivesTried.push({ index: d, row: reached });
-      if (reached > best.row) best = this.drivesTried[this.drivesTried.length - 1];
+    };
+    onProgress?.(`checking this replay's game settings against the recording`);
+    const current = this.playback === "original" ? this.diverged?.row ?? tape.count : await reach(this.driveIndex);
+    this.drivesTried = [{ index: this.driveIndex, row: current }];
+    let best = this.drivesTried[0];
+    for (let d = 0; d < choices.length && best.row < tape.count; d++) {
+      if (d === this.driveIndex) continue;
+      onProgress?.(`trying game setting ${d + 1} of ${choices.length}`);
+      const row = await reach(d);
+      if (this.closed) return null;
+      this.drivesTried.push({ index: d, row });
+      if (row > best.row) best = this.drivesTried[this.drivesTried.length - 1];
     }
-    if (best.index === this.driveIndex) return false;
-    this.driveIndex = best.index;
+    return best.index === this.driveIndex ? null : best.index;
+  }
+
+  /** play drive choice d from now on: the match starts again from its first row (the caller seeks back) */
+  async switchDrive(d: number): Promise<void> {
+    this.driveIndex = d;
     await this.start();
-    return true;
   }
 }

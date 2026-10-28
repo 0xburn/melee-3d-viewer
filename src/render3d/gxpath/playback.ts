@@ -135,21 +135,25 @@ export class GxPlayback {
     }
   }
 
-  /** the game parted from the replay: try the other drive choices with playback held, then go on from where it was */
+  /** the game parted from the replay: the other drive choices are tried in the background while the match on screen goes on; when one
+   *  holds longer, the match starts again on it and comes back to the frame shown */
   private retry(): void {
-    const s = this.session, row = Math.max(0, s.shown), wasPlaying = this.playing;
-    this.playing = false;
-    this.restarting = true;
-    this.hooks.onState();
-    void s.retryDrives((text) => this.hooks.onRetry?.(text)).then(async (switched) => {
+    const s = this.session;
+    void s.bestDrive((text) => this.hooks.onRetry?.(text)).then(async (best) => {
       this.hooks.onRetry?.(null);
+      if (best === null) return;
+      const row = Math.max(0, s.shown), wasPlaying = this.playing;
+      this.playing = false;
+      this.restarting = true;
+      this.hooks.onState();
+      await s.switchDrive(best);
       this.restarting = false;
-      if (switched) { this.seeking = row; }
+      this.seeking = row;
       this.playing = wasPlaying;
       this.last = this.clock();
       this.hooks.onState();
       this.kick();
-    }, (e) => { this.restarting = false; this.hooks.onRetry?.(null); this.hooks.onError(e); });
+    }).catch((e) => { this.restarting = false; this.hooks.onRetry?.(null); this.hooks.onError(e); });
   }
 
   private kick(): void { if (!this.raf && typeof requestAnimationFrame === "function") this.loop(); }
