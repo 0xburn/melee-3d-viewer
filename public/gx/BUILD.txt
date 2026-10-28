@@ -1,17 +1,12 @@
 The GX player's simulator module (gx-core.js, gx-core.wasm) and its game file list (sim-files.json).
 
 Built from melee-sim-light, https://github.com/briandle00/melee-sim-light (a fork of
-https://github.com/kyhavlov/melee-sim-light), commit a784924b39419cf78cad20fb30bc5738a6b1c42c, with:
-
-  FORCE=1 EXTRA_CFLAGS="-fmacro-prefix-map=<tree>/= -ffile-prefix-map=<tree>/=" bash tools/build/build_wasm_gx.sh
-
-from a clean build folder, DATA unset (no game data is inside the module: the page hands it the user's own files).
-The prefix maps only keep the build machine's folder out of the module's source-file names; gx-core.js has its two CRLF line ends
-written as LF.
-Emscripten 6.0.9.
+https://github.com/kyhavlov/melee-sim-light), branch gx-viewer, commit df3aee13d6fcfa0c6f785dc7043b8634f62a6817,
+with tools/build/build_wasm_gx.sh from a clean build folder, DATA unset: no game data is inside the module (the page
+hands it the user's own files, main.dol included). gx-core.js has its two CRLF line ends written as LF.
 
 sha256
   gx-core.js    b6eebdb41077eec50f994ab1f312eafbe321a86580f24291a6fc821084b1f6f3
-  gx-core.wasm  cec87009046d28b8069f1cb7e8957ac730fe4b27548288f39040da968579a79d
+  gx-core.wasm  07dccb7aea1a7db2e071a5a1f242ea2ab43f2b0a95f7d9fdd3ad109a3752c4d4
 
 sim-files.json lists the game files the module reads (names only), for a game folder given by URL (?files=).
