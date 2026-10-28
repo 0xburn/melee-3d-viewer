@@ -7,7 +7,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { codeFlags, fnmsubsZeroOf } from "../src/sim/tape.ts";
 
-const CASES = "D:/work/gxpath/w10/sim/tools/replay/code_flags_cases.json";
+// (copies of the cases the fork's tools/replay/code_flags_cases.json and fnmsubs_cases.json hold; regenerate them there and copy them here
+// after any change to the rule: then this test shows whether the TypeScript side still agrees)
+const CASES = new URL("./fixtures/code_flags_cases.json", import.meta.url);
 
 test("codeFlags equals replay_drive.py code_flags on every case", async () => {
   const cases = JSON.parse(await Deno.readTextFile(CASES)) as { codes: number[]; online: boolean; flags: Record<string, boolean> }[];
@@ -18,7 +20,7 @@ test("codeFlags equals replay_drive.py code_flags on every case", async () => {
 });
 
 test("fnmsubsZeroOf equals replay_drive.py fnmsubs_zero on every case", async () => {
-  const cases = JSON.parse(await Deno.readTextFile(CASES.replace("code_flags_cases", "fnmsubs_cases"))) as { online: boolean; playedOn: string; fnmsubs_zero: boolean }[];
+  const cases = JSON.parse(await Deno.readTextFile(new URL("./fixtures/fnmsubs_cases.json", import.meta.url))) as { online: boolean; playedOn: string; fnmsubs_zero: boolean }[];
   assert.ok(cases.length >= 10);
   for (const c of cases) assert.equal(fnmsubsZeroOf(c.online ? 8 : 2, c.playedOn), c.fnmsubs_zero, JSON.stringify(c));
 });
