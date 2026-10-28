@@ -155,6 +155,15 @@ export function codeFlags(codes: { has(address: number): boolean; size: number }
   return f;
 }
 
+/**
+ * The host Dolphin's fnmsubs zero sign: the Slippi online code set (scene major 8) runs on Slippi's Dolphin; a
+ * recording that names mainline Dolphin as where it was played keeps retail signs. THE one rule, the same as
+ * replay_drive.py fnmsubs_zero and tools/validation/native.c parse_metadata (tests/code-flags-rule.test.ts).
+ */
+export function fnmsubsZeroOf(sceneMajor: number, playedOn: string): boolean {
+  return sceneMajor === 8 && playedOn !== "mainline dolphin";
+}
+
 // the UCF injections by address (the fork's tools/replay/replay_drive.py UCF_CODES)
 const UCF_CARDINALS = 0xc206b460, UCF_SHIELD_SDI = 0xc2093294, UCF_SDI = 0xc208e54c, UCF_SD_EXTENDED = 0xc209a0b8;
 const UCF_SHIELD_DROP = 0xc20998a4, UCF_084_SHIELD_DROP_SIZE = 208;
@@ -366,8 +375,7 @@ export function readTape(raw: Uint8Array, metadata: { playedOn?: string } | unde
 
   // ---- the platform's patches (parse_start, parse_metadata)
   const playedOn = metadata?.playedOn ?? "";
-  let fnmsubsZero = sceneMajor === 8;
-  if (playedOn === "mainline dolphin") fnmsubsZero = false;
+  const fnmsubsZero = fnmsubsZeroOf(sceneMajor, playedOn);
   const flags = codeFlags(codes, sceneMajor === 8);
   const recorded = codes.size ? recordedUcf(codes) : null;
   // (Slippi 3.18 on records Fountain's platforms and Whispy's direction: the streams are present)

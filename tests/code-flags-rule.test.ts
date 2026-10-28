@@ -5,7 +5,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { codeFlags } from "../src/sim/tape.ts";
+import { codeFlags, fnmsubsZeroOf } from "../src/sim/tape.ts";
 
 const CASES = "D:/work/gxpath/w10/sim/tools/replay/code_flags_cases.json";
 
@@ -15,6 +15,12 @@ test("codeFlags equals replay_drive.py code_flags on every case", async () => {
   for (const c of cases) {
     assert.deepEqual(codeFlags(new Map(c.codes.map((a) => [a, 0])), c.online), c.flags, JSON.stringify(c));
   }
+});
+
+test("fnmsubsZeroOf equals replay_drive.py fnmsubs_zero on every case", async () => {
+  const cases = JSON.parse(await Deno.readTextFile(CASES.replace("code_flags_cases", "fnmsubs_cases"))) as { online: boolean; playedOn: string; fnmsubs_zero: boolean }[];
+  assert.ok(cases.length >= 10);
+  for (const c of cases) assert.equal(fnmsubsZeroOf(c.online ? 8 : 2, c.playedOn), c.fnmsubs_zero, JSON.stringify(c));
 });
 
 test("a gecko list decides, and its absence falls back to the online code set", () => {
