@@ -44,7 +44,9 @@ export interface GxCoreModule {
   _msl_gxw_cfit_new(lanes: number, count: number): number;
   _msl_gxw_cfit_lane(lane: number, cx: number, cy: number): number;
   _msl_gxw_cfit_raw(lane: number, axis: number): number;
-  _msl_gxw_cfit_next(first: number): number;
+  _msl_gxw_cfit_next(first: number, nearOnly: number): number;
+  _msl_gxw_cfit_mode(): number;
+  _msl_gxw_set_recorded(buf: number, size: number): number;
   _msl_gxw_cfit_result(moved: number): void;
   _msl_gxw_cfit_first(): number;
   _msl_gxw_cfit_flips(): number;
@@ -157,6 +159,17 @@ export class GxCore {
   output(): DataView {
     const m = this.mod, p = m._msl_gxw_output_ptr();
     return new DataView(m.HEAPU8.buffer, p, m._msl_gxw_output_size());
+  }
+
+  /** (a resynced drive) the recording's positions, one record per tape frame (replay_drive.py recorded_positions); before the first step.
+   *  Each step then puts back a position within RESYNC_MOST of the recording's, as the native driver's MSL_RECORDED does */
+  setRecorded(bytes: Uint8Array): void {
+    const m = this.mod, p = m._malloc(bytes.length);
+    try {
+      m.HEAPU8.set(bytes, p);
+      const r = m._msl_gxw_set_recorded(p, bytes.length);
+      if (r !== 0) throw new Error(`msl_gxw_set_recorded: ${r}`);
+    } finally { m._free(p); }
   }
 
   /** the last step's row as the native driver writes it (replay_drive.c OutFrame: framediff.ts reads it; a view, valid until the next step) */
