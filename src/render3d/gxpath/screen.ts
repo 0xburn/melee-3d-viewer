@@ -86,6 +86,11 @@ export class GxScreen {
     this.crt!.draw(this.tex!, this.tube.width, this.tube.height);
   }
 
+  /** the TV's pass alone on the last picture at w x h, ms a frame (null: no TV shown) - for the checks */
+  benchCrt(w: number, h: number, n?: number): number | null {
+    return this.preset !== "off" && this.crt && this.tex ? this.crt.bench(this.tex, w, h, n) : null;
+  }
+
   show(rgba: Uint8Array): void {
     this.last = rgba.slice(0, 640 * 480 * 4);
     if (this.preset === "off" || !this.gl || !this.crt) {
