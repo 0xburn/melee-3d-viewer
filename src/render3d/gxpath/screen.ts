@@ -60,6 +60,9 @@ export class GxScreen {
     else if (this.last) this.show(this.last);
   }
 
+  /** the curve the TV is drawn with now */
+  get curveNow(): number { return this.curve; }
+
   /** the renderer is the WebGL one drawing into glFlat (true) or not */
   setGlMode(on: boolean): void { this.glMode = on; this.layout(); }
 
