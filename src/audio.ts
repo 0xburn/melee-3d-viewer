@@ -51,23 +51,34 @@ interface AudioPlayer extends EventTarget {
   pause(): void;
   setSpeed(rate: number): void;
   setMusic(on: boolean): void;
+  /** (optional) how the viewer plays the replay back from now on: "slippi" (as Slippi's replay playback shows it) or "original" (as the
+   *  console recorded it). The two can play some replays differently (the C-stick of a replay from before Slippi 3.17); a backend that
+   *  simulates the game plays it the same way, or its sound drifts from the picture. A backend may ignore it */
+  setPlayback?(mode: PlaybackMode): void;
   destroy(): unknown;
 }
+
+/** how the viewer plays the replay back (the GX player's Playback setting) */
+export type PlaybackMode = "slippi" | "original";
 
 type AudioPlayerClass = new (options: {
   audioOnly: true;
   assetsUrl: string;
   music: boolean;
+  /** (optional for the backend) the playback mode the replay is played back in, as setPlayback */
+  playback: PlaybackMode;
 }) => AudioPlayer;
 
 /** the game's first frame: viewer frame indexes start at 0, the host player's game frames at -123 */
 const FIRST_FRAME = -123;
 
-const config = (globalThis as { __MELEE_AUDIO_CONFIG__?: AudioConfig })
+let config = (globalThis as { __MELEE_AUDIO_CONFIG__?: AudioConfig })
   .__MELEE_AUDIO_CONFIG__;
 
 /** whether the host page configured sound at all (the sound controls show only then) */
-export const soundConfigured = !!config;
+export let soundConfigured = !!config;
+/** the host's configuration has come (at load, or later by configureSound) */
+export const [soundConfiguredNow, setSoundConfiguredNow] = createSignal(soundConfigured);
 export const [soundState, setSoundState] = createSignal<
   "off" | "loading" | "on" | "error"
 >("off");
@@ -84,6 +95,7 @@ let blob: Blob | undefined;
 let desired = false;
 let index = 0;
 let speed = 1;
+let playbackMode: PlaybackMode = "slippi";
 // counts every start and stop of sound: a start that finishes after sound
 // was turned off (or on again) sees the count has moved and does nothing
 let generation = 0;
@@ -92,8 +104,8 @@ let seeking = false;
 
 // the host's module is loaded ahead of the first click, so the click can
 // start sound at once; loading it makes no worker or AudioContext
-if (config) {
-  void import(/* @vite-ignore */ config.module)
+function loadModule(c: AudioConfig) {
+  void import(/* @vite-ignore */ c.module)
     .then((m: { ReplayPlayer: AudioPlayerClass }) => {
       Player = m.ReplayPlayer;
       setSoundAvailable(true);
@@ -102,6 +114,17 @@ if (config) {
       console.warn("Experimental audio controller failed", error);
       setSoundState("error");
     });
+}
+if (config) loadModule(config);
+
+/** a host that learns its configuration after the viewer has loaded (from its server, say) gives it here, once; the same as
+ *  __MELEE_AUDIO_CONFIG__ set before the viewer loads. Without either, nothing here does anything */
+export function configureSound(c: AudioConfig): void {
+  if (config || !c || typeof c.module !== "string") return;
+  config = c;
+  soundConfigured = true;
+  setSoundConfiguredNow(true);
+  loadModule(c);
 }
 
 /** sound off after the host player failed (if it is still the current one) */
@@ -151,6 +174,7 @@ export const sound = {
       audioOnly: true,
       assetsUrl: config!.assetsUrl,
       music: musicEnabled(),
+      playback: playbackMode,
     });
     player = p;
     setSoundState("loading");
@@ -216,6 +240,19 @@ export const sound = {
     if (!player.ready || seeking) return null;
     const frame = player.audioFrame;
     return frame == null ? null : Math.floor(frame - FIRST_FRAME);
+  },
+
+  /** the viewer's playback mode (README: setPlayback): told to the host player when it takes it, and its sound started again at the
+   *  frame shown (`frame`, the viewer's index: playing moves it without telling this module); kept for the next start either way */
+  playback(mode: PlaybackMode, frame?: number): void {
+    if (mode === playbackMode) return;
+    playbackMode = mode;
+    if (frame !== undefined) index = frame;
+    const p = player;
+    if (p?.ready && p.setPlayback) {
+      try { p.setPlayback(mode); } catch { fail(p); return; }
+      align();
+    }
   },
 
   /** the game's music on or off (the rest of the sound stays) */
