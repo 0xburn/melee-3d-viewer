@@ -250,6 +250,23 @@ cross-origin isolated too. `npm run dev` and `npm run preview` send both. It
 needs WebGL 2 and about 1.3 GB of memory; the first load compiles the
 renderer's shader (10 to 20 seconds, once per browser).
 
+### Export Video
+
+`gx.html`'s **Export Video** makes an MP4 of the whole game or of a stretch of game frames, in the player's current Playback, Speed
+and TV. Every frame is drawn offscreen as fast as the graphics card allows (not in real time) by the same renderer the player uses,
+encoded with the browser's own H.264 encoder (WebCodecs; the graphics card's encoder when it has one) and put in an MP4 by
+[mp4-muxer](https://github.com/Vanilagy/mp4-muxer) (MIT). The file is made in the browser and saved to its downloads; nothing is
+uploaded. There is no sound yet.
+
+The video is the game's own 640 x 480 picture, or that finished picture scaled up 2x or 4x with each pixel made a square (nearest,
+nothing blended). The game is never drawn at another internal resolution, so the pixels are the game's at every size. A TV is a
+display layer over the finished picture, drawn at the video's size. One tape row is one video frame, at 60 or 60000/1001 frames a
+second.
+
+The code is `src/render3d/gxpath/export.ts`; `exportcheck.ts` holds the checks: every frame before encoding equals the picture the
+player draws for that row (pixel for pixel; at 2x and 4x each block is one of the picture's pixels), the first and last frames are the
+stretch's first and last rows, the file's sample count and durations are one per row, and the encoding's loss as PSNR of the frames
+decoded back.
 ## Embedding
 
 `embed.html` is meant to sit in an iframe. URL parameters: `replayUrl`,
@@ -398,6 +415,9 @@ asset routes are not included here.
   runs the game's drawing code for the GX player (`public/gx/`, built from the
   fork named in `public/gx/BUILD.txt`). `src/sim/tape.ts` follows its replay
   validator's and replay driver's input reading.
+- [mp4-muxer](https://github.com/Vanilagy/mp4-muxer) by Vanilagy (MIT): puts
+  Export Video's H.264 frames into the MP4 file; the build lists it, with its
+  license, in `THIRD_PARTY_LICENSES.txt`.
 - [Emscripten](https://emscripten.org) (MIT / University of Illinois NCSA):
   builds the simulator for the browser; its runtime is part of that build.
 - The [Melee decompilation](https://github.com/doldecomp/melee)
