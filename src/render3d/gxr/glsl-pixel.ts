@@ -400,7 +400,7 @@ void stageCoords(MapI mp, uint n, int x, int y, out int S24, out int T24, out in
   if (constLod) {
     lod = minl; linear = magLin;
   } else {
-    // the largest change of s and of t across the block: one copy of the differences for both and for the three neighbours
+    // the largest change of s and of t across the block: one copy of the differences for both and for the three neighbors
     uint dm[2];
     bool diag = bf(mp.mode0, 8, 1) == 1u;
     for (int m = 0; m < uK.w; m++) {
