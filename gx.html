@@ -27,8 +27,24 @@
         <button id="pace" title="60: 60 frames a second, one frame per refresh on a 60 Hz screen. Console: 59.94 frames a second, the rate a GameCube runs at. Every frame is shown either way.">Speed: 60</button>
         <button id="crt" title="The TV the picture is shown on (a display layer: the picture itself is the same)">TV: Off</button>
         <button id="pads" title="Controllers drawn beside the HUD slots (a layer over the picture)">Controllers: Off</button>
+        <button id="export" aria-expanded="false">Export Video</button>
         <div id="seek"><div id="seekfill"></div></div>
         <span id="where"></span>
+      </div>
+      <div id="exportbox" hidden>
+        <fieldset id="exportwhat">
+          <legend>What</legend>
+          <label><input type="radio" name="what" value="game" checked /> The whole game</label>
+          <label><input type="radio" name="what" value="clip" /> Game frames <input id="exportfrom" type="number" step="1" /> to <input id="exportto" type="number" step="1" /></label>
+        </fieldset>
+        <fieldset id="exportsize">
+          <legend>Size</legend>
+          <label><input type="radio" name="size" value="1" checked /> 640 x 480 (the game's)</label>
+          <label><input type="radio" name="size" value="2" /> 1280 x 960</label>
+          <label><input type="radio" name="size" value="4" /> 2560 x 1920</label>
+        </fieldset>
+        <p id="exportnote">No sound yet. Every frame is drawn as the player draws it, with its Playback, Speed and TV, as fast as your graphics card allows. The video is made here in your browser and saved to your downloads; nothing is uploaded.</p>
+        <div id="exportgo"><button id="exportstart">Make the Video</button> <button id="exportcancel" hidden>Cancel</button> <span id="exportstate"></span></div>
       </div>
       <div id="info"></div>
     </div>

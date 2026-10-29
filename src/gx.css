@@ -14,3 +14,10 @@
       #seekfill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--on); }
       #info { font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; opacity: .85; }
     
+      #exportbox { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; }
+      #exportbox[hidden] { display: none; }
+      #exportbox fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+      #exportbox legend { font-weight: 600; padding: 0 0 4px; }
+      #exportbox input[type=number] { width: 6em; font: inherit; }
+      #exportnote { flex-basis: 100%; margin: 0; }
+      #exportgo { flex-basis: 100%; display: flex; gap: 8px; align-items: center; }

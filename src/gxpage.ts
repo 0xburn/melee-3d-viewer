@@ -20,6 +20,7 @@ import { ControllerOverlay, isOverlayShow, type OverlayShow } from "./render3d/g
 import { GxScreen } from "./render3d/gxpath/screen";
 import { CRT_PRESETS, CURVE_MAX, isCrtPreset, type CrtPreset } from "./render3d/crt";
 import { GxSession, type GameFiles, type SessionBackend } from "./render3d/gxpath/session";
+import { canExport, ExportCancelled, exportMp4, saveFile, videoName, type ExportOptions, type ExportScale } from "./render3d/gxpath/export";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const q = new URLSearchParams(location.search);
@@ -313,3 +314,119 @@ async function bench(s: GxSession) {
   const body = JSON.stringify({ rows: total.length, seconds: (performance.now() - t0) / 1000, isolated: (globalThis as { crossOriginIsolated?: boolean }).crossOriginIsolated === true, total, step, render, wasmHeap: s.memoryBytes, jsHeap: heap, diverged: s.diverged, playback: s.playback, hashes, loadTimes, pool: (s as unknown as { backend?: { poolStats?: unknown } }).backend?.poolStats ?? null });
   await fetch("/bench", { method: "POST", body });
 }
+
+// ---- Export Video: the whole game or a stretch of game frames, drawn offscreen frame by frame (export.ts) ----
+
+/** rows drawn before a stretch's first row (after the fast-forward): the screens that show the game's own earlier pictures are filled */
+const EXPORT_LEAD = 30;
+let exporting: AbortController | null = null;
+const exportName = () => (q.get("name") ?? currentUrl?.split("/").pop()?.split("?")[0] ?? "replay");
+
+/** the match at row `row`, its picture on the renderer's canvas: from the start when it is behind, the rows before played through
+ *  without drawing (fast-forward), the last EXPORT_LEAD drawn */
+async function seekForExport(row: number): Promise<void> {
+  const s = session!;
+  if (s.needsRestart(row)) await s.start();
+  while (!s.seekStep(row, 50, EXPORT_LEAD)) await new Promise((r) => setTimeout(r, 0));
+  glBackend?.present();
+}
+
+/** a video of rows from..to as the player draws them now (Playback, Speed, TV); the bytes and what it took */
+async function makeVideo(from: number, to: number, scale: ExportScale, extra: Partial<ExportOptions> = {}) {
+  const s = session!, p = playback!;
+  const back = Math.max(0, s.shown), wasPlaying = p.playing;
+  p.pause();
+  const pics = s.setPictures.bind(s);
+  // (the CPU renderer's picture comes as pixels: shown on the flat canvas, which is then the source)
+  if (!glBackend) { pics(true); s.onPicture = (rgba) => screen.show(rgba); }
+  const source = glBackend ? screen.glFlat : screen.flat;
+  try {
+    return await exportMp4({
+      from, to, scale, fps: pace === "console" ? 60000 / 1001 : 60,
+      tv: crtPreset === "off" ? undefined : { preset: crtPreset, curve: screen.curveNow },
+      source,
+      seek: seekForExport,
+      next: () => { const before = s.shown; s.step(true); glBackend?.present(); return s.shown !== before; },
+      ...extra,
+    });
+  } finally {
+    // (back to where the player was)
+    s.setPictures(screen.needsPixels);
+    await p.seek(back);
+    if (wasPlaying) p.play();
+  }
+}
+
+const exportState = (t: string) => { $("exportstate").textContent = t; };
+$("export").onclick = () => {
+  const box = $("exportbox"), open = box.hidden;
+  box.hidden = !open;
+  $("export").setAttribute("aria-expanded", String(open));
+  if (open && session) {
+    // (a stretch from the frame shown, ten seconds long, unless one was typed)
+    const gf = session.tape.gameFrame(Math.max(0, session.shown));
+    if (!$<HTMLInputElement>("exportfrom").value) $<HTMLInputElement>("exportfrom").value = String(gf);
+    if (!$<HTMLInputElement>("exportto").value) $<HTMLInputElement>("exportto").value = String(Math.min(gf + 599, session.tape.gameFrame(session.frameCount - 1)));
+  }
+  if (!canExport()) { exportState("This browser cannot make videos (it has no WebCodecs)."); $<HTMLButtonElement>("exportstart").disabled = true; }
+};
+$("exportstart").onclick = async () => {
+  if (!session || !playback || exporting) return;
+  const whole = document.querySelector<HTMLInputElement>('input[name="what"]:checked')!.value === "game";
+  const scale = Number(document.querySelector<HTMLInputElement>('input[name="size"]:checked')!.value) as ExportScale;
+  const last = session.frameCount - 1;
+  let from = 0, to = last;
+  if (!whole) {
+    from = Number($<HTMLInputElement>("exportfrom").value) - FIRST_FRAME;
+    to = Number($<HTMLInputElement>("exportto").value) - FIRST_FRAME;
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to > last || to < from) {
+      exportState(`Give two game frames from ${FIRST_FRAME} to ${session.tape.gameFrame(last)}, the first not after the second.`);
+      return;
+    }
+  }
+  exporting = new AbortController();
+  $<HTMLButtonElement>("exportstart").disabled = true;
+  $("exportcancel").hidden = false;
+  const t0 = performance.now();
+  try {
+    exportState("Getting to the first frame...");
+    const r = await makeVideo(from, to, scale, {
+      signal: exporting.signal,
+      onProgress: (done, total) => exportState(`Frame ${done} of ${total}...`),
+    });
+    saveFile(r.bytes, videoName(exportName(), whole ? undefined : session.tape.gameFrame(from), whole ? undefined : session.tape.gameFrame(to)));
+    exportState(`Saved: ${r.frames} frames, ${r.width} x ${r.height}, ${(r.bytes.length / 1048576).toFixed(1)} MB, in ${((performance.now() - t0) / 1000).toFixed(1)} s.`);
+  } catch (e) {
+    exportState(e instanceof ExportCancelled ? "Cancelled." : `The video could not be made: ${String((e as Error)?.message ?? e)}`);
+  } finally {
+    exporting = null;
+    $<HTMLButtonElement>("exportstart").disabled = false;
+    $("exportcancel").hidden = true;
+  }
+};
+$("exportcancel").onclick = () => exporting?.abort();
+// (for the checks: a video made the page's way, with the checks' hooks)
+(window as unknown as { __gxExport: object }).__gxExport = {
+  makeVideo, seekForExport, get screen() { return screen; }, get glBackend() { return glBackend; },
+  /** the checks (exportcheck.ts) on rows from..to at a size, with the page's settings */
+  async check(from: number, to: number, scale: ExportScale, sample?: number, bitrate?: number) {
+    if (!session || !(from >= 0 && to >= from && to < session.frameCount)) throw new Error(`rows ${from}-${to} are not all in the replay (${session?.frameCount} rows)`);
+    const { checkExport } = await import("./render3d/gxpath/exportcheck");
+    const s = session!, b = glBackend as unknown as { picture(): Uint8Array | null };
+    return await checkExport({
+      reference: async (last, onRow) => {
+        playback!.pause();
+        await s.start();
+        let t = performance.now();
+        while (s.index <= last) {
+          const row = s.index;
+          if (!s.step(true)) break;
+          const pic = s.shown === row ? b.picture() : null;
+          if (pic) onRow(row, pic);
+          if (performance.now() - t > 50) { await new Promise((r) => setTimeout(r, 0)); t = performance.now(); }
+        }
+      },
+      make: (hooks) => makeVideo(from, to, scale, { ...hooks, bitrate }),
+    }, { from, to, scale, fps: pace === "console" ? 60000 / 1001 : 60, sample });
+  },
+};
