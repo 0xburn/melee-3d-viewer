@@ -56,11 +56,15 @@ export class GxScreen {
       if (this.crt) this.crt.look = look;
       else this.crt = new Crt(this.gl, look);
     }
-    if (this.last) this.show(this.last);
+    if (this.tvFromGl) this.showGl();
+    else if (this.last) this.show(this.last);
   }
 
   /** the renderer is the WebGL one drawing into glFlat (true) or not */
   setGlMode(on: boolean): void { this.glMode = on; this.layout(); }
+
+  /** a TV shown with the WebGL renderer: the TV takes the picture from that renderer's canvas on the graphics card (showGl), no read-back */
+  get tvFromGl(): boolean { return this.glMode && this.preset !== "off" && !!this.crt; }
 
   /** whether the page needs the picture's pixels (a TV is chosen, or the renderer is the CPU one) */
   get needsPixels(): boolean { return this.preset !== "off" || !this.glMode; }
@@ -70,6 +74,16 @@ export class GxScreen {
     this.tube.style.display = tube ? "" : "none";
     this.glFlat.style.display = !tube && this.glMode ? "" : "none";
     this.flat.style.display = !tube && !this.glMode ? "" : "none";
+  }
+
+  /** the TV's picture from glFlat, as the WebGL renderer last presented it (call after its present()) */
+  showGl(): void {
+    if (!this.tvFromGl || !this.gl) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, this.glFlat);
+    this.crt!.draw(this.tex!, this.tube.width, this.tube.height);
   }
 
   show(rgba: Uint8Array): void {
