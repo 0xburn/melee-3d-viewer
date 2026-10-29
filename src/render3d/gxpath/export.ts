@@ -190,7 +190,7 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
 
 /** save bytes as a file the browser downloads (to its own downloads folder; nothing is uploaded) */
 export function saveFile(bytes: Uint8Array, name: string, type = "video/mp4"): void {
-  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type }));
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
