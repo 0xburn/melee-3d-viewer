@@ -40,6 +40,10 @@ export class GxPlayback {
   ended = false;
   /** the row a seek is going to (null: not seeking) */
   seeking: number | null = null;
+  /** while set and answering a row, playing shows that row instead of the clock's: the row being heard (src/audio.ts sound.frame: the
+   *  host's audioFrame). undefined: the clock's own; null: hold the picture (the sound is catching up). Every row up to it is drawn,
+   *  none past it: the picture never runs ahead of the sound, and a sound behind the picture holds it */
+  follow: (() => number | null | undefined) | null = null;
   private acc = 0;
   private last = 0;
   private busy = false;
@@ -100,6 +104,24 @@ export class GxPlayback {
         return;
       }
       if (!this.playing) return;
+      const heard = this.follow?.();
+      if (heard !== undefined) {
+        // (the clock's own count starts again from here when the sound goes)
+        this.last = this.clock();
+        this.acc = 0;
+        if (heard === null) return;
+        const s = this.session, target = Math.min(heard, s.frameCount - 1), t0 = this.clock();
+        let stepped = false;
+        while (s.index <= target) {
+          s.step(true);
+          stepped = true;
+          if (this.clock() - t0 > 14) break;
+        }
+        if (s.index >= s.frameCount) { this.ended = true; this.playing = false; }
+        if (stepped || this.ended) { this.hooks.onShown?.(); this.hooks.onState(); }
+        if (s.wantsRetry) this.retry();
+        return;
+      }
       const now = this.clock(), gap = now - this.last;
       this.last = now;
       if (gap > 0 && gap < 100) {
