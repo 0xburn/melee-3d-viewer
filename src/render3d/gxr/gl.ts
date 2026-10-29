@@ -85,6 +85,8 @@ export class GxGl implements GxBackend {
   private efb: Fbo[] = [];
   private cur = 0;
   private pictureFbo!: { fbo: WebGLFramebuffer; tex: WebGLTexture };
+  /** the picture framebuffer holds the last copy to the screen (present() shows it) */
+  private havePicture = false;
   /** the pass inputs, in a ring: a pass still running on the GPU keeps reading its own set while the next is written */
   private sets: { data: IntTex; list: IntTex; tiles: IntTex }[] = [];
   private setNo = 0;
@@ -612,7 +614,11 @@ export class GxGl implements GxBackend {
     const p = copyParams(regs.bp);
     const src = this.efb[this.cur];
     if (p.toScreen) {
-      if (this.onPicture) this.onPicture(this.readPicture(p.pixFmt), this.pictures);
+      // the copy to the screen is kept as it is made (the EFB is often cleared by the same copy, so present() cannot show the EFB
+      // afterwards); read back only for a page that asks for the pixels
+      this.drawPicture(p.pixFmt);
+      this.havePicture = true;
+      if (this.onPicture) this.onPicture(this.readKept(), this.pictures);
       this.pictures++;
     } else {
       const fmt = copyFormatFor(p);
@@ -704,9 +710,9 @@ export class GxGl implements GxBackend {
     return { color, depth };
   }
 
-  /** Show the frame buffer's top 640 x 480 (queued triangles are drawn first). With no target, or the context's own canvas, it is drawn
-   *  into the canvas's framebuffer without a read-back (nearest filtering, the canvas size, or `width` x `height`); a 2D context
-   *  or another canvas gets the picture through a read-back and putImageData. */
+  /** Show the last picture copied to the screen (before any: the frame buffer's top 640 x 480, queued triangles drawn first). With
+   *  no target, or the context's own canvas, it is drawn into the canvas's framebuffer without a read-back (nearest filtering, the
+   *  canvas size, or `width` x `height`); a 2D context or another canvas gets the picture through a read-back and putImageData. */
   present(target?: HTMLCanvasElement | { putImageData(d: ImageData, x: number, y: number): void } | number, height?: number, pixFmt = 0): void {
     if (target !== undefined && typeof target !== "number" && target !== (this.gl.canvas as unknown)) {
       const ctx = "putImageData" in target ? target : (target as HTMLCanvasElement).getContext("2d");
@@ -718,6 +724,15 @@ export class GxGl implements GxBackend {
     height = typeof target === "number" ? height! : this.gl.drawingBufferHeight;
     this.flush();
     const gl = this.gl;
+    if (this.havePicture) {
+      // (the kept picture's first row is the picture's top: flipped onto the canvas, whose first row is its bottom)
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, this.pictureFbo.fbo);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.blitFramebuffer(0, 0, EFB_W, 480, 0, height, width, 0, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return;
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, width, height);
     gl.disable(gl.SCISSOR_TEST);
@@ -731,6 +746,21 @@ export class GxGl implements GxBackend {
 
   /** the top 640 x 480 of the EFB as RGBA bytes (R, G, B, A) */
   readPicture(pixFmt: number): Uint8Array {
+    this.drawPicture(pixFmt);
+    return this.readKept();
+  }
+
+  /** the picture framebuffer's 640 x 480 as RGBA bytes */
+  private readKept(): Uint8Array {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.pictureFbo.fbo);
+    const out = new Uint8Array(EFB_W * 480 * 4);
+    gl.readPixels(0, 0, EFB_W, 480, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    return out;
+  }
+
+  /** the top 640 x 480 of the EFB into the picture framebuffer, as the copy's pixel format shows it */
+  private drawPicture(pixFmt: number): void {
     const gl = this.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.pictureFbo.fbo);
     gl.viewport(0, 0, EFB_W, EFB_H);
@@ -740,8 +770,5 @@ export class GxGl implements GxBackend {
     this.bindTex(pr, 0, "uEfb", this.efb[this.cur].tex);
     gl.uniform1i(this.u(pr, "uPixFmt"), pixFmt);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
-    const out = new Uint8Array(EFB_W * 480 * 4);
-    gl.readPixels(0, 0, EFB_W, 480, gl.RGBA, gl.UNSIGNED_BYTE, out);
-    return out;
   }
 }
