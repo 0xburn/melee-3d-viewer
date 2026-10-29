@@ -17,6 +17,7 @@
     "@zag-js/solid": "^0.2.2",
     "@zag-js/toast": "^0.2.4",
     "fflate": "^0.7.4",
+    "mp4-muxer": "5.2.1",
     "solid-js": "^1.6.3"
   },
   "devDependencies": {
