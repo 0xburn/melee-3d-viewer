@@ -750,6 +750,10 @@ export class GxGl implements GxBackend {
     return this.readKept();
   }
 
+  /** the last picture copied to the screen as RGBA bytes (a read-back), or null before the first: for a page that starts showing the
+   *  picture another way while paused (a TV turned on) */
+  picture(): Uint8Array | null { return this.havePicture ? this.readKept() : null; }
+
   /** the picture framebuffer's 640 x 480 as RGBA bytes */
   private readKept(): Uint8Array {
     const gl = this.gl;
