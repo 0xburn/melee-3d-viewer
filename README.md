@@ -327,7 +327,9 @@ viewer's own clock. This repository has no audio engine, simulator, AudioWorklet
 or game sound assets for it; the host page supplies the player and its assets.
 This is a draft of the viewer's side (`src/audio.ts`).
 
-The host sets its configuration before the embed entry script loads:
+The host sets its configuration before the embed entry script loads (or, a
+host that learns it later, calls `configureSound(config)` from `src/audio.ts`
+once):
 
 ```html
 <script>
@@ -361,6 +363,15 @@ The module exports `ReplayPlayer`:
   seek would make a backend that simulates the game rewind it.
 - `speed`, `setSpeed(rate)`, `setMusic(on)`: playback speed and music.
   `destroy()` stops its workers and closes its audio context.
+- `playback` (optional): the constructor's options also carry `playback`,
+  `"slippi"` or `"original"`, the GX player's Playback setting: how the
+  replay is played back, as Slippi's replay playback shows it or as the console
+  recorded it. The two can play some replays differently (a recording from
+  before Slippi 3.17 holds the C-stick only after the game processed it), and a
+  backend that simulates the game should play it the same way or its sound
+  drifts from the picture. An optional `setPlayback(mode)` takes a change while
+  sound is on; the viewer then seeks the sound to the frame shown. A backend
+  may ignore both: without `setPlayback` the mode reaches it at the next start.
 - `error` and `audiointerrupted` events turn sound off; the viewer keeps
   playing without it.
 - `stage-frames` events (optional) carry Fountain of Dreams' platform heights
@@ -389,9 +400,18 @@ destroys the host's player. The extra simulation still costs CPU and memory,
 and can make backward seeks slower. A backend must report its simulation
 failures rather than keep playing incorrect sound.
 
+The GX player (`gx.html`) takes the same player: its Sound button shows only
+with a configuration; while sound is on it shows the frame being heard, drawing
+every frame up to it and none past it (`render3d/gxpath/playback.ts`
+`follow`); a seek, a step, play, pause, speed and music go to the host player as
+above; a change of Playback is sent as `setPlayback`; an error or
+`audiointerrupted` turns sound off and the page's own clock takes over.
+
 `deno test --no-check --sloppy-imports tests/` checks `src/audio.ts` against a fake player:
 transport, rapid seeks, music, teardown, and turning sound off while it
-starts. It does not cover browsers or devices, and supplies no engine. The
+starts; `tests/gx-audio.test.mjs` checks the GX player against a stub player with a
+fake PCM clock: following it, seeks, pause, speed, the switch to Original and
+an error. It does not cover browsers or devices, and supplies no engine. The
 integration was also exercised in a host page with a Wasm simulator in the
 browser and an AudioWorklet; that host's admin controls, telemetry and private
 asset routes are not included here.
