@@ -52,4 +52,3 @@ export type AudioPlayerClass = new (options: {
   /** (optional for the backend) the playback mode the replay is played back in, as setPlayback */
   playback: PlaybackMode;
 }) => AudioPlayer;
-
