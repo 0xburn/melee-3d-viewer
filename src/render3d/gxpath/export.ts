@@ -60,8 +60,8 @@ export interface ExportResult {
   ms: { seek: number; frames: number; total: number };
 }
 
-export class ExportCancelled extends Error {
-  constructor() { super("the export was cancelled"); this.name = "ExportCancelled"; }
+export class ExportCanceled extends Error {
+  constructor() { super("the export was canceled"); this.name = "ExportCanceled"; }
 }
 
 /** whether this browser can make a video at all (WebCodecs' H.264 encoder) */
@@ -159,7 +159,7 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   const composer = new Composer(width, height, o.tv);
   const check = () => {
     if (failed) throw failed;
-    if (o.signal?.aborted) throw new ExportCancelled();
+    if (o.signal?.aborted) throw new ExportCanceled();
   };
   try {
     await o.seek(o.from);

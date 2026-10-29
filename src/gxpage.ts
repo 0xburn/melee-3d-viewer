@@ -20,7 +20,7 @@ import { ControllerOverlay, isOverlayShow, type OverlayShow } from "./render3d/g
 import { GxScreen } from "./render3d/gxpath/screen";
 import { CRT_PRESETS, CURVE_MAX, isCrtPreset, type CrtPreset } from "./render3d/crt";
 import { GxSession, type GameFiles, type SessionBackend } from "./render3d/gxpath/session";
-import { canExport, ExportCancelled, exportMp4, saveFile, videoName, type ExportOptions, type ExportScale } from "./render3d/gxpath/export";
+import { canExport, ExportCanceled, exportMp4, saveFile, videoName, type ExportOptions, type ExportScale } from "./render3d/gxpath/export";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const q = new URLSearchParams(location.search);
@@ -397,7 +397,7 @@ $("exportstart").onclick = async () => {
     saveFile(r.file, videoName(exportName(), whole ? undefined : session.tape.gameFrame(from), whole ? undefined : session.tape.gameFrame(to)));
     exportState(`Saved: ${r.frames} frames, ${r.width} x ${r.height}, ${(r.file.size / 1048576).toFixed(1)} MB, in ${((performance.now() - t0) / 1000).toFixed(1)} s.`);
   } catch (e) {
-    exportState(e instanceof ExportCancelled ? "Cancelled." : `The video could not be made: ${String((e as Error)?.message ?? e)}`);
+    exportState(e instanceof ExportCanceled ? "Canceled." : `The video could not be made: ${String((e as Error)?.message ?? e)}`);
   } finally {
     exporting = null;
     $<HTMLButtonElement>("exportstart").disabled = false;
