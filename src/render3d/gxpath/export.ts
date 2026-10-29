@@ -12,7 +12,7 @@
  * The host does the stepping (the page's own player: GxSession on the public page, the app's engine): `seek` brings the picture of the
  * first row to the source canvas, `next` steps one row and brings its picture there.
  */
-import { ArrayBufferTarget, Muxer } from "mp4-muxer";
+import { Muxer, StreamTarget } from "mp4-muxer";
 import { Crt, CRT_LOOKS, type CrtPreset } from "../crt";
 
 export const EXPORT_SCALES = [1, 2, 4] as const;
@@ -44,7 +44,8 @@ export interface ExportOptions {
 }
 
 export interface ExportResult {
-  bytes: Uint8Array;
+  /** the MP4 (fragmented: a box of frames at a time, written as they come, so a long video never sits in one block of memory) */
+  file: Blob;
   frames: number;
   /** rows that made no new picture (the picture before was used again) */
   repeated: number;
@@ -67,15 +68,18 @@ export class ExportCancelled extends Error {
 export const canExport = () => typeof VideoEncoder !== "undefined" && typeof VideoFrame !== "undefined";
 
 // H.264 profiles and levels to try, the best first: High at level 5.1 (2560 x 1920 at 60), then Main and Baseline
+/** bits a pixel of the game's 640 x 480 at 60 frames a second; a scaled video gets this times the scale (its pixels are blocks of the
+ *  game's: the encoder needs far fewer bits than its size alone would say) */
 export const BITS_PER_PIXEL = 0.5;
 /** at most this many bits a second: the graphics card's encoder made frames of a few dB when asked for 74 Mbit/s (1280 x 960) */
 export const MAX_BITRATE = 50e6;
 const CODECS = ["avc1.640033", "avc1.4d0033", "avc1.42e033", "avc1.640028", "avc1.4d0028", "avc1.42e028"];
 
-async function encoderConfig(width: number, height: number, fps: number, asked?: number): Promise<{ config: VideoEncoderConfig; hardware: boolean }> {
-  // half a bit a pixel at 60, at most MAX_BITRATE: 9.2 Mbit/s at 640 x 480, 37 at 1280 x 960, 50 at 2560 x 1920 (measured on a
-  // public game: the frames decoded back 41 dB from the picture in luma at 1x, 45 at 2x; a bit a pixel bought 3 dB for twice the size)
-  const bitrate = asked ?? Math.min(MAX_BITRATE, Math.round(width * height * fps * BITS_PER_PIXEL));
+async function encoderConfig(width: number, height: number, fps: number, scale: number, asked?: number): Promise<{ config: VideoEncoderConfig; hardware: boolean }> {
+  // half a bit of the game's pixel at 60, times the scale, at most MAX_BITRATE: 9.2 Mbit/s at 640 x 480, 18 at 1280 x 960, 37 at 2560 x 1920
+  // (measured on a public game: decoded back, 41 dB from the picture in luma at 1x, 41 at 2x with 18; a bit a pixel bought 3 dB for
+  // twice the file)
+  const bitrate = asked ?? Math.min(MAX_BITRATE, Math.round(640 * 480 * fps * BITS_PER_PIXEL * scale));
   for (const hw of ["prefer-hardware", "no-preference"] as const) {
     for (const codec of CODECS) {
       const config: VideoEncoderConfig = { codec, width, height, bitrate, framerate: fps, hardwareAcceleration: hw,
@@ -136,9 +140,16 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   if (!(o.to >= o.from)) throw new Error(`no frames from row ${o.from} to ${o.to}`);
   const t0 = performance.now();
   const width = 640 * o.scale, height = 480 * o.scale, total = o.to - o.from + 1;
-  const { config, hardware } = await encoderConfig(width, height, o.fps, o.bitrate);
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({ target, video: { codec: "avc", width, height, frameRate: o.fps }, fastStart: "in-memory", firstTimestampBehavior: "offset" });
+  const { config, hardware } = await encoderConfig(width, height, o.fps, o.scale, o.bitrate);
+  // (written in order, a fragment at a time: each piece kept as a Blob part, which the browser may keep on disk)
+  const parts: Blob[] = [];
+  let at = 0, outOfOrder = false;
+  const target = new StreamTarget({
+    onData: (data, position) => { if (position !== at) outOfOrder = true; at = position + data.length; parts.push(new Blob([data.slice() as unknown as BlobPart])); },
+    chunked: true, chunkSize: 8 << 20,
+  });
+  const muxer = new Muxer({ target, video: { codec: "avc", width, height, frameRate: o.fps }, fastStart: "fragmented", minFragmentDuration: 1,
+                            firstTimestampBehavior: "offset" });
   let failed: Error | null = null;
   const encoder = new VideoEncoder({
     output: (chunk, meta) => { o.onChunk?.(chunk, meta); muxer.addVideoChunk(chunk, meta); },
@@ -178,9 +189,10 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
     await encoder.flush();
     check();
     muxer.finalize();
+    if (outOfOrder) throw new Error("the MP4 was not written in order");
     o.onProgress?.(total, total);
     const t2 = performance.now();
-    return { bytes: new Uint8Array(target.buffer), frames: total, repeated, width, height, codec: config.codec, hardware, bitrate: config.bitrate ?? 0,
+    return { file: new Blob(parts, { type: "video/mp4" }), frames: total, repeated, width, height, codec: config.codec, hardware, bitrate: config.bitrate ?? 0,
              ms: { seek: t1 - t0, frames: t2 - t1, total: t2 - t0 } };
   } finally {
     if (encoder.state !== "closed") encoder.close();
@@ -188,9 +200,9 @@ export async function exportMp4(o: ExportOptions): Promise<ExportResult> {
   }
 }
 
-/** save bytes as a file the browser downloads (to its own downloads folder; nothing is uploaded) */
-export function saveFile(bytes: Uint8Array, name: string, type = "video/mp4"): void {
-  const url = URL.createObjectURL(new Blob([bytes as unknown as BlobPart], { type }));
+/** save a file the browser downloads (to its own downloads folder; nothing is uploaded) */
+export function saveFile(file: Blob, name: string): void {
+  const url = URL.createObjectURL(file);
   const a = document.createElement("a");
   a.href = url;
   a.download = name;

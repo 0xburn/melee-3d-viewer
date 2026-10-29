@@ -394,8 +394,8 @@ $("exportstart").onclick = async () => {
       signal: exporting.signal,
       onProgress: (done, total) => exportState(`Frame ${done} of ${total}...`),
     });
-    saveFile(r.bytes, videoName(exportName(), whole ? undefined : session.tape.gameFrame(from), whole ? undefined : session.tape.gameFrame(to)));
-    exportState(`Saved: ${r.frames} frames, ${r.width} x ${r.height}, ${(r.bytes.length / 1048576).toFixed(1)} MB, in ${((performance.now() - t0) / 1000).toFixed(1)} s.`);
+    saveFile(r.file, videoName(exportName(), whole ? undefined : session.tape.gameFrame(from), whole ? undefined : session.tape.gameFrame(to)));
+    exportState(`Saved: ${r.frames} frames, ${r.width} x ${r.height}, ${(r.file.size / 1048576).toFixed(1)} MB, in ${((performance.now() - t0) / 1000).toFixed(1)} s.`);
   } catch (e) {
     exportState(e instanceof ExportCancelled ? "Cancelled." : `The video could not be made: ${String((e as Error)?.message ?? e)}`);
   } finally {

@@ -52,28 +52,45 @@ export function psnrY(a: Uint8Array | Uint8ClampedArray, b: Uint8Array | Uint8Cl
   return se === 0 ? Infinity : 10 * Math.log10((255 * 255 * n) / se);
 }
 
-/** the MP4's boxes: a video track's sample count (stsz) and its durations (stts), in its timescale (mdhd) */
+/** the MP4's boxes: a video track's samples and their durations, in its timescale (mdhd) - from the sample table (stsz, stts) of a
+ *  file with its index at the front, or from the fragments (moof: tfhd's default duration, trun's samples) of a fragmented one */
 function mp4Samples(bytes: Uint8Array): { samples: number; durations: number[]; timescale: number } {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const out = { samples: -1, durations: [] as number[], timescale: 0 };
+  const out = { samples: 0, durations: [] as number[], timescale: 0 };
+  let stsz = -1, defaultDuration = 0;
   const walk = (from: number, to: number) => {
     for (let p = from; p + 8 <= to;) {
       const size = dv.getUint32(p), type = String.fromCharCode(...bytes.subarray(p + 4, p + 8));
       if (size < 8) break;
-      if (["moov", "trak", "mdia", "minf", "stbl"].includes(type)) walk(p + 8, p + size);
-      else if (type === "stsz") out.samples = dv.getUint32(p + 16);
+      if (["moov", "trak", "mdia", "minf", "stbl", "moof", "traf", "mvex"].includes(type)) walk(p + 8, p + size);
+      else if (type === "stsz") stsz = dv.getUint32(p + 16);
       else if (type === "mdhd") out.timescale = dv.getUint8(p + 8) === 1 ? dv.getUint32(p + 28) : dv.getUint32(p + 20);
       else if (type === "stts") {
         const n = dv.getUint32(p + 12);
         for (let i = 0; i < n; i++) { const count = dv.getUint32(p + 16 + i * 8), d = dv.getUint32(p + 20 + i * 8); for (let k = 0; k < count; k++) out.durations.push(d); }
+      } else if (type === "trex") defaultDuration = dv.getUint32(p + 20);
+      else if (type === "tfhd") {
+        const flags = dv.getUint32(p + 8) & 0xffffff;
+        let q = p + 16;
+        if (flags & 0x1) q += 8;
+        if (flags & 0x2) q += 4;
+        if (flags & 0x8) defaultDuration = dv.getUint32(q);
+      } else if (type === "trun") {
+        const flags = dv.getUint32(p + 8) & 0xffffff, n = dv.getUint32(p + 12);
+        let q = p + 16;
+        if (flags & 0x1) q += 4;
+        if (flags & 0x4) q += 4;
+        const per = [0x100, 0x200, 0x400, 0x800].filter((f) => flags & f).length * 4;
+        for (let i = 0; i < n; i++) out.durations.push(flags & 0x100 ? dv.getUint32(q + i * per) : defaultDuration);
+        out.samples += n;
       }
       p += size;
     }
   };
   walk(0, bytes.length);
+  if (stsz > 0) out.samples += stsz;
   return out;
 }
-
 export async function checkExport(host: CheckHost, o: { from: number; to: number; scale: number; fps: number; sample?: number }) {
   const sample = o.sample ?? 5, total = o.to - o.from + 1;
   const want = new Map<number, string>(), kept = new Map<number, Uint8Array>();
@@ -137,13 +154,13 @@ export async function checkExport(host: CheckHost, o: { from: number; to: number
   const ps: number[] = [], py: number[] = [];
   for (let i = 0; i < frames.length; i += sample) { const r = kept.get(o.from + i), f = frames[i]; if (r && f?.px) { const u = up(r); ps.push(psnr(u, f.px)); py.push(psnrY(u, f.px)); } }
   const stamps = frames.every((f, i) => f.ts === Math.round((i * 1e6) / o.fps));
-  const file = mp4Samples(result.bytes);
+  const file = mp4Samples(new Uint8Array(await result.file.arrayBuffer()));
   const finite = ps.filter((v) => Number.isFinite(v));
   return {
     rows: [o.from, o.to], frames: result.frames, composedExact: exact, firstOff, blocksFlat, decoded, decodeError, stamps,
     psnr: ps.length ? { min: Math.min(...ps), mean: finite.length ? finite.reduce((a, b) => a + b, 0) / finite.length : Infinity, n: ps.length } : null,
     psnrY: py.length ? { min: Math.min(...py), mean: py.filter(Number.isFinite).reduce((a, b) => a + b, 0) / Math.max(1, py.filter(Number.isFinite).length) } : null,
     file: { samples: file.samples, timescale: file.timescale, duration: file.durations.reduce((a, b) => a + b, 0), firstDurations: file.durations.slice(0, 3) },
-    bytes: result.bytes.length, bitrate: result.bitrate, codec: result.codec, hardware: result.hardware, repeated: result.repeated, ms: result.ms, referenceMs,
+    bytes: result.file.size, bitrate: result.bitrate, codec: result.codec, hardware: result.hardware, repeated: result.repeated, ms: result.ms, referenceMs,
   };
 }
