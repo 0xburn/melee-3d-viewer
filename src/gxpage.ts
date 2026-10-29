@@ -20,6 +20,7 @@ import { ControllerOverlay, isOverlayShow, type OverlayShow } from "./render3d/g
 import { GxScreen } from "./render3d/gxpath/screen";
 import { CRT_PRESETS, CURVE_MAX, isCrtPreset, type CrtPreset } from "./render3d/crt";
 import { GxSession, type GameFiles, type SessionBackend } from "./render3d/gxpath/session";
+import { musicEnabled, sound, soundConfigured, soundState } from "./audio";
 import { canExport, ExportCanceled, exportMp4, saveFile, videoName, type ExportOptions, type ExportScale } from "./render3d/gxpath/export";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -77,6 +78,8 @@ async function folderFiles(dir: FileSystemDirectoryHandle, out = new Map<string,
 function setPlaybackMode(m: PlaybackMode) {
   if (m === playbackMode) return;
   playbackMode = m;
+  // (the sound plays the replay the same way: src/audio.ts sound.playback)
+  sound.playback(m, Math.max(0, session?.shown ?? 0));
   showButtons();
   if (!currentUrl || !session) return;
   const frame = session.tape.gameFrame(Math.max(0, session.shown)), wasPlaying = playback?.playing ?? false;
@@ -122,6 +125,8 @@ async function loadReplay(url: string, frame: number, play = q.get("paused") !==
   const t0 = performance.now(), mark = (k: string) => { loadTimes[k] = performance.now() - t0; };
   info("reading the replay...");
   const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+  // (another replay: sound off, and the next start opens this one; the same one played again in another Playback keeps it)
+  if (url !== currentUrl) { sound.load(new Blob([bytes as unknown as BlobPart])); sound.playback(playbackMode); }
   const parsed = decode(bytes, { useTypedArrays: true }) as { raw: Uint8Array; metadata?: { playedOn?: string } };
   // (a replay from before Slippi 3.17 records the C-stick only after the game processed it: the simulator plays it as Slippi's playback
   // does, or, for Original, works out the raw bytes the console had from the recorded positions: session.ts, cfit.ts)
@@ -159,6 +164,9 @@ async function loadReplay(url: string, frame: number, play = q.get("paused") !==
     onError: fail,
     onRetry: (text) => { retryText = text; update(); },
   });
+  // with sound on, the picture shows the frame being heard (src/audio.ts sound.frame); every seek and step goes to the sound too
+  playback.follow = () => sound.frame();
+  wireSound(playback);
   playback.setSpeed(Number(q.get("speed") ?? 1) || 1);
   playback.setPace(pace);
   currentUrl = url;
@@ -202,7 +210,38 @@ function update() {
     (s.drivesTried.length > 1 ? `\nsettings tried: ${s.drivesTried.map((d) => `${d.index + 1} held to row ${d.row}`).join(", ")}; playing ${s.driveIndex + 1}` : ""),
   );
   post({ type: "frame", frame: gf, running: p.playing });
+  // playing or paused, the frame and the speed (1 = the game's 60), told to the sound
+  sound.transport(p.playing, row, p.speed * (pace === "console" ? 60000 / 1001 : 60) / 60);
+  showSound();
 }
+
+// ---- Sound (src/audio.ts): only with a host's configuration; a seek, a step, play, pause and speed go to its player, and while it plays
+// the picture follows what is heard. Its errors turn it off; play goes on with the page's own clock.
+function wireSound(p: GxPlayback) {
+  const seek = p.seek.bind(p), forward = p.stepForward.bind(p);
+  p.seek = (row: number) => { sound.seek(Math.max(0, Math.min(row, (session?.frameCount ?? 1) - 1))); return seek(row); };
+  p.stepForward = () => { forward(); sound.seek(Math.max(0, session?.shown ?? 0)); };
+}
+function showSound() {
+  if (!soundConfigured) return;
+  const st = soundState();
+  $("sound").hidden = false;
+  $("music").hidden = st !== "on";
+  $("sound").textContent = `Sound: ${st === "on" ? "On" : st === "loading" ? "Starting" : st === "error" ? "Off (it stopped)" : "Off"}`;
+  $("sound").setAttribute("aria-pressed", String(st === "on"));
+  $("music").textContent = `Music: ${musicEnabled() ? "On" : "Off"}`;
+}
+$("sound").onclick = () => {
+  if (!session || !playback) return;
+  if (soundState() === "on" || soundState() === "loading") { sound.disable(); showSound(); return; }
+  const row = Math.max(0, session.shown);
+  sound.seek(row);
+  sound.transport(playback.playing, row, playback.speed * (pace === "console" ? 60000 / 1001 : 60) / 60);
+  void sound.enable().then(showSound, showSound);
+  showSound();
+};
+$("music").onclick = () => { sound.music(!musicEnabled()); showSound(); };
+if (soundConfigured) setInterval(showSound, 500);
 
 function fail(e: unknown) {
   const text = String((e as Error)?.stack ?? e);

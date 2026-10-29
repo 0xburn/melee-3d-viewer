@@ -10,7 +10,9 @@
     <!-- The replay drawn by the game's own draw path: the simulator's graphics build plays the match and runs the game's display pass,
          and the GX renderer draws the commands it sends. Same parameters as embed.html where they apply (replayUrl, name, frame,
          files, paused), plus core (the module's URL), backend (gl or cpu), speed, playback (slippi or original) and pace (60 or console).
-         Messages: load, seek (game frame), play, pause, toggle, gameFiles, speed, playback, pace. Nothing leaves the browser. -->
+         Messages: load, seek (game frame), play, pause, toggle, gameFiles, speed, playback, pace. Nothing leaves the browser.
+         Sound: a page that sets globalThis.__MELEE_AUDIO_CONFIG__ before this one loads gets the Sound button (README, "Optional
+         browser audio"); without it there is none. -->
     <div id="app">
       <div id="stage"><div id="view"></div></div>
       <div id="files">
@@ -27,6 +29,8 @@
         <button id="pace" title="60: 60 frames a second, one frame per refresh on a 60 Hz screen. Console: 59.94 frames a second, the rate a GameCube runs at. Every frame is shown either way.">Speed: 60</button>
         <button id="crt" title="The TV the picture is shown on (a display layer: the picture itself is the same)">TV: Off</button>
         <button id="pads" title="Controllers drawn beside the HUD slots (a layer over the picture)">Controllers: Off</button>
+        <button id="sound" hidden title="The game's sound, from the sound player this page was given (it follows the picture's frame)">Sound: Off</button>
+        <button id="music" hidden title="The game's music, on or off (the rest of the sound stays)">Music: On</button>
         <button id="export" aria-expanded="false">Export Video</button>
         <div id="seek"><div id="seekfill"></div></div>
         <span id="where"></span>
