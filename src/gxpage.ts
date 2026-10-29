@@ -89,7 +89,9 @@ async function makeBackend(env: ConstructorParameters<typeof CpuBackend>[0]): Pr
   if (q.get("backend") !== "cpu") {
     try {
       const { GxGl } = await import("./render3d/gxr/gl");
-      const gl = screen.glFlat.getContext("webgl2", { preserveDrawingBuffer: true });
+      // (no multisampling: the picture is blitted onto the canvas as it is, and a blit into a multisampled canvas is refused - the
+      // picture stayed black; the canvas keeps it between frames, for the video export and a paused player)
+      const gl = screen.glFlat.getContext("webgl2", { preserveDrawingBuffer: true, antialias: false, depth: false, stencil: false, alpha: false });
       if (gl) {
         const b = new GxGl(gl, {}, { workers: Math.max(0, Number(q.get("workers") ?? Math.min(3, Math.max(0, (navigator.hardwareConcurrency || 4) - 2)))) });
         info("preparing the renderer (the first time in this browser this can take a minute)...");
